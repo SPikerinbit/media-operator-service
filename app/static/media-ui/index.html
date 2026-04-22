@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Media Operator</title>
+    <link rel="stylesheet" href="/static/media-ui/styles.css?v=20260422-whisper-mode" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Media Operator</p>
+          <h1>媒体批量工作台</h1>
+        </div>
+        <div class="status-pill" id="batchStatus">待提交</div>
+      </header>
+
+      <form id="batchForm">
+        <section class="studio">
+          <section class="panel url-panel">
+            <div class="panel-head">
+              <h2>视频队列</h2>
+              <button class="ghost" type="button" id="pasteImport">粘贴导入</button>
+            </div>
+            <div class="url-list" id="urlList"></div>
+            <div class="url-actions">
+              <button class="secondary" type="button" id="addUrl">+ 添加 URL</button>
+              <button class="secondary" type="button" id="addLocal">+ 添加本地</button>
+            </div>
+            <label class="check rights-check">
+              <input id="rightsConfirmed" type="checkbox" />
+              <span>已确认素材可用于本次处理</span>
+            </label>
+          </section>
+
+          <section class="panel settings-panel">
+            <div class="panel-head">
+              <h2>输出参数</h2>
+              <button class="ghost" type="button" id="resetStyle">重置样式</button>
+            </div>
+            <div class="edit-context">
+              <div>
+                <span id="editContextLabel">正在编辑：批量默认参数</span>
+                <small id="editContextHint">未设置单独覆盖的视频会使用这里的参数。</small>
+              </div>
+              <div class="segmented">
+                <button class="active" type="button" id="editBatchDefaults">批量默认</button>
+                <button type="button" id="editCurrentRow">当前视频覆盖</button>
+                <button type="button" id="clearCurrentOverride">恢复默认</button>
+              </div>
+            </div>
+
+            <div class="settings-grid">
+              <label class="field">
+                <span>目标语言</span>
+                <input id="targetLang" value="zh-CN" />
+              </label>
+              <label class="field">
+                <span>Whisper</span>
+                <select id="whisperModel">
+                  <option value="small">small</option>
+                  <option value="base">base</option>
+                  <option value="medium">medium</option>
+                  <option value="large-v3" selected>large-v3</option>
+                </select>
+                <small id="whisperModelStatus">检查模型状态中</small>
+              </label>
+              <label class="field">
+                <span>转写模式</span>
+                <select id="whisperInferenceMode">
+                  <option value="standard" selected>精准 standard</option>
+                  <option value="auto_repair">自动补漏</option>
+                  <option value="batched">快速 batched</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>批次并发</span>
+                <select id="batchConcurrency">
+                  <option value="1">1 稳定长视频</option>
+                  <option value="2" selected>2 推荐</option>
+                  <option value="3">3 短视频</option>
+                  <option value="4">4 压测</option>
+                  <option value="5">5 极限</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>翻译模型</span>
+                <select id="translateModel">
+                  <option value="deepseek-chat">deepseek-chat</option>
+                  <option value="deepseek-reasoner">deepseek-reasoner</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>字幕输出</span>
+                <select id="subtitleOutputMode">
+                  <option value="bilingual">双语</option>
+                  <option value="zh_only">仅中文</option>
+                  <option value="en_only">仅英文</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>画幅</span>
+                <select id="aspectRatio">
+                  <option value="source">source</option>
+                  <option value="16:9">16:9</option>
+                  <option value="9:16" selected>9:16</option>
+                  <option value="1:1">1:1</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>清晰度</span>
+                <select id="resolution">
+                  <option value="best">best</option>
+                  <option value="1080p">1080p</option>
+                  <option value="1440p">1440p</option>
+                  <option value="2160p">2160p</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>帧率</span>
+                <select id="fps">
+                  <option value="source">source</option>
+                  <option value="30">30</option>
+                  <option value="60">60</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>命名</span>
+                <select id="outputNameMode">
+                  <option value="sequence">sequence</option>
+                  <option value="original">original</option>
+                  <option value="custom">custom</option>
+                </select>
+              </label>
+              <label class="field span-2">
+                <span>前缀</span>
+                <input id="outputNamePrefix" placeholder="例如：morganjay" />
+              </label>
+            </div>
+
+            <div class="control-section">
+              <h3>翻译上下文</h3>
+              <div class="settings-grid">
+                <label class="field">
+                  <span>领域预设</span>
+                  <select id="translationContextProfile">
+                    <option value="">不使用预设</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>预设名称</span>
+                  <input id="translationContextName" placeholder="医学科普、游戏解说、法律访谈" />
+                </label>
+                <label class="field span-2">
+                  <span>领域说明</span>
+                  <textarea id="translationContextNote" rows="4" placeholder="说明视频领域、人物关系、常见说法和翻译偏好；仅作为翻译参考。"></textarea>
+                </label>
+                <label class="field span-2">
+                  <span>术语表</span>
+                  <textarea id="translationGlossary" rows="5" placeholder="每行一个术语，例如：&#10;Spider-Man => 蜘蛛侠&#10;venue => 演出场地"></textarea>
+                </label>
+              </div>
+              <div class="context-actions">
+                <button class="secondary" type="button" id="saveContextProfile">保存为新预设</button>
+                <button class="secondary" type="button" id="updateContextProfile">更新当前</button>
+                <button class="ghost danger-text" type="button" id="deleteContextProfile">删除</button>
+                <button class="ghost" type="button" id="clearContextProfile">清空</button>
+              </div>
+              <p class="context-hint" id="translationContextStatus">预设会完整保存；提交翻译时会按模型提示长度自动裁剪。</p>
+            </div>
+
+            <div class="control-section">
+              <h3>字幕样式</h3>
+              <div class="settings-grid">
+                <label class="field">
+                  <span>字体</span>
+                  <select id="fontFamily">
+                    <option value="Microsoft YaHei">Microsoft YaHei</option>
+                    <option value="SimHei">SimHei</option>
+                    <option value="Arial">Arial</option>
+                    <option value="Noto Sans CJK SC">Noto Sans CJK</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>字重</span>
+                  <select id="fontWeight">
+                    <option value="400">400</option>
+                    <option value="500">500</option>
+                    <option value="700" selected>700</option>
+                    <option value="900">900</option>
+                  </select>
+                </label>
+                <label class="field range-field">
+                  <span>字号 <b id="fontSizeLabel">44</b></span>
+                  <input id="fontSize" type="range" min="18" max="96" value="44" />
+                </label>
+                <label class="field">
+                  <span>字号模式</span>
+                  <select id="fontSizeMode">
+                    <option value="manual">manual</option>
+                    <option value="auto">auto</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>文字色</span>
+                  <input id="primaryColor" type="color" value="#ffffff" />
+                </label>
+                <label class="field">
+                  <span>描边色</span>
+                  <input id="outlineColor" type="color" value="#000000" />
+                </label>
+                <label class="field range-field">
+                  <span>描边 <b id="outlineWidthLabel">3</b></span>
+                  <input id="outlineWidth" type="range" min="0" max="12" value="3" />
+                </label>
+                <label class="field range-field">
+                  <span>阴影 <b id="shadowLabel">1</b></span>
+                  <input id="shadow" type="range" min="0" max="12" value="1" />
+                </label>
+                <label class="field">
+                  <span>位置</span>
+                  <select id="subtitlePosition">
+                    <option value="bottom">bottom</option>
+                    <option value="middle">middle</option>
+                    <option value="top">top</option>
+                  </select>
+                </label>
+                <label class="field range-field">
+                  <span>Y 偏移 <b id="yOffsetLabel">8%</b></span>
+                  <input id="yOffset" type="range" min="0" max="30" value="8" />
+                </label>
+                <label class="field range-field">
+                  <span>行宽 <b id="maxWidthLabel">86%</b></span>
+                  <input id="maxWidth" type="range" min="50" max="95" value="86" />
+                </label>
+                <label class="field range-field">
+                  <span>行距 <b id="lineSpacingLabel">1.15</b></span>
+                  <input id="lineSpacing" type="range" min="0.9" max="1.6" step="0.05" value="1.15" />
+                </label>
+                <label class="field span-2">
+                  <span>双语顺序</span>
+                  <select id="bilingualOrder">
+                    <option value="en_top_zh_bottom">英文在上，中文在下</option>
+                    <option value="zh_top_en_bottom">中文在上，英文在下</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div class="control-section">
+              <h3>背景条</h3>
+              <div class="settings-grid">
+                <label class="check compact-check">
+                  <input id="backgroundEnabled" type="checkbox" />
+                  <span>启用背景条</span>
+                </label>
+                <label class="field">
+                  <span>背景色</span>
+                  <input id="backgroundColor" type="color" value="#000000" />
+                </label>
+                <label class="field range-field">
+                  <span>透明度 <b id="backgroundOpacityLabel">45%</b></span>
+                  <input id="backgroundOpacity" type="range" min="0" max="90" value="45" />
+                </label>
+                <label class="field range-field">
+                  <span>内边距 <b id="backgroundPaddingLabel">12</b></span>
+                  <input id="backgroundPadding" type="range" min="0" max="32" value="12" />
+                </label>
+              </div>
+            </div>
+
+            <details class="control-section collapsible-section" id="biliSection">
+              <summary>
+                <span>B 站投稿</span>
+                <small id="biliSummary">未启用</small>
+              </summary>
+              <div class="settings-grid">
+                <label class="check compact-check span-2">
+                  <input id="biliUploadEnabled" type="checkbox" />
+                  <span>烧录完成后自动上传到 B 站</span>
+                </label>
+                <label class="field">
+                  <span>账号状态</span>
+                  <input id="biliStatus" value="检查中" disabled />
+                </label>
+                <label class="field">
+                  <span>投稿线路</span>
+                  <select id="biliLine">
+                    <option value="QN">QN 七牛</option>
+                    <option value="auto">auto</option>
+                    <option value="BDA2">BDA2</option>
+                    <option value="WS">WS</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>投稿分区</span>
+                  <select id="biliTid">
+                    <option value="130">音乐 / 音乐综合 / 130</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>版权</span>
+                  <select id="biliCopyright">
+                    <option value="2" selected>转载/来源</option>
+                    <option value="1">自制</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>来源</span>
+                  <select id="biliSourceMode">
+                    <option value="original_url" selected>使用原始链接</option>
+                    <option value="custom">自定义来源</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>封面</span>
+                  <button class="secondary" type="button" id="openBatchCover">设置批量默认封面</button>
+                  <button class="ghost" type="button" id="openCurrentCover">设置当前视频封面</button>
+                </label>
+                <label class="field span-2">
+                  <span>标题模板</span>
+                  <input id="biliTitleTemplate" value="{output_name}" />
+                </label>
+                <label class="field span-2">
+                  <span>标签</span>
+                  <input id="biliTags" value="音乐综合,音乐" />
+                </label>
+                <label class="field span-2">
+                  <span>自定义来源</span>
+                  <input id="biliSource" placeholder="版权来源 URL；来源模式为自定义时使用" />
+                </label>
+                <label class="field span-2">
+                  <span>合集/系列</span>
+                  <select id="biliSeries">
+                    <option value="">不添加</option>
+                  </select>
+                </label>
+                <label class="field span-2">
+                  <span>简介</span>
+                  <textarea id="biliDesc" rows="3" placeholder="投稿简介"></textarea>
+                </label>
+              </div>
+              <div class="context-actions">
+                <button class="secondary" type="button" id="refreshBiliCollections">刷新合集/系列</button>
+              </div>
+              <p class="context-hint" id="biliHint">Cookie 只从服务端本地环境读取，不进入浏览器。</p>
+              <p class="context-hint" id="biliCoverSummary">封面：自动使用每条视频的中间帧。</p>
+            </details>
+          </section>
+
+          <aside class="panel preview-panel">
+            <div class="panel-head">
+              <h2>效果预览</h2>
+              <button class="ghost" type="button" id="fetchPreview">抓取预览帧</button>
+            </div>
+            <label class="field range-field preview-time-field">
+              <span>前 5 分钟位置 <b id="previewTimeLabel">50%</b></span>
+              <input id="previewTimePercent" type="range" min="0" max="100" value="50" />
+            </label>
+            <div class="preview-stage" id="previewStage">
+              <div class="safe-frame"></div>
+              <div class="preview-subtitle" id="previewSubtitle"></div>
+            </div>
+            <div class="preview-meta">
+              <span id="previewTask">当前：第 1 条</span>
+              <span id="previewHint">模拟预览</span>
+            </div>
+            <button type="button" class="primary" id="submitBatch">提交新增/未提交视频</button>
+            <button type="button" class="secondary full-width" id="retryFailed">重试失败项</button>
+            <button type="button" class="ghost full-width" id="submitSelected">重新提交当前视频</button>
+          </aside>
+        </section>
+      </form>
+
+      <section class="panel queue">
+        <div class="queue-head">
+          <h2>任务队列</h2>
+          <p id="summary">0 条任务</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>URL</th>
+                <th>阶段</th>
+                <th>进度</th>
+                <th>Dify Run</th>
+                <th>结果</th>
+              </tr>
+            </thead>
+            <tbody id="taskBody">
+              <tr>
+                <td colspan="6" class="empty">暂无任务</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <div class="modal-backdrop" id="coverModal" hidden>
+      <section class="modal cover-modal">
+        <div class="panel-head">
+          <h2>选择 B 站封面</h2>
+          <button class="ghost" type="button" id="closeCoverModal">关闭</button>
+        </div>
+        <p class="context-hint" id="coverTargetLabel">批量默认封面</p>
+        <div class="cover-preview" id="biliCoverPreview">
+          <span>尚未选择封面</span>
+        </div>
+        <label class="field range-field">
+          <span>前 5 分钟位置 <b id="biliCoverTimeLabel">50%</b></span>
+          <input id="biliCoverTimePercent" type="range" min="0" max="100" value="50" />
+        </label>
+        <div class="cover-actions">
+          <button class="secondary" type="button" id="useCoverFrame">抓取并使用此帧</button>
+          <button class="secondary" type="button" id="useYoutubeThumbnail">使用 YouTube 封面</button>
+          <label class="secondary file-button">
+            上传图片
+            <input id="biliCoverFile" type="file" accept="image/png,image/jpeg,image/webp" />
+          </label>
+          <button class="ghost danger-text" type="button" id="clearCoverChoice">恢复自动中间帧</button>
+        </div>
+        <p class="context-hint" id="coverStatus">封面会直接作为最终投稿封面，不提供二次编辑。</p>
+      </section>
+    </div>
+    <script src="/static/media-ui/app.js?v=20260422-whisper-mode"></script>
+  </body>
+</html>

@@ -1,0 +1,164 @@
+{
+  "nodes": [
+    {
+      "data": {
+        "desc": "",
+        "selected": false,
+        "title": "开始",
+        "type": "start",
+        "variables": [
+          {
+            "label": "任务 ID",
+            "max_length": 128,
+            "options": [],
+            "required": true,
+            "type": "text-input",
+            "variable": "job_id"
+          }
+        ]
+      },
+      "height": 120,
+      "id": "start_node",
+      "position": {
+        "x": 30,
+        "y": 240
+      },
+      "positionAbsolute": {
+        "x": 30,
+        "y": 240
+      },
+      "selected": false,
+      "sourcePosition": "right",
+      "targetPosition": "left",
+      "type": "custom",
+      "width": 242
+    },
+    {
+      "data": {
+        "desc": "查询任务状态。",
+        "title": "查询任务",
+        "type": "http-request",
+        "method": "post",
+        "url": "http://172.18.0.1:8090/jobs/query",
+        "authorization": {
+          "type": "no-auth",
+          "config": null
+        },
+        "headers": "",
+        "params": "",
+        "body": {
+          "type": "json",
+          "data": "{\"job_id\":\"{{#start_node.job_id#}}\"}"
+        },
+        "timeout": {
+          "connect": 10,
+          "read": 60,
+          "write": 60
+        },
+        "retry_config": {
+          "enabled": true,
+          "max_retries": 2,
+          "retry_interval": 1000,
+          "exponential_backoff": {
+            "enabled": true,
+            "multiplier": 2,
+            "max_interval": 10000
+          }
+        },
+        "ssl_verify": true,
+        "variables": []
+      },
+      "height": 155,
+      "id": "query_job_node",
+      "position": {
+        "x": 348,
+        "y": 240
+      },
+      "positionAbsolute": {
+        "x": 348,
+        "y": 240
+      },
+      "selected": false,
+      "sourcePosition": "right",
+      "targetPosition": "left",
+      "type": "custom",
+      "width": 244
+    },
+    {
+      "data": {
+        "desc": "",
+        "outputs": [
+          {
+            "value_selector": [
+              "query_job_node",
+              "body"
+            ],
+            "value_type": "string",
+            "variable": "job_response_body"
+          },
+          {
+            "value_selector": [
+              "query_job_node",
+              "status_code"
+            ],
+            "value_type": "number",
+            "variable": "status_code"
+          }
+        ],
+        "selected": false,
+        "title": "结束",
+        "type": "end"
+      },
+      "height": 88,
+      "id": "end_node",
+      "position": {
+        "x": 716,
+        "y": 240
+      },
+      "positionAbsolute": {
+        "x": 716,
+        "y": 240
+      },
+      "selected": false,
+      "sourcePosition": "right",
+      "targetPosition": "left",
+      "type": "custom",
+      "width": 242
+    }
+  ],
+  "edges": [
+    {
+      "data": {
+        "sourceType": "start",
+        "targetType": "http-request"
+      },
+      "id": "start-query-job",
+      "source": "start_node",
+      "sourceHandle": "source",
+      "target": "query_job_node",
+      "targetHandle": "target",
+      "type": "custom",
+      "zIndex": 0
+    },
+    {
+      "data": {
+        "sourceType": "http-request",
+        "targetType": "end",
+        "isInIteration": false,
+        "isInLoop": false
+      },
+      "id": "query-end",
+      "source": "query_job_node",
+      "sourceHandle": "source",
+      "target": "end_node",
+      "targetHandle": "target",
+      "type": "custom",
+      "zIndex": 0
+    }
+  ],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1
+  }
+}

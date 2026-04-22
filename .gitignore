@@ -1,0 +1,36 @@
+# Python and local virtual environments
+.venv/
+.venv-win/
+.venv-wsl/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local secrets and machine-specific configuration
+scripts/media.local.env.ps1
+.env
+.env.*
+!.env.example
+dify_workflows/seed_dify_media_apps.sql
+
+# Runtime data, generated media, caches, models, and tools
+data/*
+!data/.gitkeep
+
+# Logs and temporary files
+*.log
+server.out.log
+server.err.log
+pip-install.log
+yt-dlp-install.log
+*.tmp
+*.bak
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

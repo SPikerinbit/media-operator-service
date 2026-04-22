@@ -1,0 +1,10 @@
+.venv
+.venv-win
+.venv-wsl
+data
+server.out.log
+server.err.log
+__pycache__
+*.pyc
+.git
+scripts

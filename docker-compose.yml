@@ -1,0 +1,15 @@
+services:
+  media-api:
+    build:
+      context: .
+    container_name: media-operator-service
+    environment:
+      MEDIA_ROOT_DIR: /app
+      MEDIA_DATA_DIR: /app/data
+      PUBLIC_BASE_URL: http://localhost:8090
+      WORKER_CONCURRENCY: 2
+      ALLOW_PLACEHOLDER_ARTIFACTS: "false"
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./data:/app/data
