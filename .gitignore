@@ -14,7 +14,6 @@ scripts/media.local.env.ps1
 .env
 .env.*
 !.env.example
-dify_workflows/seed_dify_media_apps.sql
 
 # Runtime data, generated media, caches, models, and tools
 data/*
@@ -34,3 +33,7 @@ yt-dlp-install.log
 Thumbs.db
 .idea/
 .vscode/
+
+# Generated desktop frontend
+frontend/node_modules/
+app/static/desktop-ui/

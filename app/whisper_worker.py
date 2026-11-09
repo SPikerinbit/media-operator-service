@@ -4,6 +4,13 @@ import argparse
 import json
 from pathlib import Path
 
+import os
+
+# Keep handles alive for transitive CUDA DLL loading on Windows.
+_cuda_dll_handles = []
+if os.name == "nt" and os.getenv("MEDIA_GPU_DLL_DIR"):
+    _cuda_dll_handles.append(os.add_dll_directory(os.environ["MEDIA_GPU_DLL_DIR"]))
+
 from faster_whisper import BatchedInferencePipeline, WhisperModel
 
 from app.main import (
@@ -11,6 +18,8 @@ from app.main import (
     decode_audio_for_whisper,
     job_dir,
     resolve_whisper_model_ref,
+    whisper_model_status,
+    DESKTOP,
     resolve_whisper_runtime,
     build_timing_diagnostics,
     subtitles_from_aligned_words,
@@ -45,9 +54,18 @@ def main() -> None:
 
     job_dir(args.job_id).mkdir(parents=True, exist_ok=True)
     runtime = resolve_whisper_runtime(args.model)
+    model_ref = resolve_whisper_model_ref(args.model)
+    if DESKTOP:
+        status = whisper_model_status(args.model)
+        if status["available"]:
+            model_ref = status["path"]
+        else:
+            from faster_whisper.utils import download_model
+            progress(5, f"正在下载 Whisper {args.model}，首次转录需要联网")
+            model_ref = download_model(args.model)
     progress(5, f"loading faster-whisper model {args.model}")
     model = WhisperModel(
-        resolve_whisper_model_ref(args.model),
+        model_ref,
         device=str(runtime["device"]),
         device_index=int(runtime["device_index"]),
         compute_type=str(runtime["compute_type"]),
@@ -59,7 +77,7 @@ def main() -> None:
     progress(28, "audio decoded")
     effective_vad = WHISPER_VAD_ENABLED and args.inference_mode != "standard"
     kwargs = {
-        "language": args.language,
+        "language": None if args.language == "auto" else args.language,
         "word_timestamps": WHISPER_WORD_TIMESTAMPS,
         "vad_filter": effective_vad,
         "beam_size": WHISPER_BEAM_SIZE,

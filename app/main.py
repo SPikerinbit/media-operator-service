@@ -23,11 +23,13 @@ import httpx
 import srt
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 APP_NAME = "media-operator-service"
+DESKTOP = os.getenv("MEDIA_DESKTOP") == "1"
+WINDOW_FLAGS = subprocess.CREATE_NO_WINDOW if DESKTOP and os.name == "nt" else 0
 DEFAULT_TARGET_LANG = "zh-CN"
 DEFAULT_YT_DLP_FORMAT = "bestvideo+bestaudio/best"
 DEFAULT_WHISPER_MODEL = "small"
@@ -49,9 +51,6 @@ BATCH_WORKER_MAX_CONCURRENCY = max(
     int(os.getenv("BATCH_WORKER_MAX_CONCURRENCY", "5")),
 )
 ALLOW_PLACEHOLDER_ARTIFACTS = os.getenv("ALLOW_PLACEHOLDER_ARTIFACTS", "false").lower() in {"1", "true", "yes", "on"}
-DIFY_API_BASE = os.getenv("DIFY_API_BASE", "").strip().rstrip("/")
-DIFY_WORKFLOW_API_KEY = os.getenv("DIFY_WORKFLOW_API_KEY", "").strip()
-DIFY_WORKFLOW_ID = os.getenv("DIFY_WORKFLOW_ID", "").strip()
 YT_DLP_PROXY = os.getenv("YT_DLP_PROXY", "").strip()
 YT_DLP_SOCKET_TIMEOUT = max(1, int(os.getenv("YT_DLP_SOCKET_TIMEOUT", "20")))
 YT_DLP_RETRIES = max(0, int(os.getenv("YT_DLP_RETRIES", "3")))
@@ -167,7 +166,7 @@ app = FastAPI(title=APP_NAME, version="1.1.0")
 executor = ThreadPoolExecutor(max_workers=WORKER_CONCURRENCY)
 batch_executor = ThreadPoolExecutor(max_workers=BATCH_WORKER_MAX_CONCURRENCY)
 state_lock = threading.Lock()
-batch_lock = threading.Lock()
+batch_lock = threading.RLock()
 stage_sync_lock = threading.Lock()
 stage_sync_times: dict[str, float] = {}
 
@@ -405,6 +404,7 @@ class JobQueryRequest(BaseModel):
 
 
 class StageDownloadRequest(BaseModel):
+    audio_only: bool = False
     source_kind: SourceKind = Field(default="youtube")
     source_value: str = Field(default="")
     youtube_url: str = Field(default="")
@@ -528,6 +528,9 @@ class StageBilibiliUploadRequest(BaseModel):
 
 
 class BatchCreateRequest(BaseModel):
+    knowledge_only: bool = False
+    source_language: str = Field(default="auto", pattern=r"^(auto|[a-z]{2,3})$")
+    transcript_ids: dict[str, int] = Field(default_factory=dict)
     sources: list[SourceInput] | None = None
     youtube_urls: list[str] | None = None
     item_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -713,8 +716,6 @@ class BatchItemState(BaseModel):
     stage: str = "queued"
     progress: int = 0
     message: str = "queued"
-    dify_run_id: str | None = None
-    workflow_run_id: str | None = None
     output_name: str | None = None
     stage_jobs: dict[str, str] = Field(default_factory=dict)
     stage_details: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -776,15 +777,16 @@ def sanitize_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
-def bool_text(value: bool) -> str:
-    return "true" if value else "false"
-
 
 def job_dir(job_id: str) -> Path:
+    if DESKTOP and not re.fullmatch(r"[a-zA-Z0-9_-]+", job_id):
+        raise FileNotFoundError(job_id)
     return JOBS_DIR / job_id
 
 
 def batch_dir(batch_id: str) -> Path:
+    if DESKTOP and not re.fullmatch(r"batch_[0-9a-f]{12}", batch_id):
+        raise FileNotFoundError(batch_id)
     return BATCHES_DIR / batch_id
 
 
@@ -805,7 +807,7 @@ def artifact_path(job_id: str, name: str) -> Path:
 
 
 def public_file_url(job_id: str, name: str) -> str:
-    return f"{PUBLIC_BASE_URL}/files/{job_id}/{name}"
+    return f"{'' if DESKTOP else PUBLIC_BASE_URL}/files/{job_id}/{name}"
 
 
 def public_job_url(job_id: str) -> str:
@@ -1081,8 +1083,6 @@ def update_batch_item(
     stage: str | None = None,
     progress: int | None = None,
     message: str | None = None,
-    dify_run_id: str | None = None,
-    workflow_run_id: str | None = None,
     output_name: str | None = None,
     stage_jobs: dict[str, str] | None = None,
     stage_details: dict[str, dict[str, Any]] | None = None,
@@ -1094,54 +1094,51 @@ def update_batch_item(
     error: dict[str, Any] | None = None,
     clear_error: bool = False,
 ) -> BatchState:
-    batch = load_batch(batch_id)
-    data = batch.model_dump()
-    found = False
-    for item in data["items"]:
-        if item["item_id"] != item_id:
-            continue
-        found = True
-        if status is not None:
-            item["status"] = status
-        if stage is not None:
-            item["stage"] = stage
-        if progress is not None:
-            item["progress"] = progress
-        if message is not None:
-            item["message"] = message
-        if dify_run_id is not None:
-            item["dify_run_id"] = dify_run_id
-        if workflow_run_id is not None:
-            item["workflow_run_id"] = workflow_run_id
-        if output_name is not None:
-            item["output_name"] = output_name
-        if stage_jobs is not None:
-            item["stage_jobs"] = stage_jobs
-        if stage_details is not None:
-            item["stage_details"] = stage_details
-        if active_stage_job_id is not None:
-            item["active_stage_job_id"] = active_stage_job_id
-        if local_progress is not None:
-            item["local_progress"] = local_progress
-        if progress_detail is not None:
-            item["progress_detail"] = progress_detail
-        if log_tail is not None:
-            item["log_tail"] = log_tail
-        if result is not None:
-            item["result"] = result
-        if clear_error:
-            item["error"] = None
-        elif error is not None:
-            item["error"] = error
-        item["updated_at"] = now_iso()
-        break
-    if not found:
-        raise FileNotFoundError(item_id)
-    data["updated_at"] = now_iso()
-    recompute_batch_counts(data)
-    updated = BatchState.model_validate(data)
-    save_batch(updated)
-    return updated
+    with batch_lock:
+        batch = load_batch(batch_id)
+        data = batch.model_dump()
+        found = False
+        for item in data["items"]:
+            if item["item_id"] != item_id:
+                continue
+            found = True
+            if status is not None:
+                item["status"] = status
+            if stage is not None:
+                item["stage"] = stage
+            if progress is not None:
+                item["progress"] = progress
+            if message is not None:
+                item["message"] = message
+            if output_name is not None:
+                item["output_name"] = output_name
+            if stage_jobs is not None:
+                item["stage_jobs"] = stage_jobs
+            if stage_details is not None:
+                item["stage_details"] = stage_details
+            if active_stage_job_id is not None:
+                item["active_stage_job_id"] = active_stage_job_id
+            if local_progress is not None:
+                item["local_progress"] = local_progress
+            if progress_detail is not None:
+                item["progress_detail"] = progress_detail
+            if log_tail is not None:
+                item["log_tail"] = log_tail
+            if result is not None:
+                item["result"] = result
+            if clear_error:
+                item["error"] = None
+            elif error is not None:
+                item["error"] = error
+            item["updated_at"] = now_iso()
+            break
+        if not found:
+            raise FileNotFoundError(item_id)
+        data["updated_at"] = now_iso()
+        recompute_batch_counts(data)
+        updated = BatchState.model_validate(data)
+        save_batch(updated)
+        return updated
 
 
 def clamp_percent(value: int | float | None) -> int:
@@ -1297,7 +1294,7 @@ def sync_stage_to_batch(
         "updated_at": now_iso(),
     }
     log_tail = read_stage_log_tail(job_id)
-    is_terminal_upload_success = stage == "bilibili_upload" and status == "succeeded"
+    is_terminal_upload_success = not DESKTOP and stage == "bilibili_upload" and status == "succeeded"
     batch_status: BatchItemStatus = "failed" if status == "failed" else ("succeeded" if is_terminal_upload_success else "running")
     batch_stage = "done" if is_terminal_upload_success else stage
     batch_progress = 100 if is_terminal_upload_success else stage_overall_progress(stage, local_progress)
@@ -1544,6 +1541,7 @@ def run_command(cmd: list[str], *, cwd: Path | None = None, log_dir: Path | None
                 stderr=stderr_file,
                 text=True,
                 check=False,
+                creationflags=WINDOW_FLAGS,
             )
         if completed.returncode != 0:
             stderr = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
@@ -1558,6 +1556,7 @@ def run_command(cmd: list[str], *, cwd: Path | None = None, log_dir: Path | None
         capture_output=True,
         text=True,
         check=False,
+        creationflags=WINDOW_FLAGS,
     )
     if completed.returncode != 0:
         stderr = completed.stderr.strip() or completed.stdout.strip() or f"command failed with exit code {completed.returncode}"
@@ -1572,6 +1571,7 @@ def run_command_streaming(
     log_name: str = "command",
     on_stdout_line: Callable[[str], None] | None = None,
     on_stderr_line: Callable[[str], None] | None = None,
+    env: dict[str, str] | None = None,
 ) -> None:
     log_dir = log_dir or tempfile.mkdtemp(prefix="media-command-")
     log_dir = Path(log_dir)
@@ -1589,6 +1589,10 @@ def run_command_streaming(
         text=True,
         bufsize=1,
         universal_newlines=True,
+        encoding="utf-8" if DESKTOP else None,
+        errors="replace",
+        creationflags=WINDOW_FLAGS,
+        env=env,
     )
 
     def reader(pipe: Any, path: Path, tail: list[str], callback: Callable[[str], None] | None) -> None:
@@ -1631,6 +1635,7 @@ def ffmpeg_encoders() -> set[str]:
             capture_output=True,
             text=True,
             check=False,
+            creationflags=WINDOW_FLAGS,
         )
         text = f"{completed.stdout}\n{completed.stderr}"
     except Exception:
@@ -1649,6 +1654,7 @@ def ffmpeg_hwaccels() -> set[str]:
             capture_output=True,
             text=True,
             check=False,
+            creationflags=WINDOW_FLAGS,
         )
         text = f"{completed.stdout}\n{completed.stderr}"
     except Exception:
@@ -1728,6 +1734,7 @@ def to_windows_path(path: Path) -> str:
         capture_output=True,
         text=True,
         check=False,
+        creationflags=WINDOW_FLAGS,
     )
     if completed.returncode == 0:
         converted = completed.stdout.strip()
@@ -1755,6 +1762,8 @@ def download_youtube(
     youtube_url: str,
     format_selector: str = DEFAULT_YT_DLP_FORMAT,
     progress_callback: Callable[[int, str, str | None], None] | None = None,
+    *,
+    audio_only: bool = False,
 ) -> Path:
     source_dir = job_dir(job_id)
     source_dir.mkdir(parents=True, exist_ok=True)
@@ -1780,6 +1789,8 @@ def download_youtube(
         output_template,
         youtube_url,
     ]
+    if DESKTOP:
+        cmd[1:1] = ["--ignore-config", "--js-runtimes", f"deno:{Path(YT_DLP_BIN).with_name('deno.exe')}"]
     ffmpeg_location = yt_dlp_ffmpeg_location()
     if ffmpeg_location:
         cmd[1:1] = ["--ffmpeg-location", ffmpeg_location]
@@ -1816,6 +1827,10 @@ def download_youtube(
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
+    if audio_only:
+        candidates = [p for p in candidates if p.suffix.lower() in {".m4a", ".webm", ".mp3", ".opus", ".aac", ".ogg", ".wav"}]
+        if candidates:
+            return candidates[0]
     if not candidates:
         raise RuntimeError("yt-dlp finished but no source file was found")
 
@@ -1834,6 +1849,7 @@ def download_youtube(
             capture_output=True,
             text=True,
             check=False,
+            creationflags=WINDOW_FLAGS,
         )
         if completed.returncode != 0:
             return set()
@@ -1932,6 +1948,10 @@ def write_transcription_artifacts(
     raw_segments_path.write_text(json.dumps(segments, ensure_ascii=False, indent=2), encoding="utf-8")
     aligned_words_path.write_text(json.dumps(words, ensure_ascii=False, indent=2), encoding="utf-8")
     subtitles = subtitles_from_aligned_words(words) if words else subtitles_from_segments(segments)
+    if DESKTOP and language in {"zh", "yue", "ja"}:
+        cjk = r"぀-ヿ㐀-鿿"
+        for subtitle in subtitles:
+            subtitle.content = re.sub(rf"(?<=[{cjk}]) +(?=[{cjk}])", "", subtitle.content)
     segmentation_stats = getattr(subtitles_from_aligned_words, "last_stats", {}) if words else {}
     srt_path = artifact_path(job_id, "english.srt")
     srt_path.write_text(srt.compose(subtitles), encoding="utf-8")
@@ -2471,7 +2491,10 @@ def whisper_model_status(model_name: str) -> dict[str, Any]:
         DATA_DIR / "models" / f"faster-whisper-{requested}",
         DATA_DIR / "models" / requested,
     ]
-    local_path = next((candidate for candidate in local_candidates if (candidate / "model.bin").exists()), None)
+    if DESKTOP:
+        cache = DATA_DIR / "models" / "huggingface" / "hub" / f"models--Systran--faster-whisper-{requested}" / "snapshots"
+        local_candidates.extend(cache.glob("*"))
+    local_path = next((candidate for candidate in local_candidates if (candidate / "model.bin").is_file()), None)
     return {
         "name": requested,
         "available": local_path is not None,
@@ -2491,7 +2514,7 @@ def transcribe_video(
 ) -> Path:
     whisper_cli = WHISPER_BIN or shutil.which("whisper") or ""
     requested_model = (model_name or WHISPER_MODEL).strip() or DEFAULT_WHISPER_MODEL
-    runtime = resolve_whisper_runtime(requested_model)
+    runtime = {"backend": "faster-whisper"} if DESKTOP else resolve_whisper_runtime(requested_model)
 
     if runtime["backend"] == "cli":
         if not whisper_cli:
@@ -2518,10 +2541,12 @@ def transcribe_video(
 
     try:
         job_dir(job_id).mkdir(parents=True, exist_ok=True)
+        worker_exe = Path(sys.executable).with_name("MediaWhisper.exe")
+        worker = [str(worker_exe)] if DESKTOP and getattr(sys, "frozen", False) else [
+            WHISPER_WORKER_PYTHON or sys.executable, "-m", "app.whisper_worker"
+        ]
         cmd = [
-            WHISPER_WORKER_PYTHON or sys.executable,
-            "-m",
-            "app.whisper_worker",
+            *worker,
             "--job-id",
             job_id,
             "--source",
@@ -2543,14 +2568,28 @@ def transcribe_video(
                 return
             progress_callback(clamp_percent(parts[1]), parts[2].strip(), line)
 
-        run_command_streaming(
-            cmd,
-            cwd=ROOT_DIR,
-            log_dir=job_dir(job_id),
-            log_name="whisper",
-            on_stdout_line=handle_whisper_line,
-            on_stderr_line=handle_whisper_line,
-        )
+        if DESKTOP:
+            from app.desktop_config import worker_environment
+            env = worker_environment()
+        else:
+            env = None
+        try:
+            run_command_streaming(
+                cmd, cwd=ROOT_DIR, log_dir=job_dir(job_id), log_name="whisper",
+                on_stdout_line=handle_whisper_line, on_stderr_line=handle_whisper_line, env=env,
+            )
+        except RuntimeError:
+            if not env or env.get("WHISPER_DEVICE") != "cuda":
+                raise
+            if progress_callback:
+                progress_callback(5, "GPU 转录失败，改用 CPU 重试", None)
+            env["WHISPER_DEVICE"] = "cpu"
+            env["WHISPER_COMPUTE_TYPE"] = ""
+            env.pop("MEDIA_GPU_DLL_DIR", None)
+            run_command_streaming(
+                cmd, cwd=ROOT_DIR, log_dir=job_dir(job_id), log_name="whisper-cpu",
+                on_stdout_line=handle_whisper_line, on_stderr_line=handle_whisper_line, env=env,
+            )
         path = artifact_path(job_id, "english.srt")
         if not path.exists():
             raise RuntimeError("faster-whisper worker finished but no english.srt was produced")
@@ -2778,7 +2817,9 @@ def _translate_lines_recursive(
             context_note=context_note,
             glossary=glossary,
         )
-    except Exception:
+    except Exception as error:
+        if DESKTOP and isinstance(error, (httpx.TransportError, httpx.HTTPStatusError)):
+            raise
         if len(texts) > 1:
             midpoint = max(1, len(texts) // 2)
             left = _translate_lines_recursive(
@@ -2796,6 +2837,8 @@ def _translate_lines_recursive(
                 glossary=glossary,
             )
             return left + right
+        if DESKTOP:
+            raise RuntimeError("DeepSeek 没有返回有效译文，请检查模型配置后重试") from error
         if ALLOW_PLACEHOLDER_ARTIFACTS:
             source = texts[0] if texts else ""
             return [f"（{target_lang}）{source}" if source else ""]
@@ -3030,7 +3073,7 @@ def write_subtitle_mode_srt(
     output_mode: SubtitleOutputMode,
     bilingual_order: SubtitleBilingualOrder,
 ) -> Path:
-    if output_mode == "bilingual" and bilingual_order == "en_top_zh_bottom":
+    if (DESKTOP and output_mode == "en_only") or (output_mode == "bilingual" and bilingual_order == "en_top_zh_bottom"):
         return subtitle_path
     subtitles = list(srt.parse(subtitle_path.read_text(encoding="utf-8")))
     transformed: list[srt.Subtitle] = []
@@ -3117,6 +3160,7 @@ def detect_video_size(source_path: Path) -> tuple[int, int]:
         capture_output=True,
         text=True,
         check=False,
+        creationflags=WINDOW_FLAGS,
     )
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or "ffprobe failed")
@@ -3257,7 +3301,7 @@ def burn_subtitle(
         play_res_x=canvas_width,
         play_res_y=canvas_height,
     )
-    subtitle_filter = f"ass='{ffmpeg_escape_path(ass_path)}'"
+    subtitle_filter = f"ass='{ass_path.name if DESKTOP else ffmpeg_escape_path(ass_path)}'"
     fonts_dir = Path(DEFAULT_FONTS_DIR)
     if fonts_dir.exists():
         subtitle_filter += f":fontsdir='{ffmpeg_escape_path(fonts_dir)}'"
@@ -3278,7 +3322,8 @@ def burn_subtitle(
             ",".join(video_filters),
             *ffmpeg_video_encoder_args(encoder),
             "-c:a",
-            "copy",
+            "aac" if DESKTOP else "copy",
+            *(["-movflags", "+faststart"] if DESKTOP else []),
             "-progress",
             "pipe:1",
             "-nostats",
@@ -3305,7 +3350,7 @@ def burn_subtitle(
     try:
         run_command_streaming(
             build_ffmpeg_burn_cmd(actual_encoder),
-            cwd=ROOT_DIR,
+            cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
             log_dir=job_dir(job_id),
             log_name=f"ffmpeg-burn-{actual_encoder}",
             on_stdout_line=handle_ffmpeg_progress,
@@ -3319,7 +3364,7 @@ def burn_subtitle(
             progress_callback(12, "nvenc failed, falling back to libx264", fallback_error[:500])
         run_command_streaming(
             build_ffmpeg_burn_cmd(actual_encoder),
-            cwd=ROOT_DIR,
+            cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
             log_dir=job_dir(job_id),
             log_name=f"ffmpeg-burn-{actual_encoder}",
             on_stdout_line=handle_ffmpeg_progress,
@@ -3467,10 +3512,11 @@ def run_stage_download(job_id: str) -> None:
                 source_path = download_youtube(
                     job_id,
                     source_value,
-                    build_yt_dlp_format_selector(request.resolution, request.fps),
+                    "bestaudio/best" if DESKTOP and request.audio_only else build_yt_dlp_format_selector(request.resolution, request.fps),
                     progress_callback=lambda progress, message, raw=None: report_stage_progress(
                         job_id, "download", progress, message, status="running", raw=raw
                     ),
+                    audio_only=DESKTOP and request.audio_only,
                 )
             except Exception as exc:
                 if ALLOW_PLACEHOLDER_ARTIFACTS:
@@ -3982,6 +4028,8 @@ def run_stage_burn(job_id: str) -> None:
             "aspect_ratio": request.aspect_ratio,
             "subtitle_output_mode": request.subtitle_output_mode,
         }
+        if DESKTOP and request.subtitle_output_mode == "zh_only" and artifact_path(job_id, "zh_only.srt").is_file():
+            result["translated_srt_url"] = public_file_url(job_id, "zh_only.srt")
         report_stage_progress(job_id, "burn", 100, "subtitle burn completed", status="succeeded", result=result, force=True)
     except Exception as error:
         fail_job(job_id, "burn", error)
@@ -4102,53 +4150,6 @@ def submit_job(request: VideoJobRequest) -> JobState:
     return state
 
 
-def dify_config_error() -> str | None:
-    missing = []
-    if not DIFY_API_BASE:
-        missing.append("DIFY_API_BASE")
-    if not DIFY_WORKFLOW_API_KEY:
-        missing.append("DIFY_WORKFLOW_API_KEY")
-    if missing:
-        return f"missing Dify configuration: {', '.join(missing)}"
-    return None
-
-
-def run_dify_workflow(inputs: dict[str, Any], user: str) -> dict[str, Any]:
-    config_error = dify_config_error()
-    if config_error:
-        raise RuntimeError(config_error)
-    payload = {
-        "inputs": inputs,
-        "response_mode": "blocking",
-        "user": user,
-    }
-    if DIFY_WORKFLOW_ID:
-        payload["workflow_id"] = DIFY_WORKFLOW_ID
-    with httpx.Client(timeout=httpx.Timeout(3600.0, connect=20.0)) as client:
-        response = client.post(
-            f"{DIFY_API_BASE}/v1/workflows/run",
-            headers={
-                "Authorization": f"Bearer {DIFY_WORKFLOW_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
-    if response.status_code >= 400:
-        raise RuntimeError(f"Dify workflow failed with HTTP {response.status_code}: {response.text[:500]}")
-    return response.json()
-
-
-def workflow_result_from_response(response_data: dict[str, Any]) -> dict[str, Any]:
-    data = response_data.get("data") if isinstance(response_data.get("data"), dict) else response_data
-    outputs = data.get("outputs") if isinstance(data, dict) else None
-    result = dict(outputs or {})
-    if isinstance(data, dict):
-        for key in ("id", "workflow_run_id", "status", "elapsed_time", "total_tokens", "created_at", "finished_at"):
-            if key in data:
-                result[f"dify_{key}"] = data[key]
-    return result
-
-
 def batch_item_settings(batch_request: dict[str, Any], item: BatchItemState) -> dict[str, Any]:
     settings = dict(batch_request or {})
     overrides = settings.get("item_overrides") or {}
@@ -4171,158 +4172,13 @@ def batch_item_settings(batch_request: dict[str, Any], item: BatchItemState) -> 
     return settings
 
 
-def run_batch_item(batch_id: str, item_id: str) -> None:
-    batch = load_batch(batch_id)
-    item = next((entry for entry in batch.items if entry.item_id == item_id), None)
-    if item is None:
-        return
-    try:
-        settings = batch_item_settings(batch.request, item)
-        output_name = build_output_name(
-            settings.get("output_name_mode", "sequence"),
-            settings.get("output_name_prefix", ""),
-            item.index,
-            f"source{item.index}",
-        )
-        translation_context_note = clean_translation_text(settings.get("translation_context_note", ""))
-        translation_glossary = clean_translation_text(settings.get("translation_glossary", ""))
-        inputs = {
-            "operator_batch_id": batch_id,
-            "operator_item_id": item_id,
-            "source_kind": item.source_kind,
-            "source_value": item.source_value,
-            "youtube_url": item.source_value,
-            "rights_confirmed": bool_text(bool(settings.get("rights_confirmed"))),
-            "target_lang": settings.get("target_lang") or DEFAULT_TARGET_LANG,
-            "whisper_model": settings.get("whisper_model") or WHISPER_MODEL,
-            "whisper_inference_mode": settings.get("whisper_inference_mode") or WHISPER_INFERENCE_MODE,
-            "translate_model": settings.get("translate_model") or TRANSLATE_MODEL,
-            "translation_context_profile_id": settings.get("translation_context_profile_id", ""),
-            "translation_context_note": translation_context_note,
-            "translation_glossary": translation_glossary,
-            "translation_context_note_json": json.dumps(translation_context_note, ensure_ascii=False),
-            "translation_glossary_json": json.dumps(translation_glossary, ensure_ascii=False),
-            "output_name_mode": settings.get("output_name_mode", "sequence"),
-            "output_name_prefix": settings.get("output_name_prefix", ""),
-            "output_index": item.index,
-            "aspect_ratio": settings.get("aspect_ratio", "source"),
-            "resolution": settings.get("resolution", "best"),
-            "fps": settings.get("fps", "source"),
-            "subtitle_font_size": settings.get("subtitle_font_size", "auto"),
-            "subtitle_color": settings.get("subtitle_color", "#ffffff"),
-            "subtitle_outline_color": settings.get("subtitle_outline_color", "#000000"),
-            "subtitle_position": settings.get("subtitle_position", "bottom"),
-            "subtitle_margin": settings.get("subtitle_margin", "auto"),
-            "subtitle_output_mode": settings.get("subtitle_output_mode", "bilingual"),
-            "subtitle_style": json.dumps(settings.get("subtitle_style") or {}, ensure_ascii=False),
-        }
-        update_batch_item(
-            batch_id,
-            item_id,
-            status="running",
-            stage="dify_workflow",
-            progress=5,
-            message="submitted to Dify workflow",
-            output_name=output_name,
-            clear_error=True,
-        )
-        response_data = run_dify_workflow(inputs, f"{batch_id}:{item_id}")
-        data = response_data.get("data") if isinstance(response_data.get("data"), dict) else response_data
-        workflow_run_id = str(data.get("workflow_run_id") or data.get("id") or "") if isinstance(data, dict) else ""
-        result = workflow_result_from_response(response_data)
-        result["output_name"] = output_name
-        output_status = str(result.get("status") or result.get("dify_status") or "").lower()
-        output_error = str(result.get("error_message") or result.get("error") or "").strip()
-        if output_status == "failed" or output_error:
-            raise RuntimeError(output_error or "Dify workflow output status is failed")
-        upload_settings = BilibiliUploadSettings.model_validate(settings.get("bilibili_upload") or {})
-        if upload_settings.enabled:
-            final_video_url = str(result.get("final_video_url") or result.get("result_url") or "").strip()
-            if not final_video_url:
-                raise RuntimeError("Bilibili upload requested but final_video_url is empty")
-            upload_job_id = submit_stage_job(
-                "bilibili_upload",
-                {
-                    "final_video_url": final_video_url,
-                    "original_source": item.source_value,
-                    "output_name": output_name,
-                    "original_title": str(result.get("title") or item.source_value or output_name),
-                    "upload_settings": upload_settings.model_dump(),
-                    "operator_batch_id": batch_id,
-                    "operator_item_id": item_id,
-                },
-            )
-            deadline = time.monotonic() + BILI_UPLOAD_TIMEOUT_SECONDS
-            upload_state = load_state(upload_job_id)
-            while time.monotonic() < deadline:
-                upload_state = wait_for_state_change(upload_job_id, hold_seconds=5)
-                if upload_state.status in {"succeeded", "failed"}:
-                    break
-            if upload_state.status != "succeeded":
-                error_type = upload_state.error.get("type") if upload_state.error else ""
-                message = upload_state.error.get("message") if upload_state.error else upload_state.message
-                if not message:
-                    tail = read_stage_log_tail(upload_job_id, limit=1)
-                    message = tail[-1] if tail else "Bilibili upload did not complete"
-                prefix = f"{error_type}: " if error_type else ""
-                raise RuntimeError(f"Bilibili upload failed in {upload_job_id}: {prefix}{message}")
-            result.update(upload_state.result or {})
-        update_batch_item(
-            batch_id,
-            item_id,
-            status="succeeded",
-            stage="done",
-            progress=100,
-            message="completed",
-            dify_run_id=workflow_run_id or None,
-            workflow_run_id=workflow_run_id or None,
-            result=result,
-            clear_error=True,
-        )
-    except Exception as error:
-        try:
-            current_batch = load_batch(batch_id)
-            current_item = next((entry for entry in current_batch.items if entry.item_id == item_id), None)
-        except Exception:
-            current_item = None
-        failure_stage = current_item.stage if current_item and current_item.stage not in {"queued", "dify_workflow"} else "dify_workflow"
-        failure_progress = current_item.progress if current_item else 100
-        diagnostics = exception_diagnostics(error)
-        update_batch_item(
-            batch_id,
-            item_id,
-            status="failed",
-            stage=failure_stage,
-            progress=max(1, min(100, failure_progress or 100)),
-            message=str(diagnostics.get("message") or "batch item failed"),
-            error={"stage": failure_stage, **diagnostics},
-        )
-
-
-def submit_batch(request: BatchCreateRequest) -> BatchState:
-    batch = create_batch(request)
-    batch_concurrency = min(
-        int(batch.request.get("batch_concurrency") or BATCH_WORKER_CONCURRENCY),
-        BATCH_WORKER_MAX_CONCURRENCY,
-    )
-    batch_slots = threading.Semaphore(batch_concurrency)
-
-    def run_with_batch_slot(item_id: str) -> None:
-        with batch_slots:
-            run_batch_item(batch.batch_id, item_id)
-
-    for item in batch.items:
-        batch_executor.submit(run_with_batch_slot, item.item_id)
-    return batch
-
-
 @app.on_event("startup")
 def on_startup() -> None:
     ensure_dirs()
 
 
 STATIC_DIR = ROOT_DIR / "app" / "static"
-MEDIA_UI_DIR = STATIC_DIR / "media-ui"
+MEDIA_UI_DIR = STATIC_DIR / "desktop-ui"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -4411,10 +4267,7 @@ def health() -> dict[str, Any]:
             "fallback_lines": BILI_UPLOAD_FALLBACK_LINES,
             "proxy_configured": bool(BILI_PROXY),
         },
-        "dify": {
-            "api_base": DIFY_API_BASE or None,
-            "workflow_id": DIFY_WORKFLOW_ID or None,
-            "configured": bool(DIFY_API_BASE and DIFY_WORKFLOW_API_KEY),
+        "batch": {
             "batch_worker_concurrency": BATCH_WORKER_CONCURRENCY,
             "batch_worker_max_concurrency": BATCH_WORKER_MAX_CONCURRENCY,
         },
@@ -4422,10 +4275,12 @@ def health() -> dict[str, Any]:
 
 
 @app.get("/media-ui")
-def media_ui() -> FileResponse:
+def media_ui() -> Response:
+    if not DESKTOP:
+        raise HTTPException(404, "桌面界面由 Media Operator 应用提供")
     index_path = MEDIA_UI_DIR / "index.html"
-    if not index_path.exists():
-        raise HTTPException(status_code=404, detail="media-ui static files not found")
+    if not index_path.is_file():
+        raise HTTPException(503, "桌面界面尚未构建。请在 frontend 目录运行 npm run build。")
     return FileResponse(index_path)
 
 
@@ -4613,25 +4468,18 @@ def delete_translation_context(profile_id: str) -> dict[str, Any]:
 
 @app.get("/")
 def root() -> RedirectResponse:
-    return RedirectResponse(url="/media-ui")
+    return RedirectResponse(url="/media-ui" if DESKTOP else "/health")
 
 
 @app.post("/ui/batches")
 def create_ui_batch(request: BatchCreateRequest) -> dict[str, Any]:
     if not request.rights_confirmed:
         raise HTTPException(status_code=400, detail="rights_confirmed must be true")
-    config_error = dify_config_error()
-    if config_error:
-        raise HTTPException(status_code=500, detail=config_error)
-    if request.bilibili_upload.enabled and not bilibili_configured():
-        raise HTTPException(status_code=500, detail="Bilibili credential is not configured")
-    try:
-        batch = submit_batch(request)
-    except PermissionError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    return batch.model_dump()
+    if not DESKTOP:
+        raise HTTPException(404, "批处理界面由 Media Operator 应用提供")
+    from app.desktop_jobs import submit_desktop_batch
+
+    return submit_desktop_batch(request).model_dump()
 
 
 @app.get("/ui/batches/{batch_id}")
@@ -4790,6 +4638,7 @@ def run_preview_ffmpeg(cmd: list[str], timeout_seconds: int = PREVIEW_FRAME_TIME
         capture_output=True,
         text=True,
         check=False,
+        creationflags=WINDOW_FLAGS,
         timeout=timeout_seconds,
     )
     if completed.returncode != 0:
@@ -4883,11 +4732,14 @@ def render_preview_with_subtitle(
     style_payload = request.subtitle_style.model_dump() if request.subtitle_style else {}
     rendered_path = artifact_path(
         preview_job_id,
-        f"preview_{preview_cache_key(source_image_path.name, request.aspect_ratio, request.subtitle_output_mode, style_payload)}.jpg",
+        f"preview_{preview_cache_key('v2', source_image_path.name, request.aspect_ratio, request.subtitle_output_mode, style_payload)}.jpg",
     )
     if rendered_path.exists():
         return rendered_path
 
+    example = "I did not expect that answer."
+    if request.subtitle_output_mode != "en_only":
+        example += "\n我完全没想到会这样回答。"
     sample_srt = artifact_path(preview_job_id, "sample.srt")
     sample_srt.write_text(
         srt.compose(
@@ -4896,7 +4748,7 @@ def render_preview_with_subtitle(
                     index=1,
                     start=timedelta(seconds=0),
                     end=timedelta(seconds=5),
-                    content="I did not expect that answer.\n我完全没想到会这样回答。",
+                    content=example,
                 )
             ]
         ),
