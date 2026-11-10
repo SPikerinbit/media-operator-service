@@ -1,31 +1,46 @@
-import { Aperture, AudioLines, Clapperboard, Settings2 } from 'lucide-react'
+import { BookOpen, Clapperboard, Settings2 } from 'lucide-react'
 import { MotionConfig } from 'motion/react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { errorMessage, request, type Settings as Preferences } from './api'
+import type { NoteHandoff, VideoTransfer } from './inbox'
 import { Knowledge } from './Knowledge'
-import { Settings } from './Settings'
-import { Video, type VideoTransfer } from './Video'
+import { Settings, type SettingsSection } from './Settings'
+import { Video } from './Video'
 import './styles.css'
 import './studio.css'
 
 const navigation = [
-  {id:'video',label:'素材处理',icon:Clapperboard},
-  {id:'knowledge',label:'字幕分析',icon:AudioLines},
-  {id:'settings',label:'设置',icon:Settings2},
+  { id: 'publish', label: '投稿', icon: Clapperboard },
+  { id: 'notes', label: '笔记', icon: BookOpen },
+  { id: 'settings', label: '设置', icon: Settings2 },
 ] as const
 type View = typeof navigation[number]['id']
+
+function viewFrom(hash: string): View {
+  if (hash === 'video' || hash === 'publish') return 'publish'
+  if (hash === 'knowledge' || hash === 'notes') return 'notes'
+  if (hash === 'settings') return 'settings'
+  return 'publish'
+}
+
 const initial = window.location.hash.slice(1).split('/')
-const initialView: View = navigation.some((entry) => entry.id === initial[0]) ? initial[0] as View : 'video'
+const initialView = viewFrom(initial[0] || '')
 
 function App() {
-  const [view,setView] = useState<View>(initialView)
-  const [settings,setSettings] = useState<Preferences|null>(null)
-  const [error,setError] = useState('')
-  const [transcript,setTranscript] = useState<number|null>(initialView === 'knowledge' && /^\d+$/.test(initial[1] || '') ? Number(initial[1]) : null)
-  const [transfer,setTransfer] = useState<VideoTransfer|null>(null)
-  const [visited,setVisited] = useState<View[]>(['video',initialView])
-  const scroll = useRef<HTMLElement>(null)
+  const [view, setView] = useState<View>(initialView)
+  const [settings, setSettings] = useState<Preferences | null>(null)
+  const [error, setError] = useState('')
+  const [settingsFocus, setSettingsFocus] = useState<SettingsSection>('general')
+  const [transcript, setTranscript] = useState<number | null>(initialView === 'notes' && /^\d+$/.test(initial[1] || '') ? Number(initial[1]) : null)
+  const [transfer, setTransfer] = useState<VideoTransfer | null>(null)
+  const [noteHandoff, setNoteHandoff] = useState<NoteHandoff | null>(null)
+  const [activity, setActivity] = useState({ publish: '', notes: '' })
+  const [visited, setVisited] = useState<View[]>(['publish', initialView])
+  const setPublishActivity = useCallback((line: string) => setActivity((current) => current.publish === line ? current : { ...current, publish: line }), [])
+  const setNotesActivity = useCallback((line: string) => setActivity((current) => current.notes === line ? current : { ...current, notes: line }), [])
+  const clearTransfer = useCallback(() => setTransfer(null), [])
+  const clearHandoff = useCallback(() => setNoteHandoff(null), [])
 
   useEffect(() => {
     const dark = window.matchMedia('(prefers-color-scheme: dark)')
@@ -46,50 +61,52 @@ function App() {
 
   useEffect(() => {
     let active = true
-    void request<Preferences>('/desktop/settings').then((data) => {
-      if (active) setSettings(data)
-    }).catch((e) => {if (active) setError(errorMessage(e))})
-    return () => {active = false}
-  },[])
+    void request<Preferences>('/desktop/settings').then((data) => { if (active) setSettings(data) })
+      .catch((reason) => { if (active) setError(errorMessage(reason)) })
+    return () => { active = false }
+  }, [])
 
   function show(next: View) {
     setView(next)
-    setVisited((values) => values.includes(next) ? values : [...values,next])
-    window.history.replaceState(null,'','#' + next)
+    setVisited((values) => values.includes(next) ? values : [...values, next])
+    window.history.replaceState(null, '', '#' + next)
   }
-  const clearTransfer = useCallback(() => setTransfer(null),[])
+  function openSettings(section: SettingsSection) {
+    setSettingsFocus(section)
+    show('settings')
+  }
+  const progress = view === 'publish' ? activity.publish : view === 'notes' ? activity.notes : ''
 
   return <MotionConfig reducedMotion="user">
     <a className="skip-link" href="#workspace">跳到工作区</a>
     <div className="shell">
-      <aside className="sidebar chrome">
-        <div className="brand"><div className="brand-mark"><Aperture size={23} strokeWidth={1.7}/></div>
-          <div><strong>Media Operator</strong><small>本地媒体工作台</small></div></div>
+      <aside className="sidebar">
         <nav aria-label="工作台">
-          <div className="nav-caption">工作区</div>
-          {navigation.map(({id,label,icon:Icon}) => <button type="button" key={id} className="nav-item"
-            title={label} aria-label={label} aria-current={view === id ? 'page' : undefined} onClick={() => show(id)}>
+          {navigation.map(({ id, label, icon: Icon }) => <button type="button" key={id} className="nav-item"
+            aria-label={label} aria-current={view === id ? 'page' : undefined} onClick={() => show(id)}>
             <Icon aria-hidden="true" size={18}/><span>{label}</span>
           </button>)}
         </nav>
-        <div className="sidebar-footer"><span className="local-dot"/><div>本机工作区<small>Windows 桌面版</small></div></div>
+        <p className="sidebar-progress" role="status">{progress}</p>
       </aside>
-      <div className="workarea">
-        <div className="topline chrome"><span>Media Operator</span><span className="topline-divider">/</span>
-          <strong>{navigation.find((entry) => entry.id === view)?.label}</strong><span className="version">0.4.1</span></div>
-      <main className="workspace thin-scroll" id="workspace" data-view={view} ref={scroll} tabIndex={-1}>
+      <main className="workspace thin-scroll" id="workspace" data-view={view} tabIndex={-1}>
         {error && <div className="notice error" role="alert">{error}</div>}
         <div className="workspace-content">
-          <div className="video-view" hidden={view !== 'video'}><Video settings={settings} transfer={transfer} onTransferUsed={clearTransfer}
-            onTranscript={(id) => {setTranscript(id);show('knowledge')}}/></div>
-          {visited.includes('knowledge') && <div className="knowledge-view" hidden={view !== 'knowledge'}>
-            <Knowledge settings={settings} transcriptId={transcript} onSettings={() => show('settings')}
-              onVideo={(value) => {setTransfer(value);show('video')}}/>
+          <div className="publish-view" hidden={view !== 'publish'}>
+            <Video settings={settings} transfer={transfer} onTransferUsed={clearTransfer} active={view === 'publish'}
+              onActivity={setPublishActivity} onSettings={openSettings}
+              onOpenNote={(note) => { setNoteHandoff(note); if (note.transcriptId) setTranscript(note.transcriptId); show('notes') }}/>
+          </div>
+          {visited.includes('notes') && <div className="notes-view" hidden={view !== 'notes'}>
+            <Knowledge settings={settings} transcriptId={transcript} incoming={noteHandoff} onIncomingUsed={clearHandoff}
+              active={view === 'notes'} onActivity={setNotesActivity} onSettings={openSettings}
+              onVideo={(value) => { setTransfer(value); show('publish') }}/>
           </div>}
-          {visited.includes('settings') && <div className="settings-view" hidden={view !== 'settings'}><Settings current={settings} update={setSettings}/></div>}
+          {visited.includes('settings') && <div className="settings-view" hidden={view !== 'settings'}>
+            <Settings current={settings} update={setSettings} focus={settingsFocus}/>
+          </div>}
         </div>
       </main>
-      </div>
     </div>
   </MotionConfig>
 }

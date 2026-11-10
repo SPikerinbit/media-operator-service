@@ -3,9 +3,11 @@ import { Captions, Globe2, ImagePlus, RotateCcw, Save, Send, SlidersHorizontal }
 import { request, type Settings, type SourceKind, type SourceProbe, type WorkflowStage } from './api'
 import { Button, Feedback, Field, Modal, Select, useActions } from './ui'
 
-export type Row = { id: string; source: string; kind: SourceKind; title?: string; transcriptId?: number; submitted?: boolean;
-  probe?: SourceProbe; terminal?: WorkflowStage; sessionId?: string; allowMuxed?: boolean; unknownAudio?: boolean;
-  continueFrom?: [string, string] }
+export type Row = { id: string; source: string; kind: SourceKind; title?: string; author?: string; site?: string;
+  transcriptId?: number; submitted?: boolean; probe?: SourceProbe; terminal?: WorkflowStage; sessionId?: string;
+  allowMuxed?: boolean; unknownAudio?: boolean; continueFrom?: [string, string]; fresh?: boolean; imageNote?: boolean;
+  images?: string[]; body?: string; translationUrl?: string; hold?: string; batchId?: string; itemId?: string;
+  expectedDuration?: number }
 export const sourceLanguages = [['auto','自动识别'],['zh','中文'],['en','英语'],['ja','日语'],['ko','韩语'],['fr','法语'],['de','德语'],['es','西班牙语']] as const
 export const defaultStyle = {
   font_family: 'Microsoft YaHei', font_size: 44, font_size_mode: 'manual', font_weight: 700,
@@ -224,7 +226,7 @@ const inspectorSections = [
 export type InspectorSection = typeof inspectorSections[number]['id']
 
 export function Inspector({ options, change, settings, row, rowLabel, perItem, onScope, reset, section, onSection,
-  defaultsReady, savingDefault, onSaveDefault, onResetDefault, defaultsOnly = false, terminal, batchExecution }: {
+  defaultsReady, savingDefault, onSaveDefault, onResetDefault, defaultsOnly = false, terminal, batchExecution, only }: {
   options: VideoOptions; change: (options: VideoOptions) => void; settings: Settings | null; row?: Row; rowLabel?: string
   perItem: boolean; onScope: (perItem: boolean) => void; reset: () => void
   section: InspectorSection; onSection: (section: InspectorSection) => void
@@ -233,6 +235,7 @@ export function Inspector({ options, change, settings, row, rowLabel, perItem, o
   defaultsOnly?: boolean
   terminal?: WorkflowStage
   batchExecution?: {concurrency: number; onChange: (value: number) => void}
+  only?: 'style' | 'publish'
 }) {
   const id = useId()
   const body = useRef<HTMLDivElement>(null)
@@ -240,10 +243,11 @@ export function Inspector({ options, change, settings, row, rowLabel, perItem, o
   const finishing = !terminal || terminal === 'burn' || terminal === 'bilibili_upload'
   const transcribing = terminal !== 'download'
   const translating = terminal === 'translate' || (finishing && options.subtitle_output_mode !== 'en_only')
-  const sections = defaultsOnly ? inspectorSections.slice(0,2) : inspectorSections.filter(({id}) =>
+  const sections = only ? inspectorSections.filter(({id}) => id === only) : defaultsOnly ? inspectorSections.slice(0,2) : inspectorSections.filter(({id}) =>
     id === 'output' || (id === 'style' && finishing) || (id === 'translation' && translating)
     || (id === 'publish' && (!terminal || terminal === 'bilibili_upload')))
-  if (!sections.some(({id}) => id === section)) section = 'output'
+  if (only) section = only
+  else if (!sections.some(({id}) => id === section)) section = 'output'
   function selectSection(next: InspectorSection) {
     if (next === section) return
     if (body.current) positions.current[section] = body.current.scrollTop
@@ -265,13 +269,13 @@ export function Inspector({ options, change, settings, row, rowLabel, perItem, o
   </div>
   return <div className="inspector-inner">
     <div className="inspector-controls">
-    {!defaultsOnly && <div className="segmented" role="group" aria-label="设置应用范围">
+    {!defaultsOnly && !only && <div className="segmented" role="group" aria-label="设置应用范围">
       <button type="button" aria-pressed={!perItem} onClick={() => onScope(false)}>批次默认</button>
       <button type="button" aria-pressed={perItem} disabled={!row} onClick={() => onScope(true)}>当前素材</button>
     </div>}
     {perItem && row && <div className="scope-note"><span title={rowLabel}>{rowLabel}</span>
       <Button size="xs" variant="ghost" onClick={reset}>恢复继承</Button></div>}
-    <div className="inspector-tabs" role="tablist" aria-label="参数分类">
+    {!only && <div className="inspector-tabs" role="tablist" aria-label="参数分类">
       {sections.map(({id: key,label,heading,icon: Icon},index) => <button
         type="button" key={key} id={id + '-tab-' + key} role="tab" aria-label={heading} title={heading}
         aria-selected={section === key} aria-controls={id + '-panel-' + key} tabIndex={section === key ? 0 : -1}
@@ -286,7 +290,7 @@ export function Inspector({ options, change, settings, row, rowLabel, perItem, o
           selectSection(destination)
           document.getElementById(id + '-tab-' + destination)?.focus({preventScroll:true})
         }}><Icon size={15} aria-hidden="true"/><span>{label}</span></button>)}
-    </div>
+    </div>}
     </div>
     <div className="inspector-scroll thin-scroll" ref={body}>
     <section id={id + '-panel-output'} role="tabpanel" aria-labelledby={id + '-tab-output'} tabIndex={0} hidden={section !== 'output'}>

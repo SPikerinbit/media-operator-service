@@ -890,3 +890,353 @@ def test_legacy_source_metadata_retained_when_refresh_fails(desktop_app, monkeyp
     (folder / "source-metadata.jsonl").write_text(json.dumps(metadata), encoding="utf-8")
     monkeypatch.setattr(media, "load_youtube_preview_metadata", lambda _: (_ for _ in ()).throw(RuntimeError("offline")))
     assert media.bilibili_source_metadata("https://youtu.be/FirstVideo1", media.public_file_url(folder.name, source.name)) == metadata
+
+
+DOUYIN_SHARE = ("4.35 复制打开抖音，看看【内语者TheInward的作品】宇宙想让你和谁在一起？这些迹象不是巧合，而是...... "
+                "https://v.douyin.com/aDqmydz7iGA/ z@T.YM 02/03 ipD:/ :1pm")
+XHS_SHARE = "没有创伤就没有魅力，最顶级的性张力就是破碎感 https://xhslink.cn/o/4LXLtDW6SVI 复制这段话，打开【小红书】就能找到对应笔记。"
+
+
+def test_share_text_parses_douyin_and_xiaohongshu_samples(desktop_app):
+    from app import share_text
+
+    client, _ = desktop_app
+    douyin, xhs = share_text.parse(DOUYIN_SHARE), share_text.parse(XHS_SHARE)
+    assert douyin == [{
+        "url": "https://v.douyin.com/aDqmydz7iGA/", "platform": "抖音", "author": "内语者TheInward",
+        "title": "宇宙想让你和谁在一起？这些迹象不是巧合，而是……", "source_kind": "url",
+        "duration": 275,
+    }]
+    assert xhs == [{
+        "url": "https://xhslink.cn/o/4LXLtDW6SVI", "platform": "小红书", "author": "",
+        "title": "没有创伤就没有魅力，最顶级的性张力就是破碎感", "source_kind": "url",
+    }]
+    response = client.post("/desktop/sources/parse", json={"text": DOUYIN_SHARE + "\n" + XHS_SHARE})
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == douyin + xhs
+    assert client.post("/desktop/sites/douyin/login").status_code == 409
+    sites = client.get("/desktop/sites").json()["sites"]
+    assert [item["site"] for item in sites] == ["douyin", "xiaohongshu"]
+    assert client.get("/desktop/settings").json()["site_logins"] == sites
+
+
+def test_short_link_classification_and_error_mapping(monkeypatch, tmp_path):
+    monkeypatch.setattr(media, "DATA_DIR", tmp_path)
+    from contextlib import nullcontext
+    from app import desktop_sources, site_profiles
+    from app.sites import resolve
+
+    douyin = "https://v.douyin.com/aDqmydz7iGA/"
+    xhs = "https://xhslink.cn/o/4LXLtDW6SVI"
+    assert resolve.classify(douyin)["kind"] == "short" and resolve.classify(douyin)["platform"] == "抖音"
+    assert resolve.classify(xhs)["form"] == "/o/" and resolve.classify(xhs)["platform"] == "小红书"
+    page = resolve.parse_document(
+        "https://www.douyin.com/share/video/7123456789012345678",
+        '<meta property="og:title" content="宇宙"><meta property="og:description" content="简介">'
+        '<meta name="author" content="内语者">',
+    )
+    assert page["video_id"] == page["aweme_id"] == "7123456789012345678"
+    assert page["canonical_url"] == "https://www.douyin.com/video/7123456789012345678"
+    assert page["title"] == "宇宙" and page["author"] == "内语者" and page["description"] == "简介"
+    note = resolve.parse_document(xhs, (
+        '<meta property="og:title" content="没有创伤就没有魅力"><meta property="og:description" content="破碎感">'
+        '"noteId":"64f0aabbccddeeff00112233","type":"normal",'
+        '"url":"https://sns-img.xhscdn.com/note.jpg"'
+    ))
+    assert note["note_id"] == "64f0aabbccddeeff00112233"
+    assert note["canonical_url"] == "https://www.xiaohongshu.com/explore/64f0aabbccddeeff00112233"
+    assert note["image_note"] is True and note["images"] == ["https://sns-img.xhscdn.com/note.jpg"]
+    video = resolve.parse_document("https://www.xiaohongshu.com/explore/64f0aabbccddeeff00112233",
+                                   '"type":"video","masterUrl":"https://sns-video.xhscdn.com/a.mp4"')
+    assert video["image_note"] is False and video["video_url"].endswith(".mp4")
+    assert resolve.parse_document("https://www.xiaohongshu.com/login", "login")["login_wall"] is True
+
+    detail = "WARNING: [Douyin] Failed to download web detail JSON: HTTP Error 403: Forbidden"
+    blocked = desktop_sources.extract_error(douyin, detail, has_session=True)
+    assert blocked.code == "site_blocked" and "抖音拒绝了详情接口" in str(blocked) and "已登录页面" in str(blocked)
+    assert "尚未登录抖音" in str(desktop_sources.extract_error(douyin, detail))
+    login = desktop_sources.extract_error(xhs, "ERROR: Unsupported URL: https://www.xiaohongshu.com/login?redirectPath=%2Fexplore")
+    assert login.code == "session_required" and "尚未登录小红书" in str(login) and "跳转到了登录页" in str(login)
+    missing = desktop_sources.extract_error(xhs, "ERROR: [XiaoHongShu] No video formats found!")
+    assert missing.code == "no_stream" and "未找到可用的视频流" in str(missing)
+
+    monkeypatch.setattr(desktop_sources, "public_target", lambda *args, **kwargs: None)
+    monkeypatch.setattr(desktop_sources, "public_proxy", lambda *args, **kwargs: nullcontext("http://media:secret@127.0.0.1:9"))
+    with desktop_sources.downloader(douyin, None) as (cmd, _folder):
+        assert cmd[cmd.index("--socket-timeout") + 1] == "60"
+        assert cmd[cmd.index("--extractor-retries") + 1] == "3"
+        assert cmd[cmd.index("--referer") + 1] == "https://www.douyin.com/"
+        assert any("deno" in part for part in cmd)
+    resolve.remember(douyin, "https://www.douyin.com/video/7123456789012345678")
+    assert knowledge.transcription_key("url", douyin, "auto", "small", "auto") == knowledge.transcription_key(
+        "url", "https://www.douyin.com/video/7123456789012345678", "auto", "small", "auto",
+    )
+    site_profiles.write_cookies("douyin", [".douyin.com\tTRUE\t/\tTRUE\t0\tsessionid\tabc"], True)
+    try:
+        assert "sessionid" in desktop_sources.cookies_for(douyin, "")
+        uploaded = desktop_sources.register_session(douyin, (
+            "# Netscape HTTP Cookie File\n.douyin.com\tTRUE\t/\tTRUE\t0\tname\tuploaded\n"
+        ).encode())
+        assert "uploaded" in desktop_sources.cookies_for(douyin, uploaded)
+        assert "sessionid" not in desktop_sources.cookies_for(douyin, uploaded)
+        desktop_sources.forget_session(uploaded)
+    finally:
+        site_profiles.logout("douyin")
+    assert desktop_sources.cookies_for(douyin, "") is None
+
+
+def _note_probe(value, *_args, **_kwargs):
+    from app import desktop_sources
+    if value.endswith("broken"):
+        raise desktop_sources.SourceError("no_stream", "媒体不可用")
+    return {"title": "图文", "media_type": "note", "platform": "小红书", "has_audio": False,
+            "audio_direct": False, "description": "正文", "body": "正文"}
+
+
+def test_image_notes_do_not_run_whisper(desktop_app, monkeypatch):
+    from app import desktop_sources
+
+    client, _ = desktop_app
+    calls = []
+
+    def runner(stage):
+        def run(job_id):
+            calls.append(stage)
+            filename = "artifact"
+            media.artifact_path(job_id, filename).write_bytes(b"1\n00:00:00,100 --> 00:00:02,000\nWords.\n")
+            media.report_stage_progress(job_id, stage, 100, "done", status="succeeded", force=True, result={
+                desktop_jobs.OUTPUTS[stage]: media.public_file_url(job_id, filename),
+                "asset_type": "audio",
+            })
+        return run
+
+    monkeypatch.setattr(desktop_sources, "probe", _note_probe)
+    for stage in desktop_jobs.RUNNERS:
+        monkeypatch.setitem(desktop_jobs.RUNNERS, stage, runner(stage))
+    payload = {"rights_confirmed": True, "knowledge_only": True, "subtitle_output_mode": "en_only", "sources": [{
+        "source_kind": "url", "source_value": "https://www.xiaohongshu.com/explore/note-sample",
+        "client_row_id": "note", "stop_after": "transcribe",
+    }]}
+    check = client.post("/desktop/batches/preflight", json=payload).json()["note"]
+    assert check["ready"] is True and check["planned_stages"] == ["download"] and check["media_type"] == "note"
+    response = client.post("/ui/batches", json=payload)
+    assert response.is_success, response.text
+    item = wait_batch(client, response.json()["batch_id"])["items"][0]
+    assert item["status"] == "succeeded", item
+    assert calls == ["download"]
+    transcript = knowledge.read_transcript(item["result"]["transcript_id"])
+    assert transcript["media_type"] == "note" and transcript["note_body"] == "图文"
+    assert "transcribe" not in calls
+
+
+def test_publish_pipeline_rejects_image_notes(desktop_app, monkeypatch):
+    from app import desktop_sources
+
+    client, _ = desktop_app
+    monkeypatch.setattr(desktop_sources, "probe", _note_probe)
+    payload = {"rights_confirmed": True, "subtitle_output_mode": "en_only", "sources": [{
+        "source_kind": "url", "source_value": "https://www.xiaohongshu.com/explore/note-sample",
+        "client_row_id": "note", "stop_after": "bilibili_upload",
+    }], "bilibili_upload": {"tid": 201, "copyright": 1}}
+    decision = client.post("/desktop/batches/preflight", json=payload).json()["note"]
+    assert decision["ready"] is False and decision["code"] == "note_only"
+    assert "没有可烧录的视频" in decision["message"]
+    rejected = client.post("/ui/batches", json=payload)
+    assert rejected.status_code == 409 and "没有可烧录的视频" in rejected.json()["detail"]
+
+
+def test_silent_video_is_not_an_ffmpeg_dump():
+    from app import desktop_sources
+
+    request = SimpleNamespace(audio_only=True, allow_muxed_audio=True)
+    try:
+        desktop_sources.finish_media(
+            Path("source.mp4"), {}, {"media_type": "video", "has_audio": False, "audio_direct": False},
+            request, Path("."),
+        )
+    except desktop_sources.SourceError as error:
+        assert "没有音轨" in str(error)
+        assert "ffmpeg version" not in str(error)
+    else:
+        raise AssertionError("silent video should fail before ffmpeg")
+
+
+def test_player_audio_track_is_separate_from_picture():
+    from app.sites.resolve import player_feature
+
+    aweme = "7659704469512359206"
+    picture = "https://v26-web.douyinvod.com/picture.mp4"
+    audio = "https://v26-web.douyinvod.com/speech.m4a"
+    payload = {"aweme_id": aweme, "video": {
+        "duration": 1923067,
+        "playAddr": [{"src": picture}],
+        "bitRateAudio": [
+            {"bitRate": 64000, "playAddr": [{"src": "https://cdn.example/low.m4a"}]},
+            {"bitRate": 128000, "playAddr": [{"src": audio}]},
+        ],
+    }}
+    chosen = player_feature(json.dumps(payload, ensure_ascii=False), aweme)
+    assert chosen["url"] == picture
+    assert chosen["audio_url"] == audio
+    assert chosen["duration"] == 1923.067 or abs(chosen["duration"] - 1923.067) < 0.01
+
+
+def test_player_feature_ignores_unrelated_preview():
+    from app.sites.resolve import player_feature
+    from app import desktop_sources
+
+    aweme = "7123456789012345678"
+    preview = "https://v9-web.douyinvod.com/preview.mp4"
+    feature = "https://v26-web.douyinvod.com/aweme/feature-high.mp4"
+    payload = {"list": [
+        {"aweme_id": "999000111222", "video": {"duration": 9000, "playAddr": [{"src": preview}]}},
+        {"aweme_id": aweme, "video": {
+            "duration": 275000,
+            "bitRateList": [
+                {"bitRate": 400000, "playAddr": [{"src": "https://cdn.example/low.mp4"}]},
+                {"bitRate": 2500000, "playAddr": [{"src": feature}]},
+            ],
+            "playAddr": [{"src": feature}],
+        }},
+    ]}
+    chosen = player_feature(json.dumps(payload, ensure_ascii=False), aweme)
+    assert chosen["url"] == feature
+    assert chosen["duration"] == 275
+    assert aweme not in preview
+    assert desktop_sources.duration_matches(9, 275) is False
+    assert desktop_sources.duration_matches(270, 275) is True
+    assert desktop_sources.duration_matches(1923, 275) is False
+
+
+def test_percent_encoded_render_data_yields_feature():
+    from urllib.parse import quote
+    from app.sites.resolve import format_notes, page_notes, player_feature
+
+    aweme = "7123456789012345678"
+    feature = "https://v26-web.douyinvod.com/aweme/feature-high.mp4"
+    payload = {"aweme_id": aweme, "video": {"duration": 275000, "playAddr": [{"src": feature}]}}
+    encoded = quote(json.dumps(payload, ensure_ascii=False), safe="")
+    html = f'<script id="RENDER_DATA" type="application/json">{encoded}</script>'
+    chosen = player_feature(html, aweme)
+    assert chosen["url"] == feature
+    assert chosen["duration"] == 275
+    notes = page_notes(html, f"https://www.douyin.com/video/{aweme}")
+    assert notes["render_data"] is True and notes["play_addr"] is True
+    assert "解码后play_addr=有" in format_notes(notes)
+    assert f"页面=https://www.douyin.com/video/{aweme}" in format_notes(notes)
+
+
+def test_player_entries_skip_short_preview(monkeypatch, tmp_path):
+    from app.sites.resolve import order_player_urls
+    from app import desktop_sources
+
+    preview = "https://v9-web.douyinvod.com/preview.mp4"
+    feature = "https://v26-web.douyinvod.com/aweme/feature-high.mp4"
+    play = "https://www.douyin.com/aweme/v1/play/?video_id=real"
+    ordered = order_player_urls(play, preview, [preview, feature])
+    assert ordered[0] == play
+    assert feature in ordered and preview in ordered
+    monkeypatch.setattr(media, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(media, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(desktop_sources, "prepare_social", lambda url, cookies: (
+        "https://www.douyin.com/video/7659704469512359206",
+        {"duration": 275, "video_url": ordered[0], "play_urls": ordered,
+         "page_notes": {"render_data": True, "play_addr": False, "page": "https://www.douyin.com/video/7659704469512359206"}},
+    ))
+    seen = []
+
+    def fake_direct(url, folder, cookies, progress, referer):
+        seen.append(url)
+        path = folder / "source.mp4"
+        path.write_bytes(b"media")
+        return path
+
+    monkeypatch.setattr(desktop_sources, "download_direct", fake_direct)
+    monkeypatch.setattr(desktop_sources, "inspect_file", lambda path: {
+        "media_type": "video", "has_audio": True, "audio_direct": False,
+        "duration": 9 if seen[-1] == preview or seen[-1] == play else 270,
+    })
+    request = media.StageDownloadRequest(
+        source_kind="url", source_value="https://v.douyin.com/aDqmydz7iGA/", rights_confirmed=True, managed=True,
+    )
+    _path, _info, actual = desktop_sources.download(
+        "stage_download_entries001", request, {"media_type": "video", "duration": 275}, "", lambda *_: None,
+    )
+    assert actual["duration"] == 270
+    assert feature in seen
+    assert seen.index(feature) > seen.index(play)
+
+
+def test_short_douyin_file_fails_before_transcription(monkeypatch, tmp_path):
+    from app import desktop_sources
+
+    monkeypatch.setattr(media, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(media, "JOBS_DIR", tmp_path / "jobs")
+    feature = "https://v26-web.douyinvod.com/aweme/feature-high.mp4"
+    monkeypatch.setattr(desktop_sources, "prepare_social", lambda url, cookies: (
+        "https://www.douyin.com/video/7123456789012345678",
+        {"canonical_url": "https://www.douyin.com/video/7123456789012345678", "duration": 275,
+         "video_url": feature, "play_urls": [feature]},
+    ))
+
+    def fake_direct(url, folder, cookies, progress, referer):
+        assert url == feature
+        path = folder / "source.mp4"
+        path.write_bytes(b"short")
+        return path
+
+    monkeypatch.setattr(desktop_sources, "download_direct", fake_direct)
+    monkeypatch.setattr(desktop_sources, "inspect_file", lambda path: {
+        "media_type": "video", "has_audio": True, "audio_direct": False, "duration": 9,
+    })
+    request = media.StageDownloadRequest(
+        source_kind="url", source_value="https://v.douyin.com/aDqmydz7iGA/", rights_confirmed=True, managed=True,
+    )
+    with pytest.raises(desktop_sources.SourceError, match="下载到的不是正片"):
+        desktop_sources.download("stage_download_short0001", request, {"media_type": "video", "duration": 275}, "", lambda *_: None)
+
+
+def test_retry_does_not_reuse_empty_douyin_subtitle(tmp_path, monkeypatch):
+    from app import desktop_jobs
+
+    monkeypatch.setattr(media, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(media, "JOBS_DIR", tmp_path / "jobs")
+    folder = tmp_path / "jobs" / "stage_transcribe_empty0001"
+    folder.mkdir(parents=True)
+    (folder / "english.srt").write_text("", encoding="utf-8")
+    item = SimpleNamespace(
+        platform="抖音", source_value="https://v.douyin.com/aDqmydz7iGA/", duration=275,
+        result={"duration": 8.98, "english_srt_url": "/files/stage_transcribe_empty0001/english.srt"},
+        stage_jobs={"download": "stage_download_old", "transcribe": "stage_transcribe_empty0001"},
+        stage_details={},
+    )
+    assert desktop_jobs.douyin_result_stale(item) is True
+    previous = SimpleNamespace(status="succeeded", request={}, result={
+        "duration": 9, "source_video_url": "/files/stage_download_old/source.mp4",
+        "english_srt_url": "/files/stage_transcribe_empty0001/english.srt",
+    })
+    assert desktop_jobs.reusable_stage(item, "download", previous, {}) is None
+    assert desktop_jobs.reusable_stage(item, "transcribe", previous, {}) is None
+
+
+def test_empty_transcription_is_not_success(monkeypatch, tmp_path):
+    monkeypatch.setattr(media, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(media, "JOBS_DIR", tmp_path / "jobs")
+    source_job = "stage_download_emptysource1"
+    folder = tmp_path / "jobs" / source_job
+    folder.mkdir(parents=True)
+    (folder / "source.mp4").write_bytes(b"source")
+    state = media.create_stage_job("transcribe", {"source_video_url": f"/files/{source_job}/source.mp4", "language": "auto"})
+
+    def empty_transcript(job_id, source_path, **kwargs):
+        path = media.artifact_path(job_id, "english.srt")
+        path.write_text("", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(media, "transcribe_video", empty_transcript)
+    media.run_stage_transcribe(state.job_id)
+    saved = json.loads(media.state_path(state.job_id).read_text(encoding="utf-8"))
+    assert saved["status"] == "failed"
+    assert saved["message"] == "字幕没有可用的时间戳片段"
+    assert "transcription completed" not in saved["message"]
+

@@ -56,15 +56,17 @@ def prepare():
 
 
 def application(origin, token):
-    from app import desktop_jobs, desktop_routes, knowledge
+    from app import desktop_jobs, desktop_routes, knowledge, workbench_inbox
     from app import main as media
 
     media.ensure_dirs()
     knowledge.initialize()
     desktop_routes.sync_credentials()
     desktop_jobs.recover_interrupted()
+    workbench_inbox.initialize()
     app = media.app
     app.include_router(desktop_routes.router)
+    app.include_router(workbench_inbox.router)
 
     @app.middleware("http")
     async def private_session(request: Request, call_next):

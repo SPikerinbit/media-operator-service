@@ -1,6 +1,7 @@
-import { BookOpen, Cpu, Download, FolderOpen, KeyRound, Save, SlidersHorizontal, Send, ChevronRight } from 'lucide-react'
+import { BookOpen, Cpu, Download, FolderOpen, KeyRound, LogIn, Save, SlidersHorizontal, Send, ChevronRight } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { native, request, saveAs, type LocalResources, type Settings as Preferences } from './api'
+import { native, request, saveAs, siteSession, type LocalResources, type Settings as Preferences, type SiteLogin } from './api'
+import { loginUrl, logoutSite, openSiteLogin, readSites, storeSiteSession, type LoginSite, type SiteId } from './siteSessions'
 import { Button, Busy, Disclosure, Feedback, Field, useActions } from './ui'
 import { Inspector, outputDefaults, savedVideoOptions, type VideoDefaults, type VideoOptions, type DefaultGroup, type InspectorSection } from './videoOptions'
 
@@ -8,15 +9,47 @@ const secretsList = [['BILI_SESSDATA','SESSDATA'],['BILI_JCT','bili_jct'],['BILI
   ['BILI_DEDEUSERID','DedeUserID'],['BILI_AC_TIME_VALUE','ac_time_value']] as const
 
 const categories = [
-  ['general','常规与目录',FolderOpen],['defaults','输出与字幕默认值',SlidersHorizontal],
+  ['general','常规与目录',FolderOpen],['sites','站点登录',LogIn],['defaults','输出与字幕默认值',SlidersHorizontal],
   ['resources','转录与本地资源',Cpu],['deepseek','DeepSeek',KeyRound],
   ['bilibili','B 站投稿',Send],['obsidian','Obsidian',BookOpen],
 ] as const
-type Category = typeof categories[number][0]
+export type SettingsSection = typeof categories[number][0]
+type Category = SettingsSection
 type SaveSection = 'directory'|'deepseek'|'gpu'|'bilibili'|'obsidian'
 
-export function Settings({ current, update }: { current: Preferences | null; update: (settings: Preferences) => void }) {
-  const [category,setCategory] = useState<Category>('general')
+export function Settings({ current, update, focus }: { current: Preferences | null; update: (settings: Preferences) => void; focus?: Category }) {
+  const [category,setCategory] = useState<Category>(focus || 'general')
+  const loginInput = useRef<HTMLInputElement>(null)
+  const loginSite = useRef<LoginSite>('抖音')
+  const [sites, setSites] = useState<SiteLogin[]>(() => current?.site_logins?.length ? current.site_logins : [
+    { site: 'douyin', platform: '抖音', logged_in: false, logging_in: false },
+    { site: 'xiaohongshu', platform: '小红书', logged_in: false, logging_in: false },
+  ])
+  const rememberSite = (status: SiteLogin) => setSites((list) => list.some((item) => item.site === status.site)
+    ? list.map((item) => item.site === status.site ? status : item) : [...list, status])
+  useEffect(() => { if (focus) setCategory(focus) }, [focus])
+  useEffect(() => {
+    let alive = true
+    void readSites().then((data) => { if (alive && data.sites.length) setSites(data.sites) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+  useEffect(() => {
+    if (!current?.site_logins?.length) return
+    setSites((local) => current.site_logins!.map((item) => {
+      const previous = local.find((entry) => entry.site === item.site)
+      return previous?.logging_in ? previous : item
+    }))
+  }, [current?.site_logins])
+  useEffect(() => {
+    const onSite = (event: Event) => {
+      const detail = (event as CustomEvent<SiteLogin>).detail
+      if (!detail?.site) return
+      setSites((list) => list.some((item) => item.site === detail.site)
+        ? list.map((item) => item.site === detail.site ? detail : item) : [...list, detail])
+    }
+    window.addEventListener('site-login', onSite)
+    return () => window.removeEventListener('site-login', onSite)
+  }, [])
   const [defaults,setDefaults] = useState<VideoDefaults|null>(null)
   const lastDefaults = useRef<VideoDefaults|null>(null)
   const [options,setOptions] = useState<VideoOptions>(() => savedVideoOptions(null))
@@ -115,6 +148,22 @@ export function Settings({ current, update }: { current: Preferences | null; upd
   }
   const saveButton = (section:SaveSection) => <Button variant="secondary" leadingIcon={Save} disabled={Boolean(saving) || !current}
     onClick={() => save(section)}>{saving === section ? '保存中' : '保存设置'}</Button>
+  function signIn(site: SiteId) {
+    perform(async () => {
+      let detail = ''
+      const done = await openSiteLogin(site, rememberSite, (text) => { detail = text; setNotice({ text, error: true }) })
+      rememberSite(done)
+      if (done.logged_in) setNotice({ text: done.platform + '已登录' })
+      else if (!detail) setNotice({ text: done.platform + '未完成登录', error: true })
+    })
+  }
+  function signOut(site: SiteId) {
+    perform(async () => {
+      const status = await logoutSite(site)
+      rememberSite(status)
+      setNotice({ text: '已退出' + status.platform })
+    })
+  }
   return <>
     <div className="workspace-heading"><div><h1>设置</h1></div></div>
     <div className="settings-layout">
@@ -124,14 +173,43 @@ export function Settings({ current, update }: { current: Preferences | null; upd
       </nav>
       <div className="settings-body thin-scroll">
       <Feedback notice={notice}/>
-      <section className="surface settings-panel defaults-settings" hidden={category !== 'defaults'}>
+      <section className="settings-panel" hidden={category !== 'sites'}>
+        <h2>站点登录</h2>
+        <p className="muted">在桌面窗口登录抖音或小红书。登录后，投稿和笔记会读取该站点。</p>
+        <ul className="form-stack resource-list" aria-label="站点登录状态">
+          {sites.map((status) => <li key={status.site}><span>{status.platform}</span>
+            <span>{status.logging_in ? '正在登录' : status.logged_in ? '已登录' : '未登录'}</span></li>)}
+        </ul>
+        <div className="toolbar">
+          {sites.map((status) => status.logged_in && !status.logging_in
+            ? <Button key={status.site} variant="secondary" onClick={() => signOut(status.site)}>退出{status.platform}</Button>
+            : <Button key={status.site} variant="secondary" disabled={status.logging_in} onClick={() => signIn(status.site)}>登录{status.platform}</Button>)}
+        </div>
+        <p className="muted">也可以导入 Netscape Cookie。一小时内，这份登录供对应站点的链接使用。</p>
+        <div className="toolbar">
+          <Button variant="ghost" size="small" onClick={() => { loginSite.current = '抖音'; loginInput.current?.click() }}>导入抖音 Cookie</Button>
+          <Button variant="ghost" size="small" onClick={() => { loginSite.current = '小红书'; loginInput.current?.click() }}>导入小红书 Cookie</Button>
+        </div>
+        <input ref={loginInput} hidden type="file" accept=".txt,text/plain" aria-label="选择本站 Cookie 文件" onChange={(event) => {
+          const file = event.target.files?.[0]
+          const site = loginSite.current
+          event.target.value = ''
+          if (!file) return
+          perform(async () => {
+            const sessionId = await siteSession(loginUrl[site], file)
+            storeSiteSession(site, sessionId)
+            setNotice({ text: '已读取' + site + ' Cookie，一小时内的链接会使用这次登录。' })
+          })
+        }}/>
+      </section>
+      <section className="settings-panel defaults-settings" hidden={category !== 'defaults'}>
         <h2>输出与字幕默认值</h2><p className="muted">新批次使用这里的默认值。工作台的「重置」会回到已保存的默认值。</p>
         <Inspector defaultsOnly options={options} change={setOptions} settings={current} perItem={false} onScope={() => {}} reset={() => {}}
           section={defaultSection} onSection={setDefaultSection} defaultsReady={Boolean(defaults)} savingDefault={savingDefault}
           onSaveDefault={saveDefault} onResetDefault={(group) => setOptions((value) => ({...value,
             ...(group === 'output' ? outputDefaults(savedVideoOptions(defaults)) : {subtitle_style:savedVideoOptions(defaults).subtitle_style})}))}/>
       </section>
-      <section className="surface settings-panel" hidden={category !== 'obsidian'}>
+      <section className="settings-panel" hidden={category !== 'obsidian'}>
         <div className="section-heading"><div className="section-icon"><BookOpen size={18}/></div><h2>Obsidian 知识库</h2></div>
         <p className="muted">选择已经打开过的 Vault。发布的观点和来源笔记会写入其中的 Media Operator 文件夹。</p>
         <div className="path-row"><Field label="Vault 根目录"><input value={vault} readOnly placeholder="尚未选择" /></Field>
@@ -140,7 +218,7 @@ export function Settings({ current, update }: { current: Preferences | null; upd
           })}>选择 Vault</Button></div>
         <div className="toolbar">{saveButton('obsidian')}{vault && <Button variant="ghost" size="small" onClick={() => setVault('')}>解除连接</Button>}</div>
       </section>
-      <section className="surface settings-panel" hidden={category !== 'general'}>
+      <section className="settings-panel" hidden={category !== 'general'}>
         <div className="section-heading"><div className="section-icon"><FolderOpen size={18}/></div><h2>本地资料</h2></div>
         <p className="muted">任务、媒体和待发布草稿保存在此目录。切换目录需要重启应用。</p>
         <div className="path-row"><Field label="资料目录"><input value={dataDir} readOnly/></Field>
@@ -152,7 +230,7 @@ export function Settings({ current, update }: { current: Preferences | null; upd
           if (await saveAs('MediaOperator-diagnostics.json',{format:'diagnostics'})) setNotice({text:'已导出脱敏诊断'})
         })}>导出脱敏诊断</Button>
       </section>
-      <section className="surface settings-panel" hidden={category !== 'deepseek'}>
+      <section className="settings-panel" hidden={category !== 'deepseek'}>
         <div className="section-heading"><div className="section-icon"><KeyRound size={18}/></div><h2>DeepSeek</h2></div>
         <p className="muted">用于字幕翻译、原话摘录与投稿信息生成。密钥由 Windows 凭据管理器保存。</p>
         <form className="form-stack" onSubmit={(event) => {event.preventDefault();save('deepseek')}}>
@@ -163,7 +241,7 @@ export function Settings({ current, update }: { current: Preferences | null; upd
             {saving === 'deepseek' ? '保存中' : '保存 DeepSeek 设置'}</Button></div>
         </form>
       </section>
-      <section className="surface settings-panel" hidden={category !== 'resources'}>
+      <section className="settings-panel" hidden={category !== 'resources'}>
         <div className="section-heading"><div className="section-icon"><Download size={18}/></div><h2>本地资源与环境</h2></div>
         <p className="muted">准备模型后可离线转录。检测会实际启动媒体工具并核验 NVIDIA 推理环境。</p>
         <Button variant="secondary" size="small" disabled={checking} onClick={() => perform(async () => {
@@ -187,7 +265,7 @@ export function Settings({ current, update }: { current: Preferences | null; upd
           </li>)}
         </ul>
       </section>
-      <section className="surface settings-panel" hidden={category !== 'resources'}>
+      <section className="settings-panel" hidden={category !== 'resources'}>
         <div className="section-heading"><div className="section-icon"><Cpu size={18}/></div><h2>转录加速</h2></div>
         <p className="muted">启用后，自动模式优先使用 NVIDIA 批量转录。GPU 不可用时会用 CPU 重试。</p>
         {current?.gpu.running ? <Busy>{current.gpu.message || '正在准备 NVIDIA 运行库'}</Busy> : <>
@@ -205,7 +283,7 @@ export function Settings({ current, update }: { current: Preferences | null; upd
           {saveButton('gpu')}
         </>}
       </section>
-      <section className="surface settings-panel" hidden={category !== 'bilibili'}>
+      <section className="settings-panel" hidden={category !== 'bilibili'}>
         <div className="section-heading"><div className="section-icon"><KeyRound size={18}/></div><h2>B 站投稿</h2></div>
         <p className="muted">{current?.has_bilibili_credentials ? '已保存投稿凭据。' : '配置后可在视频制作中启用投稿。'}</p>
         <Disclosure title="投稿凭据"><div className="form-stack">{secretsList.map(([key,name]) => fieldSecret(key,name,'留空保留已保存内容'))}</div></Disclosure>

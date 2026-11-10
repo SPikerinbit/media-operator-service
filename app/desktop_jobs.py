@@ -1,6 +1,7 @@
 
 """Run the existing media stages directly and checkpoint their artifacts."""
 from pathlib import Path
+import json
 import threading
 
 from fastapi import HTTPException
@@ -31,18 +32,58 @@ DOWNLOAD_CONTEXTS = {}
 
 def download_context(request):
     context = DOWNLOAD_CONTEXTS.get((request.operator_batch_id, request.operator_item_id))
-    return context or (desktop_sources.probe(request.source_value, request.source_kind), None)
+    if context:
+        return context
+    return (desktop_sources.probe(request.source_value, request.source_kind),
+            desktop_sources.cookies_for(request.source_value, ""))
+
+
+def same_source(left, right):
+    if left == right:
+        return True
+    from app.sites.resolve import identity
+    return identity(left) == identity(right)
 
 
 def reuse_source(source):
     if not source.continue_from:
         return None
     _, previous = batch_item(*source.continue_from)
-    if (previous.status != "succeeded" or previous.source_value != source.source_value
+    if (previous.status != "succeeded" or not same_source(previous.source_value, source.source_value)
             or previous.source_kind != source.source_kind or previous.media_type != "video"
             or not (previous.result or {}).get("transcript_id")):
         raise ValueError("原任务没有可继续处理的字幕")
     return previous
+
+
+def reusable_media(cache_key, need_video):
+    found = knowledge.cached_id(cache_key)
+    if not found:
+        return None
+    record = knowledge.read_transcript(found)
+    playable = record.get("playable")
+    if not playable:
+        return None
+    path = Path(playable)
+    try:
+        path.resolve().relative_to(media.JOBS_DIR.resolve())
+    except (OSError, ValueError):
+        return None
+    if not path.is_file():
+        return None
+    kind = path.suffix.lower().lstrip(".")
+    video = kind in desktop_sources.VIDEO_EXTS
+    audio = kind in desktop_sources.AUDIO_EXTS
+    if video or (audio and not need_video):
+        return record, path
+    return None
+
+
+def with_share_duration(info, source):
+    hint = getattr(source, "expected_duration", None)
+    if not hint:
+        return info
+    return {**info, "share_duration": hint, "duration": info.get("duration") or hint}
 
 
 def plan_batch(request):
@@ -55,8 +96,17 @@ def plan_batch(request):
         row_id = source.client_row_id
         info = {}
         try:
-            info = desktop_sources.probe(source.source_value, source.source_kind, source.session_id)
+            info = with_share_duration(
+                desktop_sources.probe(source.source_value, source.source_kind, source.session_id), source)
             media_type = info["media_type"]
+            if media_type == "note":
+                if not request.knowledge_only:
+                    raise desktop_sources.SourceError("note_only", "没有可烧录的视频。请改到笔记。")
+                planned[row_id] = {
+                    "ready": True, "title": info.get("title"), "media_type": "note", "stop_after": "download",
+                    "planned_stages": ["download"], "platform": info.get("platform"), "duration": info.get("duration"),
+                }
+                continue
             stop = source.stop_after or ("transcribe" if request.knowledge_only else "bilibili_upload")
             if media_type != "video":
                 stop = "transcribe"
@@ -80,7 +130,7 @@ def plan_batch(request):
                 explicit = request.transcript_ids.get(row_id)
                 if explicit:
                     transcript = knowledge.read_transcript(explicit)
-                    if transcript["source"] != source.source_value or transcript["source_kind"] != source.source_kind:
+                    if not same_source(transcript["source"], source.source_value) or transcript["source_kind"] != source.source_kind:
                         raise ValueError("所选字幕与来源不匹配")
                     if inference == "gpu_only" and not previous:
                         raise ValueError("严格 GPU 模式需要重新转录，请直接添加素材")
@@ -118,19 +168,89 @@ def batch_item(batch_id, item_id):
     return batch, item
 
 
+def douyin_item(item):
+    return (getattr(item, "platform", "") == "抖音") or "douyin.com" in (getattr(item, "source_value", "") or "")
+
+
+def douyin_result_stale(item):
+    if not douyin_item(item):
+        return False
+    result = item.result or {}
+    subtitle = result.get("english_srt_url")
+    if subtitle:
+        try:
+            _, path = media.resolve_local_artifact_from_url(subtitle)
+            knowledge.load_cues(path)
+        except Exception:
+            return True
+    expected = item.duration
+    actual = result.get("duration")
+    if expected and actual is not None and not desktop_sources.duration_matches(actual, expected):
+        return True
+    return False
+
+
+def reusable_stage(item, stage, previous, payload):
+    if previous.status != "succeeded":
+        return None
+    if stage != "bilibili_upload" and any(previous.request.get(key) != value for key, value in payload.items()):
+        return None
+    result = previous.result or {}
+    if stage == "transcribe":
+        try:
+            _, path = media.resolve_local_artifact_from_url(result["english_srt_url"])
+            knowledge.load_cues(path)
+        except Exception:
+            return None
+    if stage == "download" and douyin_item(item):
+        expected = item.duration
+        actual = result.get("duration")
+        if expected and actual is not None and not desktop_sources.duration_matches(actual, expected):
+            return None
+    if stage in OUTPUTS:
+        try:
+            media.resolve_local_artifact_from_url(result[OUTPUTS[stage]])
+        except (FileNotFoundError, ValueError, KeyError):
+            return None
+    return result
+
+
 def stage_result(batch_id, item_id, stage, payload, transcript_id=None):
+    from app import workbench_cache as cache
+    cache.initialize()
+    batch, item = batch_item(batch_id, item_id)
+    if stage == 'bilibili_upload' or (stage == 'transcribe' and payload.get('whisper_inference_mode') == 'gpu_only'):
+        return _stage_result_uncached(batch_id, item_id, stage, payload, transcript_id)
+    key = cache.signature(stage, item.source_value, payload)
+    lane = 'notes' if batch.request.get('knowledge_only') else 'publish'
+    def waiting():
+        media.update_batch_item(batch_id, item_id, stage=stage, message='等待已有任务完成可共享步骤')
+    with cache.flight(key, waiting):
+        found = cache.read(key)
+        if not found and stage == 'download' and payload.get('audio_only'):
+            found = cache.read(cache.signature(stage, item.source_value, {**payload, 'audio_only': False}))
+        if found:
+            _, current = batch_item(batch_id, item_id)
+            steps = current.planned_stages or list(RUNNERS)
+            progress = min(79 if batch.request.get('notes_auto') else 99, round((steps.index(stage)+1)/len(steps)*100)) if stage in steps else current.progress
+            media.update_batch_item(batch_id, item_id, stage=stage, status='running', progress=max(current.progress, progress),
+                                    message='已复用' + {'download':'源媒体','transcribe':'原文字幕','translate':'译文','burn':'成片'}.get(stage,stage),
+                                    stage_details={**current.stage_details, stage: {'status':'succeeded','progress':100,'reused':True,'origin_lane':found['lane']}})
+            return {**found['result'], 'reuse': [{'stage': stage, 'origin_lane': found['lane']}]}
+        result = _stage_result_uncached(batch_id, item_id, stage, payload, transcript_id)
+        cache.save(key, stage, lane, result)
+        return result
+
+
+def _stage_result_uncached(batch_id, item_id, stage, payload, transcript_id=None):
     _, item = batch_item(batch_id, item_id)
     payload = {**payload, "operator_batch_id": batch_id, "operator_item_id": item_id}
     previous_id = item.stage_jobs.get(stage)
     if previous_id:
         try:
             previous = media.load_state(previous_id)
-            if previous.status == "succeeded" and (stage == "bilibili_upload" or all(
-                previous.request.get(key) == value for key, value in payload.items()
-            )):
-                result = previous.result or {}
-                if stage in OUTPUTS:
-                    media.resolve_local_artifact_from_url(result[OUTPUTS[stage]])
+            result = reusable_stage(item, stage, previous, payload)
+            if result is not None:
                 return result
         except (FileNotFoundError, ValueError, KeyError):
             pass
@@ -157,6 +277,73 @@ def stage_result(batch_id, item_id, stage, payload, transcript_id=None):
         error = finished.error or {}
         raise RuntimeError(error.get("message") or finished.message)
     return finished.result or {}
+
+
+def note_material(result, item):
+    body = result.get("body") or ""
+    images = []
+    try:
+        _, path = media.resolve_local_artifact_from_url(result["source_video_url"])
+    except (KeyError, ValueError, OSError):
+        return body or item.source_title or "图文笔记", []
+    meta = path.with_name("note.json")
+    if meta.is_file():
+        try:
+            data = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        body = data.get("body") or body
+        root = media.DATA_DIR.resolve()
+        for name in data.get("images") or []:
+            image = (path.parent / str(name)).resolve()
+            if image.is_file() and root in image.parents:
+                images.append(str(image))
+    return body or item.source_title or result.get("title") or "图文笔记", images
+
+
+def ensure_note_srt(result, body):
+    _, path = media.resolve_local_artifact_from_url(result["source_video_url"])
+    target = path.with_name("note.srt")
+    text = " ".join((body or "").split()).replace("-->", "—")[:4000] or "图文笔记"
+    target.write_text(f"1\n00:00:00,000 --> 00:00:01,000\n{text}\n\n", encoding="utf-8")
+    return target
+
+
+def finish_note(batch_id, item_id, item, result, download_payload, transcript_id, explicit_transcripts,
+                cache_key, source_title, output_name, run):
+    if explicit_transcripts.get(item.client_row_id) and transcript_id:
+        transcript = knowledge.read_transcript(transcript_id)
+        if not same_source(transcript["source"], item.source_value) or transcript["source_kind"] != item.source_kind:
+            raise ValueError("所选字幕与来源不匹配")
+    if not transcript_id:
+        run("download", download_payload)
+        body, images = note_material(result, item)
+        transcript_id = knowledge.register(
+            ensure_note_srt(result, body), source_kind=item.source_kind, source=item.source_value,
+            title=source_title or result.get("title") or "图文笔记", cache_key=cache_key,
+            media_type="note", asset_type="note", note_body=body, note_images=images,
+        )
+        result["body"] = body
+    else:
+        record = knowledge.read_transcript(transcript_id)
+        result["body"] = record.get("note_body") or result.get("body") or ""
+        result["title"] = result.get("title") or record.get("title") or source_title
+    result.update(transcript_id=transcript_id, media_type="note", asset_type="note", has_audio=False)
+    batch, _ = batch_item(batch_id, item_id)
+    if batch.request.get('notes_auto'):
+        from app import workbench_notes
+        path = media.artifact_path('note_' + str(transcript_id), 'body.srt')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Sequential slots are an internal translation transport only; UI references remain paragraphs.
+        cues = knowledge.read_transcript(transcript_id)['cues']
+        import srt
+        from datetime import timedelta
+        path.write_text(srt.compose([srt.Subtitle(c['number'],timedelta(seconds=c['number']*2),timedelta(seconds=c['number']*2+1),c['text']) for c in cues]), encoding='utf-8')
+        result['english_srt_url'] = media.public_file_url(path.parent.name, path.name)
+        workbench_notes.complete(batch_id, item_id, result, batch.request, run)
+    result.setdefault("images", [])
+    media.update_batch_item(batch_id, item_id, status="succeeded", stage="done", progress=100,
+                            message="图文笔记已保存", result={**result, "output_name": output_name}, clear_error=True)
 
 
 def run_item(batch_id, item_id):
@@ -194,7 +381,11 @@ def run_item(batch_id, item_id):
         def run(name, payload, transcript_id=None):
             nonlocal stage, source_title
             stage = name
-            result.update(stage_result(batch_id, item_id, name, payload, transcript_id))
+            output = stage_result(batch_id, item_id, name, payload, transcript_id)
+            reuse = [*(result.get('reuse') or []), *(output.pop('reuse', []) or [])]
+            result.update(output)
+            if reuse:
+                result['reuse'] = reuse
             if name == "download":
                 source_title = media.source_display_title(item.source_kind, item.source_value, result.get("title") or "") or source_title
             media.update_batch_item(batch_id, item_id, result={**result, "output_name": output_name},
@@ -211,6 +402,10 @@ def run_item(batch_id, item_id):
         if source:
             download_payload.update(managed=True, allow_muxed_audio=source.allow_muxed_audio,
                                     retain_cover="burn" in planned)
+        if item.media_type == "note":
+            finish_note(batch_id, item_id, item, result, download_payload, transcript_id, explicit_transcripts,
+                        cache_key, source_title, output_name, run)
+            return
         original = previous.result if previous else {}
         existing = original.get("source_video_url") if original.get("asset_type") == "video" else None
         if existing:
@@ -218,6 +413,17 @@ def run_item(batch_id, item_id):
                 media.resolve_local_artifact_from_url(existing)
             except (ValueError, OSError):
                 existing = None
+        if not existing and inference != "gpu_only":
+            reused = reusable_media(cache_key, not download_payload["audio_only"])
+            if reused:
+                record, path = reused
+                existing = media.public_file_url(path.parent.name, path.name)
+                original = {
+                    "source_video_url": existing, "source_media_url": existing, "title": record.get("title") or "",
+                    "asset_type": "video" if path.suffix.lower().lstrip(".") in desktop_sources.VIDEO_EXTS else "audio",
+                    "has_audio": True,
+                }
+                transcript_id = transcript_id or record["id"]
         if existing:
             result.update({key: original[key] for key in ("source_video_url", "source_media_url", "title",
                            "original_description", "asset_type", "duration", "has_audio") if key in original})
@@ -236,7 +442,7 @@ def run_item(batch_id, item_id):
             raise ValueError("下载产物没有可用音轨，无法提取字幕")
         if explicit_transcripts.get(item.client_row_id):
             transcript = knowledge.read_transcript(transcript_id)
-            if transcript["source"] != item.source_value or transcript["source_kind"] != item.source_kind:
+            if not same_source(transcript["source"], item.source_value) or transcript["source_kind"] != item.source_kind:
                 raise ValueError("所选字幕与视频来源不匹配")
         run("transcribe", {
             "source_video_url": result["source_video_url"], "language": language, "whisper_model": model,
@@ -250,7 +456,7 @@ def run_item(batch_id, item_id):
             if not transcript_id:
                 transcript_id = knowledge.register(
                     srt_path, source_kind=item.source_kind, source=item.source_value,
-                    title=source_title or {"youtube": "YouTube 视频", "bilibili": "B 站视频"}.get(item.source_kind, "本地媒体"),
+                    title=source_title or item.platform or {"youtube": "YouTube 视频", "bilibili": "B 站视频"}.get(item.source_kind, "在线素材"),
                     playable=source_path, cache_key=cache_key,
                     media_type=item.media_type, asset_type=result.get("asset_type"),
                 )
@@ -261,7 +467,7 @@ def run_item(batch_id, item_id):
             result["transcript_id"] = transcript_id
 
         translate = "translate" in planned if managed else not knowledge_only and mode != "en_only"
-        if translate:
+        if translate and not batch.request.get('notes_auto'):
             run("translate", {
                 "english_srt_url": result["english_srt_url"],
                 **{key: settings[key] for key in (
@@ -270,6 +476,10 @@ def run_item(batch_id, item_id):
                 ) if key in settings},
                 **({"subtitle_output_mode": "bilingual"} if mode == "en_only" else {}),
             })
+        if batch.request.get('notes_auto') and transcript_id:
+            from app import workbench_notes
+            stage = 'extract'
+            workbench_notes.complete(batch_id, item_id, result, settings, run)
         burn = "burn" in planned if managed else not knowledge_only
         if burn:
             run("burn", {
@@ -337,8 +547,9 @@ def submit_desktop_batch(request):
                  for row_id, plan in decisions.items()}
         contexts = {}
         for source in request.sources:
-            info = desktop_sources.probe(source.source_value, source.source_kind, source.session_id)
-            contexts[source.client_row_id] = (info, desktop_sources.session_for(source.source_value, source.session_id))
+            info = with_share_duration(
+                desktop_sources.probe(source.source_value, source.source_kind, source.session_id), source)
+            contexts[source.client_row_id] = (info, desktop_sources.cookies_for(source.source_value, source.session_id))
             source.source_title = str(info.get("title") or source.source_title)[:500]
         batch = media.create_batch(request, plans)
         for item in batch.items:
@@ -530,13 +741,21 @@ def retry(batch_id, item_id, confirmed, session_id=""):
             raise HTTPException(409, "任务当前无法重试")
         if item.stage == "bilibili_upload":
             return queue_history_uploads(batch_id, [item_id], confirmed)
-        if session_id:
+        if douyin_result_stale(item):
+            kept = {key: value for key, value in item.stage_jobs.items() if key not in {"download", "transcribe", "translate"}}
+            details = {key: value for key, value in (item.stage_details or {}).items()
+                       if key not in {"download", "transcribe", "translate"}}
+            media.update_batch_item(batch_id, item_id, stage_jobs=kept, stage_details=details, result={},
+                                    stage="download", progress=0, message="重新下载抖音正片")
+            batch, item = batch_item(batch_id, item_id)
+        if session_id or desktop_sources.cookies_for(item.source_value, ""):
             try:
-                info = desktop_sources.probe(item.source_value, item.source_kind, session_id)
+                info = desktop_sources.probe(item.source_value, item.source_kind, session_id, refresh=True)
                 DOWNLOAD_CONTEXTS[batch_id, item_id] = (
-                    info, desktop_sources.session_for(item.source_value, session_id),
+                    info, desktop_sources.cookies_for(item.source_value, session_id),
                 )
-                desktop_sources.forget_session(session_id)
+                if session_id:
+                    desktop_sources.forget_session(session_id)
             except desktop_sources.SourceError as error:
                 raise HTTPException(400, str(error)) from error
         updated = media.update_batch_item(batch_id, item_id, status="queued", message="等待重试", clear_error=True)

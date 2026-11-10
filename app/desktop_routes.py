@@ -1,5 +1,6 @@
 
 """Desktop-only HTTP endpoints for the two workspaces."""
+import json
 import os
 from pathlib import Path
 import shutil
@@ -15,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app import desktop_config as config, desktop_gpu as gpu, desktop_jobs as jobs, desktop_models, knowledge, obsidian
 from app import main as media
-from app import desktop_sources
+from app import desktop_sources, share_text, site_profiles
 
 router = APIRouter(prefix="/desktop")
 GENERATING = set()
@@ -51,6 +52,7 @@ def settings():
         "gpu_ready": config.gpu_ready(gpu_path),
         "gpu_install_dir": str(gpu_path.parent),
         "gpu": dict(gpu.PROGRESS),
+        "site_logins": site_profiles.status_all()["sites"],
     }
 
 
@@ -224,11 +226,58 @@ def get_source_title(request: media.SourceInput):
 def probe_source(request: media.SourceInput, refresh: bool = False):
     try:
         info = desktop_sources.probe(request.source_value, request.source_kind, request.session_id, refresh=refresh)
-        return {"ready": True, **{key: info.get(key) for key in
-                ("title", "platform", "media_type", "duration", "has_audio", "audio_direct")},
-                "description": str(info.get("description") or "")[:5000]}
+        payload = {"ready": True, **{key: info.get(key) for key in
+                   ("title", "platform", "media_type", "duration", "has_audio", "audio_direct")},
+                   "description": str(info.get("description") or "")[:5000]}
+        if info.get("author"):
+            payload["author"] = info["author"]
+        if info.get("canonical_url"):
+            payload["canonical_url"] = info["canonical_url"]
+        if info.get("body"):
+            payload["body"] = str(info["body"])[:20000]
+        return payload
     except desktop_sources.SourceError as error:
         return {"ready": False, "code": error.code, "message": str(error)}
+
+
+class ShareText(BaseModel):
+    text: str = Field(min_length=1, max_length=100000)
+
+
+@router.post("/sources/parse")
+def parse_sources(request: ShareText):
+    return {"items": share_text.parse(request.text)}
+
+
+@router.get("/sites")
+def site_status():
+    return site_profiles.status_all()
+
+
+@router.get("/sites/{site}")
+def one_site(site: str):
+    try:
+        return site_profiles.status(site)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@router.post("/sites/{site}/login")
+def start_site_login(site: str):
+    try:
+        return site_profiles.start_login(site)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@router.delete("/sites/{site}")
+def site_logout(site: str):
+    try:
+        return site_profiles.logout(site)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
 
 
 @router.post("/sources/session")
@@ -347,6 +396,14 @@ def transcript(transcript_id: int):
     playable = data.pop("playable")
     data.pop("cache_key")
     data.pop("digest")
+    body = data.pop("note_body", None) or ""
+    raw_images = data.pop("note_images", None) or "[]"
+    try:
+        images = json.loads(raw_images) if isinstance(raw_images, str) else list(raw_images or [])
+    except (TypeError, ValueError):
+        images = []
+    data["body"] = body
+    data["images"] = [f"/desktop/knowledge/{transcript_id}/images/{index}" for index, _ in enumerate(images, 1)]
     data["playable"] = bool(playable and Path(playable).is_file())
     if data["playable"] and not data.get("asset_type"):
         try:
@@ -354,6 +411,16 @@ def transcript(transcript_id: int):
         except (ValueError, OSError, subprocess.SubprocessError):
             pass
     return data
+
+
+@router.get("/knowledge/{transcript_id}/images/{index}")
+def note_image(transcript_id: int, index: int):
+    try:
+        path = knowledge.note_image(transcript_id, index)
+    except FileNotFoundError as error:
+        raise HTTPException(404, "找不到图片") from error
+    kinds = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif"}
+    return FileResponse(path, media_type=kinds.get(path.suffix.lower(), "application/octet-stream"))
 
 
 @router.get("/knowledge/{transcript_id}/media")
@@ -446,7 +513,7 @@ class Export(BaseModel):
 def diagnostics():
     return {
         "application": "Media Operator Desktop",
-        "version": "0.4.1",
+        "version": "0.5.0",
         "platform": os.name,
         "ffmpeg_available": Path(media.FFMPEG_BIN).is_file(),
         "yt_dlp_available": Path(media.YT_DLP_BIN).is_file(),

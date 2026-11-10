@@ -2,10 +2,13 @@ export type SourceKind = 'local' | 'youtube' | 'bilibili' | 'url'
 export const sourceNames = { local: '本地媒体', youtube: 'YouTube', bilibili: 'B 站', url: '在线素材', subtitle: '字幕文件' }
 export const workflow = [['download','导入'],['transcribe','字幕'],['translate','翻译'],['burn','成片'],['bilibili_upload','投稿']] as const
 export type WorkflowStage = typeof workflow[number][0]
-export type MediaType = 'audio' | 'video' | 'unknown'
+export type MediaType = 'audio' | 'video' | 'unknown' | 'image' | 'note'
 export type SourceProbe = { ready: true; title?: string; platform: string; media_type: MediaType;
-  duration: number | null; has_audio: boolean; audio_direct: boolean; description?: string } |
-  { ready: false; code: string; message: string }
+  duration: number | null; has_audio: boolean; audio_direct: boolean; description?: string;
+  images?: string[]; body?: string; author?: string; canonical_url?: string } |
+  { ready: false; code: string; message: string; images?: string[]; body?: string }
+export type ParsedSource = { url: string; platform: string; author: string; title: string; source_kind: Exclude<SourceKind, 'local'>; duration?: number }
+export type SiteLogin = { site: 'douyin' | 'xiaohongshu'; platform: string; logged_in: boolean; logging_in: boolean }
 export type Preflight = Record<string, { ready: true; title: string; planned_stages: WorkflowStage[] } |
   { ready: false; title: string; message: string; code: string }>
 
@@ -19,6 +22,10 @@ export async function siteSession(source: string, file: File) {
   body.set('source', source)
   body.set('file', file)
   return (await request<{session_id: string}>('/desktop/sources/session', 'POST', body)).session_id
+}
+
+export function parseSources(text: string) {
+  return request<{ items: ParsedSource[] }>('/desktop/sources/parse', 'POST', { text })
 }
 
 export function videoLinkKind(value: string): Exclude<SourceKind, 'local'> {
@@ -77,6 +84,7 @@ export type Settings = {
   gpu_ready: boolean
   gpu_install_dir: string
   gpu: { running: boolean; message: string }
+  site_logins?: SiteLogin[]
 }
 export type LocalResources = {
   models: {name:string; available:boolean; size:number; download:{running?:boolean; percent?:number; message?:string}}[]
@@ -87,7 +95,7 @@ export type TranscriptSummary = { id: number; title: string; source_kind: Source
 export type Cue = { number: number; start_ms: number; end_ms: number; text: string }
 export type Draft = { id: number; claim: string; evidence: string; example: string; quote_translation: string; refs: number[] }
 export type Transcript = TranscriptSummary & { source: string; playable: boolean; media_type?: MediaType;
-  asset_type?: 'audio' | 'video'; cues: Cue[]; cards: Draft[] }
+  asset_type?: 'audio' | 'video' | 'note'; cues: Cue[]; cards: Draft[]; images?: string[]; body?: string; description?: string }
 export type Publication = {
   card_id: number; title?: string; status: 'published' | 'already_published' | 'failed';
   publication_id?: string; cleared?: boolean; message?: string;

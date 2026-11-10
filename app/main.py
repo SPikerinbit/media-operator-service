@@ -210,7 +210,7 @@ SubtitleBilingualOrder = Literal["en_top_zh_bottom", "zh_top_en_bottom"]
 WhisperInferenceMode = Literal["standard", "batched", "auto_repair", "auto", "gpu_only"]
 BurnEncoder = Literal["auto", "nvenc", "cpu"]
 SourceKind = Literal["youtube", "bilibili", "local", "url"]
-MediaType = Literal["audio", "video", "unknown"]
+MediaType = Literal["audio", "video", "unknown", "note"]
 WorkflowStage = Literal["download", "transcribe", "translate", "burn", "bilibili_upload"]
 BatchItemStatus = Literal["queued", "running", "succeeded", "failed"]
 BilibiliCopyright = Literal[1, 2]
@@ -267,6 +267,7 @@ class SourceInput(BaseModel):
     source_value: str = Field(default="")
     client_row_id: str = Field(default="", max_length=128)
     source_title: str = Field(default="", max_length=500)
+    expected_duration: float | None = Field(default=None, ge=0, le=21600)
     stop_after: WorkflowStage | None = None
     allow_muxed_audio: bool = False
     session_id: str = Field(default="", exclude=True)
@@ -558,6 +559,8 @@ class StageBilibiliUploadRequest(BaseModel):
 
 
 class BatchCreateRequest(BaseModel):
+    notes_auto: bool = False
+    notes_mode: Literal['curated', 'comprehensive'] = 'curated'
     knowledge_only: bool = False
     source_language: str = Field(default="auto", pattern=r"^(auto|[a-z]{2,3})$")
     transcript_ids: dict[str, int] = Field(default_factory=dict)
@@ -1355,6 +1358,10 @@ def sync_stage_to_batch(
         batch_progress = min(99, round(100 * (
             current.planned_stages.index(stage) + local_progress / 100
         ) / len(current.planned_stages)))
+    if DESKTOP and batch.request.get('notes_auto'):
+        ranges = {'download': (0, 15), 'transcribe': (15, 60), 'translate': (60, 80)}
+        lower, upper = ranges.get(stage, (0, 80))
+        batch_progress = max(current.progress, min(99, round(lower + (upper-lower)*local_progress/100)))
     batch_message = "completed" if is_terminal_upload_success else message
     batch_result = state.result if is_terminal_upload_success else None
     update_batch_item(
@@ -1852,17 +1859,24 @@ def yt_dlp_network_flags(url: str) -> list[str]:
 
 
 def online_media_error(url: str, diagnostics: str) -> str:
-    site = "B 站" if video_url_kind(url) == "bilibili" else "YouTube"
     reason = diagnostics.lower()
+    if DESKTOP:
+        from app.desktop_sources import extract_error, site as site_of
+        label = site_of(url)[0] or ("B 站" if video_url_kind(url) == "bilibili" else "YouTube")
+        recognized = extract_error(url, diagnostics)
+        if label in {"抖音", "小红书"} and recognized.code in {"site_blocked", "session_required", "no_stream"}:
+            return str(recognized)
+    else:
+        label = "B 站" if video_url_kind(url) == "bilibili" else "YouTube"
     if any(term in reason for term in ("10061", "connection refused", "actively refused", "proxyerror")):
-        return f"无法连接到{site}。请检查 Windows 系统代理或网络连接后重试。"
+        return f"无法连接到{label}。请检查 Windows 系统代理或网络连接后重试。"
     if any(term in reason for term in ("timed out", "timeout", "getaddrinfo", "failed to establish", "network is unreachable")):
-        return f"连接{site}超时或网络不可达，请检查网络后重试。"
+        return f"连接{label}超时或网络不可达，请检查网络后重试。"
     if "sign in" in reason or "login required" in reason:
-        return f"{site}要求登录或验证，此链接暂时无法读取。"
+        return f"{label}要求登录或验证，此链接暂时无法读取。"
     if "unavailable" in reason or "private video" in reason:
-        return f"{site}上的视频暂不可用，请确认链接仍可访问。"
-    return f"读取{site}素材失败，请核对链接后重试。详细信息已记录。"
+        return f"{label}上的视频暂不可用，请确认链接仍可访问。"
+    return f"读取{label}素材失败，请核对链接后重试。详细信息已记录。"
 
 
 def download_youtube(
@@ -3634,11 +3648,16 @@ def run_stage_download(job_id: str) -> None:
                     pass
             path.with_name("source-metadata.jsonl").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
             url = public_file_url(job_id, path.name)
-            report_stage_progress(job_id, "download", 100, "素材已导入", status="succeeded", force=True, result={
+            downloaded = {
                 "source_video_url": url, "source_media_url": url, "result_url": url,
-                "title": metadata["title"] or path.stem, "original_description": metadata["description"],
+                "title": metadata.get("title") or ("" if actual["media_type"] == "note" else path.stem),
+                "original_description": metadata["description"],
                 "asset_type": actual["media_type"], "duration": actual["duration"], "has_audio": actual["has_audio"],
-            })
+            }
+            if actual["media_type"] == "note":
+                downloaded.update(media_type="note", body=info.get("body") or "", author=info.get("author") or "",
+                                  images=[public_file_url(job_id, name) for name in info.get("image_names") or []])
+            report_stage_progress(job_id, "download", 100, "素材已导入", status="succeeded", force=True, result=downloaded)
             return
         completion_message = "download completed"
 
@@ -3745,6 +3764,11 @@ def run_stage_transcribe(job_id: str) -> None:
             result["timing_diagnostics_url"] = public_file_url(job_id, diagnostics_path.name)
         if runtime_path.exists():
             result["transcribe_runtime_url"] = public_file_url(job_id, runtime_path.name)
+        from app import knowledge
+        try:
+            knowledge.load_cues(srt_path)
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
         report_stage_progress(job_id, "transcribe", 100, "transcription completed", status="succeeded", result=result, force=True)
     except Exception as error:
         fail_job(job_id, "transcribe", error)
