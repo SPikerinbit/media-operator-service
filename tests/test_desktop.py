@@ -159,6 +159,47 @@ def wait_batch(client, batch_id):
     pytest.fail("batch did not settle")
 
 
+def test_video_defaults_are_saved_independently(desktop_app, monkeypatch, tmp_path):
+    client, _ = desktop_app
+    config = desktop_routes.config
+    path = tmp_path / "settings.json"
+    existing = {"data_dir": "D:/资料目录", "ai_model": "deepseek-chat", "gpu_enabled": True}
+    path.write_text(json.dumps(existing), encoding="utf-8")
+    monkeypatch.setattr(config, "HOME", tmp_path)
+    monkeypatch.setattr(config, "SETTINGS", path)
+    monkeypatch.setattr(config, "settings", lambda: json.loads(path.read_text(encoding="utf-8")))
+    endpoint = "/desktop/video-defaults"
+    assert client.get(endpoint).json() == {"output": None, "subtitle_style": None}
+    output = {"whisper_model": "large-v3-turbo", "aspect_ratio": "9:16", "output_name_prefix": "成片"}
+    response = client.put(endpoint, json={"output": output})
+    assert response.is_success and response.json()["subtitle_style"] is None
+    style = {"font_family": "Source Han Sans CN", "font_size": 52, "background_enabled": True}
+    response = client.put(endpoint, json={"subtitle_style": style})
+    saved = response.json()
+    assert response.is_success and saved == client.get(endpoint).json()
+    assert {key: saved["output"][key] for key in output} == output
+    assert {key: saved["subtitle_style"][key] for key in style} == style
+    assert client.put(endpoint, json={"output": {"whisper_model": "large-v4"}}).status_code == 422
+    assert client.get(endpoint).json() == saved
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        **existing, "video_output_defaults": saved["output"], "video_subtitle_style_defaults": saved["subtitle_style"],
+    }
+
+
+def test_turbo_resource_can_be_selected_and_downloaded(desktop_app, monkeypatch):
+    client, root = desktop_app
+    model_name = "large-v3-turbo"
+    models = client.get("/ui/whisper-models").json()["models"]
+    assert next(model for model in models if model["name"] == model_name)["available"] is False
+    called = []
+    monkeypatch.setattr(desktop_routes.desktop_models, "prepare", lambda data, name, proxy: called.append((data, name)))
+    response = client.post(f"/desktop/resources/models/{model_name}")
+    assert response.is_success and called == [(root, model_name)]
+    resource = next(model for model in response.json()["models"] if model["name"] == model_name)
+    assert resource["preferred_path"] == str(root / "models" / "faster-whisper-large-v3-turbo")
+    assert resource["size"] == 1617884929
+
+
 def test_missing_model_blocks_before_download(desktop_app, monkeypatch):
     client, root = desktop_app
     model = root / "models" / "faster-whisper-large-v3"

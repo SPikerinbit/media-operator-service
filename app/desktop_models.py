@@ -16,16 +16,24 @@ MODELS = {
                "9b45e1009dcc4ab601eff815b61d80e60ce3fd8c74c1a14f4a282258286b51ae", 2257),
     "large-v3": ("edaa852ec7e145841d8ffdb056a99866b5f0a478", 3087284237,
                  "69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1", 2394),
+    "large-v3-turbo": ("0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf", 1617884929,
+                       "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da", 2263),
 }
+TURBO_REPO = "dropbox-dash/faster-whisper-large-v3-turbo"
 LOCK = threading.Lock()
 PROGRESS: dict[str, dict] = {}
 
 
 def metadata(name):
-    if name == "large-v3":
-        return {"config.json": 2394, "tokenizer.json": 2480617,
+    if name in {"large-v3", "large-v3-turbo"}:
+        return {"config.json": MODELS[name][3],
+                "tokenizer.json": 2710337 if name == "large-v3-turbo" else 2480617,
                 "preprocessor_config.json": 340, "vocabulary.json": 1068114}
     return {"config.json": MODELS[name][3], "tokenizer.json": 2203239, "vocabulary.txt": 459861}
+
+
+def model_repo(name):
+    return TURBO_REPO if name == "large-v3-turbo" else f"Systran/faster-whisper-{name}"
 
 
 def matches(path, size):
@@ -40,9 +48,13 @@ def status(data, name):
         raise ValueError("不支持的 Whisper 模型")
     root = data / "models"
     preferred = root / f"faster-whisper-{name}"
-    cache = root / "huggingface" / "hub" / f"models--Systran--faster-whisper-{name}" / "snapshots"
     revision, size, _, _ = MODELS[name]
-    candidates = [preferred, root / (preferred.name + "-verified"), root / name, cache / revision]
+    hub = root / "huggingface" / "hub"
+    repositories = [model_repo(name)]
+    if name == "large-v3-turbo":
+        repositories.append("mobiuslabsgmbh/faster-whisper-large-v3-turbo")
+    candidates = [preferred, root / (preferred.name + "-verified"), root / name]
+    candidates.extend(hub / ("models--" + repo.replace("/", "--")) / "snapshots" / revision for repo in repositories)
     required = {"model.bin": size, **metadata(name)}
     local = next((path for path in candidates if all(matches(path / file, length)
                                                     for file, length in required.items())), None)
@@ -95,7 +107,7 @@ def download_weights(client, url, destination, size, checksum, progress):
 def _prepare(data, name, proxy, target):
     revision, size, checksum, _ = MODELS[name]
     directory = target.parent / f".download-{name}"
-    base = f"https://huggingface.co/Systran/faster-whisper-{name}/resolve/{revision}/"
+    base = f"https://huggingface.co/{model_repo(name)}/resolve/{revision}/"
 
     def progress(percent):
         with LOCK:

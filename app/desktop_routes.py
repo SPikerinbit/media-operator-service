@@ -11,7 +11,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app import desktop_config as config, desktop_gpu as gpu, desktop_jobs as jobs, desktop_models, knowledge, obsidian
 from app import main as media
@@ -68,6 +68,53 @@ def save_settings(preferences: Preferences):
     except (ValueError, OSError) as error:
         raise HTTPException(400, str(error)) from error
     return settings()
+
+
+class OutputDefaults(BaseModel):
+    source_language: str = Field(default="auto", pattern=r"^(auto|[a-z]{2,3})$")
+    target_lang: str = Field(default="zh-CN", max_length=80)
+    whisper_model: str = "small"
+    whisper_inference_mode: media.WhisperInferenceMode = "auto"
+    subtitle_output_mode: media.SubtitleOutputMode = "en_only"
+    aspect_ratio: media.AspectRatio = "source"
+    resolution: media.Resolution = "best"
+    fps: media.Fps = "source"
+    output_name_mode: media.OutputNameMode = "sequence"
+    output_name_prefix: str = Field(default="", max_length=255)
+
+    @field_validator("whisper_model")
+    @classmethod
+    def supported_model(cls, name):
+        if name not in desktop_models.MODELS:
+            raise ValueError("不支持的 Whisper 模型")
+        return name
+
+
+class VideoDefaults(BaseModel):
+    output: OutputDefaults | None = None
+    subtitle_style: media.SubtitleStyle | None = None
+
+
+@router.get("/video-defaults")
+def video_defaults():
+    preferences = config.settings()
+    return {"output": preferences.get("video_output_defaults"),
+            "subtitle_style": preferences.get("video_subtitle_style_defaults")}
+
+
+@router.put("/video-defaults")
+def save_video_defaults(defaults: VideoDefaults):
+    changes = {}
+    if defaults.output is not None:
+        changes["video_output_defaults"] = defaults.output.model_dump()
+    if defaults.subtitle_style is not None:
+        changes["video_subtitle_style_defaults"] = defaults.subtitle_style.model_dump()
+    if changes:
+        try:
+            config.update(changes, {})
+        except OSError as error:
+            raise HTTPException(400, "无法写入默认值，请检查设置目录") from error
+    return video_defaults()
 
 
 class GpuInstall(BaseModel):

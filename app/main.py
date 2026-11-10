@@ -4463,7 +4463,11 @@ def media_ui() -> Response:
 
 @app.get("/ui/whisper-models")
 def ui_whisper_models() -> dict[str, Any]:
-    models = ["base", "small", "medium", "large-v3"]
+    if DESKTOP:
+        from app.desktop_models import MODELS
+        models = list(MODELS)
+    else:
+        models = ["base", "small", "medium", "large-v3"]
     return {
         "default": WHISPER_MODEL,
         "default_inference_mode": WHISPER_INFERENCE_MODE,

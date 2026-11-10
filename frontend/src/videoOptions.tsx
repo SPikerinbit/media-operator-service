@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Captions, Globe2, ImagePlus, RotateCcw, Send, SlidersHorizontal } from 'lucide-react'
+import { Captions, Globe2, ImagePlus, RotateCcw, Save, Send, SlidersHorizontal } from 'lucide-react'
 import { leaf, request, type Settings, type SourceKind } from './api'
 import { Button, Feedback, Field, Modal, Select, useActions } from './ui'
 
@@ -17,13 +17,27 @@ export const defaultBili = {
   source: '', title_template: '', line: 'QN', collection_type: 'none', collection_id: '',
   cover_mode: 'source_cover', cover_source: 'frame', cover_time_percent: 50, cover_asset_url: '',
 }
-export const defaultOptions = {
+const defaultOutput = {
   source_language: 'auto', target_lang: 'zh-CN', whisper_model: 'small', whisper_inference_mode: 'auto',
-  subtitle_output_mode: 'en_only', translate_model: '', aspect_ratio: 'source', resolution: 'best', fps: 'source',
-  output_name_mode: 'sequence', output_name_prefix: '', translation_context_profile_id: '',
+  subtitle_output_mode: 'en_only', aspect_ratio: 'source', resolution: 'best', fps: 'source',
+  output_name_mode: 'sequence', output_name_prefix: '',
+}
+const defaultOptions = {
+  ...defaultOutput, translate_model: '', translation_context_profile_id: '',
   translation_context_note: '', translation_glossary: '', subtitle_style: defaultStyle, bilibili_upload: defaultBili,
 }
 export type VideoOptions = typeof defaultOptions
+export type DefaultGroup = 'output' | 'subtitle_style'
+export type VideoDefaults = {output: Partial<typeof defaultOutput> | null; subtitle_style: Partial<typeof defaultStyle> | null}
+
+export function outputDefaults(options: VideoOptions): typeof defaultOutput {
+  return Object.fromEntries(Object.keys(defaultOutput).map((key) =>
+    [key, options[key as keyof typeof defaultOutput]])) as typeof defaultOutput
+}
+
+export function savedVideoOptions(defaults: VideoDefaults | null): VideoOptions {
+  return {...defaultOptions, ...defaults?.output, subtitle_style: {...defaultStyle, ...defaults?.subtitle_style}}
+}
 export type Override = Omit<Partial<VideoOptions>, 'subtitle_style' | 'bilibili_upload'> & {
   subtitle_style?: Partial<typeof defaultStyle>; bilibili_upload?: Partial<typeof defaultBili>
 }
@@ -214,10 +228,13 @@ const inspectorSections = [
 ] as const
 export type InspectorSection = typeof inspectorSections[number]['id']
 
-export function Inspector({ options, change, settings, row, perItem, onScope, reset, section, onSection }: {
+export function Inspector({ options, change, settings, row, perItem, onScope, reset, section, onSection,
+  defaultsReady, savingDefault, onSaveDefault, onResetDefault }: {
   options: VideoOptions; change: (options: VideoOptions) => void; settings: Settings | null; row?: Row;
   perItem: boolean; onScope: (perItem: boolean) => void; reset: () => void
   section: InspectorSection; onSection: (section: InspectorSection) => void
+  defaultsReady: boolean; savingDefault: DefaultGroup | null
+  onSaveDefault: (group: DefaultGroup) => void; onResetDefault: (group: DefaultGroup) => void
 }) {
   const id = useId()
   const body = useRef<HTMLDivElement>(null)
@@ -233,6 +250,12 @@ export function Inspector({ options, change, settings, row, perItem, onScope, re
   const range = (label: string, key: 'font_size'|'outline_width'|'shadow'|'y_offset_percent'|'max_width_percent'|'line_spacing'|'background_opacity'|'background_padding',
     min: number, max: number, step = 1) => <Field label={label + ' · ' + style[key]}><input type="range" min={min} max={max}
       step={step} value={style[key]} onChange={(e) => setStyle(key,Number(e.target.value))}/></Field>
+  const defaultsActions = (group: DefaultGroup) => <div className="toolbar compact">
+    {!perItem && <Button size="small" variant="secondary" leadingIcon={Save} disabled={!defaultsReady || Boolean(savingDefault)}
+      onClick={() => onSaveDefault(group)}>{savingDefault === group ? '保存中' : '设为默认'}</Button>}
+    <Button size="small" variant="ghost" leadingIcon={RotateCcw} disabled={!defaultsReady || Boolean(savingDefault)}
+      onClick={() => onResetDefault(group)}>{group === 'output' ? '重置输出' : '重置字幕样式'}</Button>
+  </div>
   return <div className="inspector-inner">
     <div className="inspector-controls">
     <div className="segmented" role="group" aria-label="设置应用范围">
@@ -262,6 +285,7 @@ export function Inspector({ options, change, settings, row, perItem, onScope, re
     <section id={id + '-panel-output'} role="tabpanel" aria-labelledby={id + '-tab-output'} tabIndex={0} hidden={section !== 'output'}>
       <h3>转录与输出</h3>
     <div className="form-stack">
+      {defaultsActions('output')}
       <Field label="字幕输出"><Select value={options.subtitle_output_mode} onChange={(v) => set('subtitle_output_mode',v)}
         options={[[ 'en_only','原文字幕' ],[ 'zh_only','译文字幕' ],[ 'bilingual','双语字幕' ]]}/></Field>
       <Field label="素材语言"><Select value={options.source_language} onChange={(v) => set('source_language',v)} options={sourceLanguages}/></Field>
@@ -270,7 +294,8 @@ export function Inspector({ options, change, settings, row, perItem, onScope, re
       {options.subtitle_output_mode !== 'en_only' && <Field label="译文目标语言"><input value={options.target_lang} onChange={(e) => set('target_lang',e.target.value)} /></Field>}
         <div className="inspector-divider">高级参数</div>
         <Field label="Whisper 模型"><Select value={options.whisper_model} onChange={(v) => set('whisper_model',v)}
-          options={[[ 'small','small · 推荐' ],['base','base'],['medium','medium'],['large-v3','large-v3']]}/></Field>
+          options={[[ 'small','small · 推荐' ],['base','base'],['medium','medium'],['large-v3','large-v3'],
+            ['large-v3-turbo','large-v3-turbo']]}/></Field>
         <Field label="推理模式"><Select value={options.whisper_inference_mode} onChange={(v) => set('whisper_inference_mode',v)}
           options={[[ 'auto','自动 · NVIDIA 加速优先' ],['gpu_only','严格 GPU · 仅本地模型'],[ 'standard','精准' ],['auto_repair','自动补漏'],['batched','快速']]}/></Field>
         <Field label="下载清晰度"><Select value={options.resolution} onChange={(v) => set('resolution',v)}
@@ -286,6 +311,7 @@ export function Inspector({ options, change, settings, row, perItem, onScope, re
     <section id={id + '-panel-style'} role="tabpanel" aria-labelledby={id + '-tab-style'} tabIndex={0} hidden={section !== 'style'}>
       <h3>字幕样式</h3>
       <div className="form-stack">
+        {defaultsActions('subtitle_style')}
         <Field label="字体"><input list={id + '-subtitle-fonts'} value={style.font_family}
           onChange={(e) => setStyle('font_family',e.target.value)} /></Field>
         <datalist id={id + '-subtitle-fonts'}>
@@ -320,7 +346,6 @@ export function Inspector({ options, change, settings, row, perItem, onScope, re
           <Field label="背景颜色"><input type="color" value={style.background_color} onChange={(e) => setStyle('background_color',e.target.value)}/></Field>
           {range('背景不透明度 %','background_opacity',0,90)}{range('背景内边距','background_padding',0,32)}
         </>}
-        <Button size="small" variant="ghost" leadingIcon={RotateCcw} onClick={() => set('subtitle_style',defaultStyle)}>重置字幕样式</Button>
       </div>
     </section>
     <section id={id + '-panel-translation'} role="tabpanel" aria-labelledby={id + '-tab-translation'} tabIndex={0} hidden={section !== 'translation'}>

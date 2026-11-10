@@ -1,5 +1,5 @@
 
-#define AppVersion "0.2.7"
+#define AppVersion "0.2.8"
 [Setup]
 AppId={{102997A8-6D84-4A52-B13E-9F5E9F29DD64}
 AppName=Media Operator

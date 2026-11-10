@@ -3,7 +3,8 @@ import { motion, Reorder, useDragControls } from 'motion/react'
 import { useEffect, useState } from 'react'
 import { errorMessage, leaf, native, request, saveAs, sourceNames, videoLinkKind, watchBatch, labels, type Batch, type History, type Item, type Settings, type SourceKind, type UploadCandidate } from './api'
 import { Button, Busy, Feedback, Field, Modal, Select, StateChip, useActions } from './ui'
-import { defaultOptions, getOverride, Inspector, resolveOptions, videoPayload, type InspectorSection, type Override, type Row, type VideoOptions } from './videoOptions'
+import { getOverride, Inspector, outputDefaults, resolveOptions, savedVideoOptions, videoPayload,
+  type DefaultGroup, type InspectorSection, type Override, type Row, type VideoDefaults, type VideoOptions } from './videoOptions'
 
 const steps = [['download','导入'],['transcribe','转录'],['translate','翻译'],['burn','压制'],['bilibili_upload','投稿']]
 export type VideoTransfer = { id: number; source: string; kind: SourceKind }
@@ -49,7 +50,9 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
   const [rows, setRows] = useState<Row[]>([])
   const [dragStart, setDragStart] = useState<string[]>([])
   const [selectedId, setSelectedId] = useState('')
-  const [base, setBase] = useState<VideoOptions>(defaultOptions)
+  const [defaults, setDefaults] = useState<VideoDefaults | null>(null)
+  const [batchEdits, setBatchEdits] = useState<Override>({})
+  const [savingDefault, setSavingDefault] = useState<DefaultGroup | null>(null)
   const [overrides, setOverrides] = useState<Record<string, Override>>({})
   const [perItem, setPerItem] = useState(false)
   const [inspector, setInspector] = useState(false)
@@ -75,9 +78,19 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
   const [framePosition, setFramePosition] = useState(50)
   const [previewBusy, setPreviewBusy] = useState(false)
   const { notice, setNotice, perform } = useActions()
+  const saved = savedVideoOptions(defaults)
+  const base = resolveOptions(saved, batchEdits)
   const row = rows.find((entry) => entry.id === selectedId)
   const options = resolveOptions(base, perItem && row ? overrides[row.id] : undefined)
   const item = batch?.items.find((entry) => entry.item_id === selectedTask) || batch?.items[0]
+
+  useEffect(() => {
+    let active = true
+    void request<VideoDefaults>('/desktop/video-defaults').then((data) => {
+      if (active) setDefaults(data)
+    }).catch((error) => {if (active) setNotice({error: true, text: errorMessage(error)})})
+    return () => {active = false}
+  }, [setNotice])
 
   useEffect(() => {
     const query = window.matchMedia('(max-width: 1150px)')
@@ -223,14 +236,32 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
     })
   }
   function updateOptions(value: VideoOptions) {
-    if (!perItem || !row) setBase(value)
+    if (!perItem || !row) setBatchEdits(getOverride(saved,value))
     else setOverrides((current) => ({...current,[row.id]:getOverride(base,value)}))
+  }
+  function saveDefault(group: DefaultGroup) {
+    if (!defaults || perItem || savingDefault) return
+    perform(async () => {
+      setSavingDefault(group)
+      try {
+        const payload = group === 'output' ? {output:outputDefaults(base)} : {subtitle_style:base.subtitle_style}
+        const next = await request<VideoDefaults>('/desktop/video-defaults','PUT',payload)
+        setDefaults(next)
+        setBatchEdits((edits) => getOverride(savedVideoOptions(next),resolveOptions(saved,edits)))
+        setNotice({text: group === 'output' ? '已保存默认输出参数' : '已保存默认字幕样式'})
+      } finally {setSavingDefault(null)}
+    })
+  }
+  function resetDefault(group: DefaultGroup) {
+    updateOptions({...options, ...(group === 'output' ? outputDefaults(saved) : {subtitle_style:saved.subtitle_style})})
+    setNotice({text: group === 'output' ? '已恢复默认输出参数' : '已恢复默认字幕样式'})
   }
   function showHistory(id: string) {
     setBatchId(id); setBatch(null); setSelectedTask(''); setUploadPlan(null)
   }
   const inspectorContent = <Inspector options={options} change={updateOptions} settings={settings} row={row} perItem={perItem}
     section={inspectorSection} onSection={setInspectorSection} onScope={setPerItem}
+    defaultsReady={defaults !== null} savingDefault={savingDefault} onSaveDefault={saveDefault} onResetDefault={resetDefault}
     reset={() => row && setOverrides((current) => ({...current,[row.id]:{}}))}/>
 
   return <>

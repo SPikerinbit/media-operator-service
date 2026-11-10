@@ -73,7 +73,7 @@ function App() {
       </aside>
       <div className="workarea">
         <div className="topline chrome"><span>工作台</span><span className="topline-divider">/</span>
-          <strong>{navigation.find((entry) => entry.id === view)?.label}</strong><span className="version">0.2.7</span></div>
+          <strong>{navigation.find((entry) => entry.id === view)?.label}</strong><span className="version">0.2.8</span></div>
       <main className="workspace thin-scroll" id="workspace" data-view={view} ref={scroll} tabIndex={-1}>
         {error && <div className="notice error" role="alert">{error}</div>}
         <div className="workspace-content">
