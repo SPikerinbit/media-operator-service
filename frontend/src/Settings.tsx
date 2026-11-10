@@ -1,6 +1,6 @@
 import { BookOpen, Cpu, Download, FolderOpen, KeyRound, Save } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { native, request, saveAs, type Settings as Preferences } from './api'
+import { native, request, saveAs, type LocalResources, type Settings as Preferences } from './api'
 import { Button, Busy, Disclosure, Feedback, Field, useActions } from './ui'
 
 const secretsList = [['BILI_SESSDATA','SESSDATA'],['BILI_JCT','bili_jct'],['BILI_BUVID3','buvid3'],
@@ -13,12 +13,32 @@ export function Settings({ current, update }: { current: Preferences | null; upd
   const [gpu, setGpu] = useState(false)
   const [secrets, setSecrets] = useState<Record<string,string>>({})
   const [clearKey, setClearKey] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving] = useState<'general' | 'deepseek' | null>(null)
+  const [gpuDirectory, setGpuDirectory] = useState('')
+  const [resources, setResources] = useState<LocalResources | null>(null)
+  const [checking, setChecking] = useState(false)
   const { notice, setNotice, perform } = useActions()
+  const downloading = resources?.models.some((item) => item.download.running) ?? false
 
   useEffect(() => {
-    if (current) {setVault(current.obsidian_vault);setDataDir(current.data_dir);setModel(current.ai_model);setGpu(current.gpu_enabled)}
-  }, [current?.obsidian_vault,current?.data_dir,current?.ai_model,current?.gpu_enabled])
+    void request<LocalResources>('/desktop/resources').then(setResources).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!downloading) return
+    const timer = window.setInterval(() => {
+      void request<LocalResources>('/desktop/resources').then((next) => {
+        setResources((old) => ({...old, models:next.models}))
+      }).catch(() => {})
+    }, 1400)
+    return () => window.clearInterval(timer)
+  }, [downloading])
+
+  useEffect(() => { setVault(current?.obsidian_vault ?? '') }, [current?.obsidian_vault])
+  useEffect(() => { setDataDir(current?.data_dir ?? '') }, [current?.data_dir])
+  useEffect(() => { setModel(current?.ai_model ?? '') }, [current?.ai_model])
+  useEffect(() => { setGpu(current?.gpu_enabled ?? false) }, [current?.gpu_enabled])
+  useEffect(() => { setGpuDirectory(current?.gpu_install_dir ?? '') }, [current?.gpu_install_dir])
 
   useEffect(() => {
     if (!current?.gpu.running) return
@@ -28,30 +48,38 @@ export function Settings({ current, update }: { current: Preferences | null; upd
     return () => window.clearInterval(timer)
   }, [current?.gpu.running,update,setNotice])
 
-  const fieldSecret = (key: string, name: string, placeholder?: string) => <Field key={key} label={name}>
+  const fieldSecret = (key: string, name: string, placeholder?: string, disabled = false) => <Field key={key} label={name}>
     <input type="password" value={secrets[key] || ''} onChange={(e) => setSecrets((values) => ({...values,[key]:e.target.value}))}
-      placeholder={placeholder} autoComplete="new-password" />
+      placeholder={placeholder} autoComplete="new-password" disabled={disabled} />
   </Field>
 
-  function save() {
+  function save(section: 'general' | 'deepseek') {
     perform(async () => {
-      setSaving(true)
+      setSaving(section)
       try {
-        const fields = Object.fromEntries(Object.entries(secrets).map(([k,v]) => [k,v.trim()]).filter(([,v]) => v))
-        if (clearKey) fields.TRANSLATE_API_KEY = ''
-        const next = await request<Preferences>('/desktop/settings','PUT',{
-          obsidian_vault:vault,data_dir:dataDir,ai_model:model.trim(),gpu_enabled:gpu,secrets:fields,
-        })
-        setSecrets({});setClearKey(false);update(next)
-        setNotice({text:next.active_data_dir !== next.data_dir ? '已保存。新资料目录会在重启后生效。' : '设置已保存'})
-      } finally {setSaving(false)}
+        const key = secrets.TRANSLATE_API_KEY?.trim()
+        const fields = section === 'deepseek' ? clearKey ? {TRANSLATE_API_KEY:''} : key ? {TRANSLATE_API_KEY:key} : {} :
+          Object.fromEntries(secretsList.map(([name]) => [name,secrets[name]?.trim()]).filter(([,value]) => value))
+        const next = await request<Preferences>('/desktop/settings','PUT',section === 'deepseek' ?
+          {ai_model:model.trim(),secrets:fields} : {
+            obsidian_vault:vault,data_dir:dataDir,gpu_enabled:current?.gpu.running ? undefined : gpu,secrets:fields,
+          })
+        if (section === 'deepseek') {
+          setSecrets((values) => ({...values,TRANSLATE_API_KEY:''}));setClearKey(false)
+        } else {
+          setSecrets((values) => ({TRANSLATE_API_KEY:values.TRANSLATE_API_KEY || ''}))
+        }
+        update(next)
+        setNotice({text:section === 'deepseek' ? next.has_ai_key ? 'DeepSeek 密钥和模型已保存' : 'DeepSeek 设置已保存' :
+          next.active_data_dir !== next.data_dir ? '已保存。新资料目录会在重启后生效。' : '设置已保存'})
+      } finally {setSaving(null)}
     })
   }
 
   return <>
     <div className="workspace-heading">
       <div><div className="eyebrow">PREFERENCES</div><h1>应用设置</h1><p>配置本地工作目录、知识库和可选服务。</p></div>
-      <Button leadingIcon={Save} disabled={saving || !model.trim() || !current} onClick={save}>{saving ? '保存中' : '保存设置'}</Button>
+      <Button leadingIcon={Save} disabled={Boolean(saving) || !current} onClick={() => save('general')}>{saving === 'general' ? '保存中' : '保存常规设置'}</Button>
     </div>
     <Feedback notice={notice}/>
     <div className="settings-grid">
@@ -78,19 +106,53 @@ export function Settings({ current, update }: { current: Preferences | null; upd
       <section className="surface settings-panel">
         <div className="section-heading"><div className="section-icon"><KeyRound size={18}/></div><h2>DeepSeek</h2></div>
         <p className="muted">用于翻译字幕和提取观点。密钥由 Windows 凭据管理器保存。</p>
-        <Field label="模型"><input value={model} onChange={(e) => setModel(e.target.value)} maxLength={120}/></Field>
-        {fieldSecret('TRANSLATE_API_KEY','API Key',current?.has_ai_key ? '已保存 · 留空保留原密钥' : '尚未配置')}
-        {current?.has_ai_key && <label className="check"><input type="checkbox" checked={clearKey} onChange={(e) => setClearKey(e.target.checked)}/> 清除已保存的密钥</label>}
+        <form className="form-stack" onSubmit={(event) => {event.preventDefault();save('deepseek')}}>
+          <Field label="模型"><input value={model} onChange={(e) => setModel(e.target.value)} maxLength={120} disabled={saving === 'deepseek'}/></Field>
+          {fieldSecret('TRANSLATE_API_KEY','API Key',current?.has_ai_key ? '已保存 · 留空保留原密钥' : '尚未配置',clearKey || saving === 'deepseek')}
+          {current?.has_ai_key && <label className="check"><input type="checkbox" checked={clearKey} disabled={saving === 'deepseek'} onChange={(e) => setClearKey(e.target.checked)}/> 清除已保存的密钥</label>}
+          <div><Button type="submit" variant="secondary" size="small" leadingIcon={Save} disabled={Boolean(saving) || !current || !model.trim()}>
+            {saving === 'deepseek' ? '保存中' : '保存 DeepSeek 设置'}</Button></div>
+        </form>
+      </section>
+      <section className="surface settings-panel">
+        <div className="section-heading"><div className="section-icon"><Download size={18}/></div><h2>本地资源与环境</h2></div>
+        <p className="muted">准备模型后可离线转录。检测会实际启动媒体工具并核验 NVIDIA 推理环境。</p>
+        <Button variant="secondary" size="small" disabled={checking} onClick={() => perform(async () => {
+          setChecking(true)
+          try { setResources(await request<LocalResources>('/desktop/resources/check')) }
+          finally { setChecking(false) }
+        })}>{checking ? '正在检测' : '检测本地环境'}</Button>
+        {resources?.checks && <ul className="form-stack resource-list" aria-label="环境检测结果">
+          {resources.checks.map(({label,ready}) => <li key={label}><span>{label}</span>
+            <span className={ready ? 'resource-ready' : 'resource-missing'}>{ready ? '通过' : '需检查'}</span></li>)}
+          {resources.free_bytes !== undefined && <li><span>资料盘可用空间</span><span>{(resources.free_bytes / 1e9).toFixed(1)} GB</span></li>}
+        </ul>}
+        <ul className="form-stack resource-list" aria-label="本地 Whisper 模型">
+          {resources?.models.map((item) => <li key={item.name}><div><strong>{item.name}</strong>
+            <small>{item.available ? '本地已就绪' : item.download.message || '未下载'} · {(item.size / 1e9).toFixed(2)} GB</small></div>
+            {!item.available && <Button variant="secondary" size="small" disabled={downloading}
+              onClick={() => perform(async () => {
+                const next = await request<LocalResources>('/desktop/resources/models/' + item.name,'POST')
+                setResources((old) => ({...old, models:next.models}))
+              })}>{item.download.running ? '下载中' : '下载模型'}</Button>}
+          </li>)}
+        </ul>
       </section>
       <section className="surface settings-panel">
         <div className="section-heading"><div className="section-icon"><Cpu size={18}/></div><h2>转录加速</h2></div>
-        <p className="muted">默认使用 CPU。支持的 NVIDIA 设备可以选用 GPU。</p>
+        <p className="muted">启用后，自动模式优先使用 NVIDIA 批量转录。GPU 不可用时会用 CPU 重试。</p>
         {current?.gpu.running ? <Busy>{current.gpu.message || '正在准备 NVIDIA 运行库'}</Busy> : <>
           {current?.gpu.message && <p className="muted">{current.gpu.message}</p>}
           <label className="check"><input type="checkbox" checked={gpu} disabled={!current?.gpu_ready} onChange={(e) => setGpu(e.target.checked)}/> 使用 NVIDIA 加速</label>
-          {!current?.gpu_ready && <Button variant="secondary" size="small" onClick={() => {
-            if (window.confirm('下载约 1.2 GB 的 NVIDIA 运行库？')) perform(async () => update(await request<Preferences>('/desktop/gpu','POST',{})))
-          }}>安装并启用 NVIDIA 加速</Button>}
+          <div className="path-row"><Field label="NVIDIA 运行库安装位置"><input value={gpuDirectory} readOnly /></Field>
+            <Button variant="secondary" size="small" leadingIcon={FolderOpen} onClick={() => perform(async () => {
+              const path = await (await native()).choose_folder(); if (path) setGpuDirectory(path)
+            })}>选择目录</Button></div>
+          {(!current?.gpu_ready || gpuDirectory !== current.gpu_install_dir) &&
+            <Button variant="secondary" size="small" disabled={!gpuDirectory} onClick={() => {
+              if (window.confirm('将 NVIDIA 运行库安装到以下目录？首次下载约 1.2 GB。\n\n' + gpuDirectory))
+                perform(async () => update(await request<Preferences>('/desktop/gpu','POST',{directory:gpuDirectory})))
+            }}>安装并启用 NVIDIA 加速</Button>}
         </>}
       </section>
       <section className="surface settings-panel">

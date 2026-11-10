@@ -9,6 +9,7 @@ import socket
 import sys
 import threading
 import time
+import winreg
 
 from fastapi import Request
 from fastapi.responses import RedirectResponse, Response
@@ -16,11 +17,21 @@ import uvicorn
 
 from app import desktop_config as config
 
+WINDOW_PALETTE = {
+    False: ("#eef1f7", "#f8faff", "#18213a"),
+    True: ("#111521", "#1a2133", "#edf2ff"),
+}
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_CAPTION_COLOR = 35
+DWMWA_TEXT_COLOR = 36
+DWMWA_COLOR_DEFAULT = 0xFFFFFFFF
+
 
 def prepare():
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
     desktop_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else root
     tools = Path(os.getenv("MEDIA_DESKTOP_TOOLS", desktop_dir / "tools"))
+    bundled_fonts = Path(os.getenv("MEDIA_DESKTOP_FONTS", desktop_dir / "fonts"))
     data = Path(os.getenv("MEDIA_DESKTOP_DATA", config.data_dir()))
     os.environ.update({
         "MEDIA_DESKTOP": "1",
@@ -34,6 +45,7 @@ def prepare():
         "WHISPER_INFERENCE_MODE": "standard",
         "WHISPER_BACKEND": "faster-whisper",
         "SUBTITLE_FONTS_DIR": str(Path(os.environ["WINDIR"]) / "Fonts"),
+        "MEDIA_BUNDLED_FONTS": str(bundled_fonts),
         "ALLOW_PLACEHOLDER_ARTIFACTS": "false",
         "TRANSLATE_PROVIDER": "deepseek",
         "TRANSLATE_API_BASE": "https://api.deepseek.com",
@@ -102,6 +114,51 @@ class NativeFiles:
         paths = self._window.create_file_dialog(self._webview.FileDialog.SAVE, save_filename=Path(filename).name) or []
         return paths[0] if paths else ""
 
+    def set_window_theme(self, dark, forced_colors):
+        theme_title_bar(self._window, dark is True, forced_colors is True)
+
+
+def windows_dark_theme():
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            return winreg.QueryValueEx(key, "AppsUseLightTheme")[0] == 0
+    except OSError:
+        return False
+
+
+def colorref(color):
+    red, green, blue = bytes.fromhex(color.removeprefix("#"))
+    return red | (green << 8) | (blue << 16)
+
+
+def theme_title_bar(window, dark, forced_colors):
+    native = getattr(window, "native", None)
+    if native is None:
+        return
+    hwnd = ctypes.c_void_p(native.Handle.ToInt64())
+    set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+    _, caption, text = WINDOW_PALETTE[dark]
+    for attribute, value in (
+        (DWMWA_USE_IMMERSIVE_DARK_MODE, int(dark)),
+        (DWMWA_CAPTION_COLOR, DWMWA_COLOR_DEFAULT if forced_colors else colorref(caption)),
+        (DWMWA_TEXT_COLOR, DWMWA_COLOR_DEFAULT if forced_colors else colorref(text)),
+    ):
+        data = ctypes.c_uint32(value)
+        set_attribute(hwnd, attribute, ctypes.byref(data), ctypes.sizeof(data))
+
+
+def window_options(webview, dark):
+    options = {"width": 1440, "height": 940, "min_size": (950, 680),
+               "background_color": WINDOW_PALETTE[dark][0]}
+    screens = webview.screens
+    if screens:
+        screen = screens[0]
+        width = min(1440, max(1, getattr(screen.frame, "Width", screen.width) - 28))
+        height = min(940, max(1, getattr(screen.frame, "Height", screen.height) - 28))
+        options.update(width=width, height=height, min_size=(min(950, width), min(680, height)))
+    return options
+
 
 def run_window():
     import webview
@@ -125,17 +182,20 @@ def run_window():
             raise RuntimeError("应用服务启动失败")
 
         bridge = NativeFiles(webview)
+        dark = windows_dark_theme()
         window = webview.create_window(
             "Media Operator", f"{origin}/desktop/connect?token={token}", js_api=bridge,
-            width=1440, height=940, min_size=(950, 680),
+            **window_options(webview, dark),
         )
         bridge._window = window
+        window.events.shown += lambda: theme_title_bar(window, dark, False)
         webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
         def allow_close():
-            from app import desktop_gpu, desktop_jobs, desktop_routes, obsidian
+            from app import desktop_gpu, desktop_jobs, desktop_models, desktop_routes, obsidian
 
             busy = any(batch.queued or batch.running for batch in desktop_jobs.stored_batches())
-            if busy or desktop_routes.GENERATING or desktop_gpu.PROGRESS["running"] or obsidian.LOCK.locked():
+            if (busy or desktop_routes.GENERATING or desktop_gpu.PROGRESS["running"]
+                    or desktop_models.is_running() or obsidian.LOCK.locked()):
                 ctypes.windll.user32.MessageBoxW(None, "还有任务正在运行。请等待任务完成后再关闭。", "Media Operator", 0x40)
                 return False
             return True

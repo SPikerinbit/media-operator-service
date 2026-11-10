@@ -9,7 +9,7 @@ import threading
 
 import httpx
 
-from app.desktop_config import gpu_dir, update
+from app.desktop_config import GPU_LIBRARIES, gpu_ready, update
 
 FILES = (
     ("cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.9.1.4-archive.zip",
@@ -23,8 +23,7 @@ LOCK = threading.Lock()
 PROGRESS = {"running": False, "message": ""}
 
 
-def unpack(root, archives):
-    destination = gpu_dir(root)
+def unpack(destination, archives):
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=destination.parent) as directory:
         staging = Path(directory) / "runtime"
@@ -36,8 +35,7 @@ def unpack(root, archives):
                     if path.parent.name.lower() == "bin" and path.suffix.lower() == ".dll":
                         with archive.open(name) as source, (staging / path.name).open("wb") as target:
                             shutil.copyfileobj(source, target)
-        required = ("cublas64_12.dll", "cublasLt64_12.dll", "cudnn64_9.dll", "cudart64_12.dll")
-        if not all((staging / name).is_file() for name in required):
+        if not all((staging / name).is_file() for name in GPU_LIBRARIES):
             raise RuntimeError("NVIDIA 加速包缺少运行库")
         (staging / ".ready").touch()
         staging.rename(destination)
@@ -82,9 +80,9 @@ def download(client, url, destination, checksum, size, report):
     raise RuntimeError("NVIDIA 运行库下载未完成或校验失败")
 
 
-def _install(root):
+def _install(destination):
     try:
-        cache = gpu_dir(root).parent / "downloads"
+        cache = destination.parent / ".media-operator-downloads"
         cache.mkdir(parents=True, exist_ok=True)
         with httpx.Client(follow_redirects=True, timeout=60) as client:
             archives = []
@@ -96,10 +94,13 @@ def _install(root):
                 archives.append(download(client, "https://developer.download.nvidia.com/compute/" + url,
                                          cache / f"{index}.zip", checksum, size, report))
             PROGRESS["message"] = "正在解压 NVIDIA 运行库"
-            unpack(root, archives)
+            unpack(destination, archives)
+        update({"gpu_enabled": True, "gpu_install_dir": str(destination.parent)}, {})
         for archive in archives:
-            archive.unlink()
-        update({"gpu_enabled": True}, {})
+            try:
+                archive.unlink()
+            except OSError:
+                pass
         PROGRESS["message"] = "已启用 NVIDIA 加速"
     except Exception:
         PROGRESS["message"] = "NVIDIA 运行库安装失败，可继续使用 CPU 或稍后重试"
@@ -108,8 +109,19 @@ def _install(root):
             PROGRESS["running"] = False
 
 
-def install(root):
+def install(directory):
     with LOCK:
-        if not PROGRESS["running"] and not (gpu_dir(root) / ".ready").is_file():
-            PROGRESS.update(running=True, message="正在准备 NVIDIA 运行库")
-            threading.Thread(target=_install, args=(root,), daemon=True).start()
+        if PROGRESS["running"]:
+            raise RuntimeError("NVIDIA 运行库正在安装")
+        if not directory.is_absolute():
+            raise ValueError("请选择 NVIDIA 运行库的绝对安装目录")
+        directory.mkdir(parents=True, exist_ok=True)
+        destination = directory.resolve() / "cuda12-cudnn9"
+        if gpu_ready(destination):
+            update({"gpu_enabled": True, "gpu_install_dir": str(destination.parent)}, {})
+            PROGRESS.update(message="已启用 NVIDIA 加速")
+            return
+        if destination.exists():
+            raise ValueError("该目录已有同名文件夹，请选择其他安装目录")
+        PROGRESS.update(running=True, message="正在准备 NVIDIA 运行库")
+        threading.Thread(target=_install, args=(destination,), daemon=True).start()

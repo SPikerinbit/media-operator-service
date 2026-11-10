@@ -25,6 +25,23 @@ function App() {
   const scroll = useRef<HTMLElement>(null)
 
   useEffect(() => {
+    const dark = window.matchMedia('(prefers-color-scheme: dark)')
+    const forcedColors = window.matchMedia('(forced-colors: active)')
+    const syncTitle = () => {
+      void window.pywebview?.api?.set_window_theme?.(dark.matches, forcedColors.matches)?.catch(() => {})
+    }
+    syncTitle()
+    window.addEventListener('pywebviewready', syncTitle)
+    dark.addEventListener('change', syncTitle)
+    forcedColors.addEventListener('change', syncTitle)
+    return () => {
+      window.removeEventListener('pywebviewready', syncTitle)
+      dark.removeEventListener('change', syncTitle)
+      forcedColors.removeEventListener('change', syncTitle)
+    }
+  }, [])
+
+  useEffect(() => {
     let active = true
     void request<Preferences>('/desktop/settings').then((data) => {
       if (active) setSettings(data)
@@ -42,7 +59,7 @@ function App() {
   return <MotionConfig reducedMotion="user">
     <a className="skip-link" href="#workspace">跳到工作区</a>
     <div className="shell">
-      <aside className="sidebar glass">
+      <aside className="sidebar chrome">
         <div className="brand"><div className="brand-mark"><Aperture size={23} strokeWidth={1.7}/></div>
           <div><strong>Media Operator</strong><small>本地媒体工作台</small></div></div>
         <nav aria-label="工作台">
@@ -54,12 +71,13 @@ function App() {
         </nav>
         <div className="sidebar-footer"><span className="local-dot"/><div>本机工作区<small>Windows 桌面版</small></div></div>
       </aside>
-      <main className="workspace" id="workspace" ref={scroll} tabIndex={-1}>
-        <div className="topline glass"><span>工作台</span><span className="topline-divider">/</span>
-          <strong>{navigation.find((entry) => entry.id === view)?.label}</strong><span className="version">0.2</span></div>
+      <div className="workarea">
+        <div className="topline chrome"><span>工作台</span><span className="topline-divider">/</span>
+          <strong>{navigation.find((entry) => entry.id === view)?.label}</strong><span className="version">0.2.7</span></div>
+      <main className="workspace thin-scroll" id="workspace" data-view={view} ref={scroll} tabIndex={-1}>
         {error && <div className="notice error" role="alert">{error}</div>}
         <div className="workspace-content">
-          <div hidden={view !== 'video'}><Video settings={settings} transfer={transfer} onTransferUsed={clearTransfer}
+          <div className="video-view" hidden={view !== 'video'}><Video settings={settings} transfer={transfer} onTransferUsed={clearTransfer}
             onTranscript={(id) => {setTranscript(id);show('knowledge')}}/></div>
           {visited.includes('knowledge') && <div hidden={view !== 'knowledge'}>
             <Knowledge settings={settings} transcriptId={transcript} onSettings={() => show('settings')}
@@ -68,6 +86,7 @@ function App() {
           {visited.includes('settings') && <div hidden={view !== 'settings'}><Settings current={settings} update={setSettings}/></div>}
         </div>
       </main>
+      </div>
     </div>
   </MotionConfig>
 }

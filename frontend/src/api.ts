@@ -1,5 +1,19 @@
-export type SourceKind = 'local' | 'youtube'
+export type SourceKind = 'local' | 'youtube' | 'bilibili'
+export const sourceNames = { local: '本地媒体', youtube: 'YouTube', bilibili: 'B 站', subtitle: '字幕文件' }
+
+export function videoLinkKind(value: string): Exclude<SourceKind, 'local'> {
+  try {
+    const url = new URL(value)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port) throw new Error()
+    if (['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'].includes(url.hostname)) return 'youtube'
+    if (['bilibili.com', 'www.bilibili.com', 'm.bilibili.com', 'b23.tv'].includes(url.hostname)) return 'bilibili'
+  } catch { /* invalid link */ }
+  throw new Error('请输入有效的 YouTube 或 B 站链接')
+}
 export type Status = 'queued' | 'running' | 'succeeded' | 'failed'
+export type PostingMetadata = {
+  tid: number; zone: string; title: string; desc: string; tags: string[]; generated_fields: string[]; notice: string
+}
 export type Item = {
   item_id: string
   client_row_id: string
@@ -16,10 +30,12 @@ export type Item = {
   error?: { message: string }
   stage_details?: Record<string, { status: Status; progress: number; message: string }>
   result?: { final_video_url?: string; english_srt_url?: string; translated_srt_url?: string;
-    bilingual_srt_url?: string; transcript_id?: number; bilibili_url?: string }
+    bilingual_srt_url?: string; transcript_id?: number; bilibili_url?: string; bilibili_metadata?: PostingMetadata;
+    cover_asset_url?: string; cover_source?: string; cover_mode?: string }
 }
 export type Batch = { batch_id: string; status: Status; queued: number; running: number; items: Item[] }
 export type History = { batch_id: string; status: Status; title: string; created_at: string }
+export type UploadCandidate = {state: 'retry' | 'ready' | 'posted' | 'missing' | 'busy'; message: string}
 export type Settings = {
   data_dir: string
   active_data_dir: string
@@ -29,7 +45,13 @@ export type Settings = {
   has_bilibili_credentials: boolean
   gpu_enabled: boolean
   gpu_ready: boolean
+  gpu_install_dir: string
   gpu: { running: boolean; message: string }
+}
+export type LocalResources = {
+  models: {name:string; available:boolean; size:number; download:{running?:boolean; percent?:number; message?:string}}[]
+  checks?: {label:string; ready:boolean}[]
+  free_bytes?: number
 }
 export type TranscriptSummary = { id: number; title: string; source_kind: SourceKind | 'subtitle'; created_at: string }
 export type Cue = { number: number; start_ms: number; end_ms: number; text: string }
@@ -44,6 +66,7 @@ type NativeBridge = {
   choose_media(multiple?: boolean): Promise<string[]>
   choose_folder(): Promise<string>
   save_as(filename: string): Promise<string>
+  set_window_theme?(dark: boolean, forcedColors: boolean): Promise<void>
 }
 declare global { interface Window { pywebview?: { api?: NativeBridge } } }
 

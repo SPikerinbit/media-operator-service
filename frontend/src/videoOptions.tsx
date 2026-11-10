@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
-import { ImagePlus, RotateCcw } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { Captions, Globe2, ImagePlus, RotateCcw, Send, SlidersHorizontal } from 'lucide-react'
 import { leaf, request, type Settings, type SourceKind } from './api'
-import { Button, Disclosure, Feedback, Field, Modal, Select, useActions } from './ui'
+import { Button, Feedback, Field, Modal, Select, useActions } from './ui'
 
 export type Row = { id: string; source: string; kind: SourceKind; transcriptId?: number; submitted?: boolean }
 export const sourceLanguages = [['auto','自动识别'],['zh','中文'],['en','英语'],['ja','日语'],['ko','韩语'],['fr','法语'],['de','德语'],['es','西班牙语']] as const
@@ -13,12 +13,12 @@ export const defaultStyle = {
   background_opacity: 45, background_padding: 12,
 }
 export const defaultBili = {
-  enabled: false, tid: 130, tags: '音乐综合, 音乐', desc: '', copyright: 2, source_mode: 'original_url',
-  source: '', title_template: '{output_name}', line: 'QN', collection_type: 'none', collection_id: '',
-  cover_mode: 'auto_middle_frame', cover_source: 'frame', cover_time_percent: 50, cover_asset_url: '',
+  enabled: false, auto_metadata: true, tid: 0, tags: '', desc: '', copyright: 2, source_mode: 'original_url',
+  source: '', title_template: '', line: 'QN', collection_type: 'none', collection_id: '',
+  cover_mode: 'source_cover', cover_source: 'frame', cover_time_percent: 50, cover_asset_url: '',
 }
 export const defaultOptions = {
-  source_language: 'auto', target_lang: 'zh-CN', whisper_model: 'small', whisper_inference_mode: 'standard',
+  source_language: 'auto', target_lang: 'zh-CN', whisper_model: 'small', whisper_inference_mode: 'auto',
   subtitle_output_mode: 'en_only', translate_model: '', aspect_ratio: 'source', resolution: 'best', fps: 'source',
   output_name_mode: 'sequence', output_name_prefix: '', translation_context_profile_id: '',
   translation_context_note: '', translation_glossary: '', subtitle_style: defaultStyle, bilibili_upload: defaultBili,
@@ -47,6 +47,7 @@ export function videoPayload(options: VideoOptions, model: string, perItem = fal
     ...options, translate_model: options.translate_model || model,
     bilibili_upload: {
       ...options.bilibili_upload,
+      tid: options.bilibili_upload.tid || null,
       tags: options.bilibili_upload.tags.split(/[,，\n]+/).map((tag) => tag.trim()).filter(Boolean),
       cover_scope: perItem ? 'per_item' : 'batch',
     },
@@ -130,49 +131,64 @@ function CoverPicker({ row, options, change }: {
     <Modal open={open} title="B 站封面" onClose={() => setOpen(false)}>
       <div className="form-stack">
         {options.cover_asset_url ? <img className="cover-image" src={options.cover_asset_url} alt="当前投稿封面" /> :
-          <p className="muted">默认使用视频中间帧。可抓取当前素材的画面或上传图片。</p>}
+          <p className="muted">默认逐条使用来源封面。本地视频优先使用内嵌封面，取不到封面时使用视频画面。</p>}
         <Field label={'取帧位置 ' + time + '%'}><input type="range" min="0" max="100" value={time} onChange={(e) => setTime(Number(e.target.value))}/></Field>
         <div className="toolbar compact">
           <Button variant="secondary" size="small" disabled={!row || busy} onClick={() => capture('frame')}>抓取画面</Button>
-          <Button variant="secondary" size="small" disabled={row?.kind !== 'youtube' || busy} onClick={() => capture('youtube_thumbnail')}>使用 YouTube 缩略图</Button>
+          <Button variant="secondary" size="small" disabled={!row || row.kind === 'local' || busy} onClick={() => capture('youtube_thumbnail')}>使用当前素材的封面</Button>
         </div>
         <Field label="上传封面图片"><input disabled={busy} type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => {
           const file = e.target.files?.[0]; if (file) capture('frame', file)
         }}/></Field>
         <Feedback notice={notice} />
         <div className="toolbar compact"><Button variant="ghost" size="small" onClick={() => change({...options,
-          cover_mode:'auto_middle_frame', cover_source:'frame', cover_time_percent:50, cover_asset_url:''})}>恢复默认</Button>
+          cover_mode:'source_cover', cover_source:'frame', cover_time_percent:50, cover_asset_url:''})}>逐条使用来源封面</Button>
           <Button onClick={() => setOpen(false)}>完成</Button></div>
       </div>
     </Modal>
   </>
 }
 
-function Bilibili({ options, change, row, configured }: {
-  options: typeof defaultBili; change: (options: typeof defaultBili) => void; row?: Row; configured: boolean
+function Bilibili({ options, change, row, configured, aiConfigured }: {
+  options: typeof defaultBili; change: (options: typeof defaultBili) => void; row?: Row; configured: boolean; aiConfigured: boolean
 }) {
   const [zones, setZones] = useState<Zone[]>([])
   const [collections, setCollections] = useState<Collection[]>([])
+  const uploadOptions = useId()
   useEffect(() => {
-    if (!configured || !options.enabled) return
+    if (!options.enabled) return
     let alive = true
     void request<{flat: Zone[]}>('/ui/bilibili/zones').then((data) => {if (alive) setZones(data.flat)}).catch(() => {})
-    void request<{collections: Collection[]}>('/ui/bilibili/collections').then((data) => {if (alive) setCollections(data.collections)}).catch(() => {})
+    if (configured) void request<{collections: Collection[]}>('/ui/bilibili/collections')
+      .then((data) => {if (alive) setCollections(data.collections)}).catch(() => {})
     return () => { alive = false }
   }, [configured, options.enabled])
   const set = <K extends keyof typeof defaultBili>(key: K, value: typeof defaultBili[K]) => change({...options, [key]: value})
-  const text = (key: 'tags'|'title_template'|'source') => <input value={options[key]} onChange={(e) => set(key,e.target.value)} />
+  const text = (key: 'tags'|'title_template'|'source', placeholder?: string, maxLength?: number) =>
+    <input value={options[key]} placeholder={placeholder} maxLength={maxLength} onChange={(e) => set(key,e.target.value)} />
   return <div className="form-stack">
-    <label className="check"><input type="checkbox" checked={options.enabled} onChange={(e) => set('enabled',e.target.checked)} /> 成片后投稿到 B 站</label>
+    <label className="upload-toggle">
+      <span>成片后投稿到 B 站</span>
+      <input type="checkbox" role="switch" aria-controls={uploadOptions} checked={options.enabled}
+        onChange={(e) => set('enabled',e.target.checked)} />
+    </label>
     {!configured && <p className="muted">投稿凭据可在设置中配置。</p>}
-    {options.enabled && <>
+    <div id={uploadOptions} hidden={!options.enabled} className="form-stack upload-options">
+      <label className="check"><input type="checkbox" checked={options.auto_metadata}
+        onChange={(event) => set('auto_metadata', event.target.checked)}/>用 DeepSeek 填写空白投稿信息</label>
+      {options.auto_metadata && <p className="muted">{aiConfigured ?
+        '每条视频会发送来源标题和部分原文字幕，用于填写分区、标题、简介和标签。' :
+        '尚未配置 DeepSeek。请先在设置中配置，或手动选择分区。'}</p>}
       <Field label="分区">{zones.length ? <Select value={options.tid} onChange={(v) => set('tid',Number(v))}
-        options={Array.from(new Map([[options.tid,'当前分区 · ' + options.tid], ...zones.filter((z) => z.tid || z.id)
+        options={Array.from(new Map([[0, options.auto_metadata ? '自动选择（DeepSeek）' : '请选择分区'],
+          ...(options.tid ? [[options.tid,'当前分区 · ' + options.tid] as const] : []), ...zones.filter((z) => z.tid || z.id)
           .map((z) => [Number(z.tid || z.id),z.name] as [number,string])]).entries())}/> :
-        <input type="number" min={1} value={options.tid} onChange={(e) => set('tid',Number(e.target.value))}/>}</Field>
-      <Field label="标签（逗号分隔）">{text('tags')}</Field>
-      <Field label="标题模板">{text('title_template')}</Field>
-      <Field label="简介"><textarea rows={3} value={options.desc} onChange={(e) => set('desc', e.target.value)}/></Field>
+        <input type="number" min={1} value={options.tid || ''} onChange={(e) => set('tid',Number(e.target.value))}/>}</Field>
+      <Field label="标签（逗号分隔）">{text('tags', options.auto_metadata ? '留空由 DeepSeek 生成' : undefined)}</Field>
+      <Field label="标题模板">{text('title_template', options.auto_metadata ? '留空由 DeepSeek 生成' : '{output_name}', 80)}</Field>
+      <Field label="简介"><textarea rows={3} maxLength={2000} value={options.desc}
+        placeholder={options.auto_metadata ? '留空由 DeepSeek 生成' : undefined}
+        onChange={(e) => set('desc', e.target.value)}/></Field>
       <Field label="版权"><Select value={options.copyright} onChange={(v) => set('copyright',Number(v))}
         options={[[2,'转载'],[1,'自制']]}/></Field>
       <Field label="转载来源"><Select value={options.source_mode} onChange={(v) => set('source_mode',v)}
@@ -184,15 +200,32 @@ function Bilibili({ options, change, row, configured }: {
         onChange={(v) => {
           const [kind, id] = v.split(':'); change({...options,collection_type:kind || 'none',collection_id:id || ''})
         }} options={[[ '', '不加入' ], ...collections.map((c) => [(c.collection_type || c.type) + ':' + c.id,c.name] as const)]}/></Field>
-      <CoverPicker row={row} options={options} change={change} />
-    </>}
+      <div className="toolbar compact"><CoverPicker row={row} options={options} change={change} />
+        <span className="muted">{options.cover_mode === 'source_cover' ? '每条使用来源封面' : '已自定义封面'}</span></div>
+    </div>
   </div>
 }
 
-export function Inspector({ options, change, settings, row, perItem, onScope, reset }: {
+const inspectorSections = [
+  { id: 'output', label: '输出', heading: '转录与输出', icon: SlidersHorizontal },
+  { id: 'style', label: '样式', heading: '字幕样式', icon: Captions },
+  { id: 'translation', label: '翻译', heading: '翻译上下文', icon: Globe2 },
+  { id: 'publish', label: '投稿', heading: 'B 站投稿', icon: Send },
+] as const
+export type InspectorSection = typeof inspectorSections[number]['id']
+
+export function Inspector({ options, change, settings, row, perItem, onScope, reset, section, onSection }: {
   options: VideoOptions; change: (options: VideoOptions) => void; settings: Settings | null; row?: Row;
   perItem: boolean; onScope: (perItem: boolean) => void; reset: () => void
+  section: InspectorSection; onSection: (section: InspectorSection) => void
 }) {
+  const id = useId()
+  const body = useRef<HTMLDivElement>(null)
+  function selectSection(next: InspectorSection) {
+    if (next === section) return
+    if (body.current) body.current.scrollTop = 0
+    onSection(next)
+  }
   const set = <K extends keyof VideoOptions>(key: K, value: VideoOptions[K]) => change({...options, [key]: value})
   const style = options.subtitle_style
   const setStyle = <K extends keyof typeof style>(key: K, value: typeof style[K]) =>
@@ -201,26 +234,45 @@ export function Inspector({ options, change, settings, row, perItem, onScope, re
     min: number, max: number, step = 1) => <Field label={label + ' · ' + style[key]}><input type="range" min={min} max={max}
       step={step} value={style[key]} onChange={(e) => setStyle(key,Number(e.target.value))}/></Field>
   return <div className="inspector-inner">
-    <div className="segmented" aria-label="设置应用范围">
+    <div className="inspector-controls">
+    <div className="segmented" role="group" aria-label="设置应用范围">
       <button type="button" aria-pressed={!perItem} onClick={() => onScope(false)}>批次默认</button>
       <button type="button" aria-pressed={perItem} disabled={!row} onClick={() => onScope(true)}>当前素材</button>
     </div>
     {perItem && row && <div className="scope-note"><span>{leaf(row.source)}</span>
       <Button size="xs" variant="ghost" onClick={reset}>恢复继承</Button></div>}
-    <div className="form-stack inspector-common">
+    <div className="inspector-tabs" role="tablist" aria-label="参数分类">
+      {inspectorSections.map(({id: key,label,heading,icon: Icon},index) => <button
+        type="button" key={key} id={id + '-tab-' + key} role="tab" aria-label={heading} title={heading}
+        aria-selected={section === key} aria-controls={id + '-panel-' + key} tabIndex={section === key ? 0 : -1}
+        onClick={() => selectSection(key)} onKeyDown={(event) => {
+          const count = inspectorSections.length
+          const next = event.key === 'ArrowRight' ? (index + 1) % count :
+            event.key === 'ArrowLeft' ? (index + count - 1) % count :
+            event.key === 'Home' ? 0 : event.key === 'End' ? count - 1 : -1
+          if (next === -1) return
+          event.preventDefault()
+          const destination = inspectorSections[next].id
+          selectSection(destination)
+          document.getElementById(id + '-tab-' + destination)?.focus({preventScroll:true})
+        }}><Icon size={15} aria-hidden="true"/><span>{label}</span></button>)}
+    </div>
+    </div>
+    <div className="inspector-scroll thin-scroll" ref={body}>
+    <section id={id + '-panel-output'} role="tabpanel" aria-labelledby={id + '-tab-output'} tabIndex={0} hidden={section !== 'output'}>
+      <h3>转录与输出</h3>
+    <div className="form-stack">
       <Field label="字幕输出"><Select value={options.subtitle_output_mode} onChange={(v) => set('subtitle_output_mode',v)}
         options={[[ 'en_only','原文字幕' ],[ 'zh_only','译文字幕' ],[ 'bilingual','双语字幕' ]]}/></Field>
       <Field label="素材语言"><Select value={options.source_language} onChange={(v) => set('source_language',v)} options={sourceLanguages}/></Field>
       <Field label="输出画幅"><Select value={options.aspect_ratio} onChange={(v) => set('aspect_ratio',v)}
         options={[[ 'source','保留原比例' ],['16:9','16:9 横屏'],['9:16','9:16 竖屏'],['1:1','1:1 方形']]}/></Field>
       {options.subtitle_output_mode !== 'en_only' && <Field label="译文目标语言"><input value={options.target_lang} onChange={(e) => set('target_lang',e.target.value)} /></Field>}
-    </div>
-    <Disclosure title="转录与输出">
-      <div className="form-stack">
+        <div className="inspector-divider">高级参数</div>
         <Field label="Whisper 模型"><Select value={options.whisper_model} onChange={(v) => set('whisper_model',v)}
           options={[[ 'small','small · 推荐' ],['base','base'],['medium','medium'],['large-v3','large-v3']]}/></Field>
         <Field label="推理模式"><Select value={options.whisper_inference_mode} onChange={(v) => set('whisper_inference_mode',v)}
-          options={[[ 'standard','精准' ],['auto_repair','自动补漏'],['batched','快速']]}/></Field>
+          options={[[ 'auto','自动 · NVIDIA 加速优先' ],['gpu_only','严格 GPU · 仅本地模型'],[ 'standard','精准' ],['auto_repair','自动补漏'],['batched','快速']]}/></Field>
         <Field label="下载清晰度"><Select value={options.resolution} onChange={(v) => set('resolution',v)}
           options={[[ 'best','最高可用' ],['1080p','1080p'],['1440p','1440p'],['2160p','2160p']]}/></Field>
         <Field label="下载帧率"><Select value={options.fps} onChange={(v) => set('fps',v)}
@@ -230,10 +282,22 @@ export function Inspector({ options, change, settings, row, perItem, onScope, re
         {options.output_name_mode === 'custom' && <Field label="输出名称前缀"><input value={options.output_name_prefix}
           onChange={(e) => set('output_name_prefix',e.target.value)}/></Field>}
       </div>
-    </Disclosure>
-    <Disclosure title="字幕样式">
+    </section>
+    <section id={id + '-panel-style'} role="tabpanel" aria-labelledby={id + '-tab-style'} tabIndex={0} hidden={section !== 'style'}>
+      <h3>字幕样式</h3>
       <div className="form-stack">
-        <Field label="字体"><input value={style.font_family} onChange={(e) => setStyle('font_family',e.target.value)} /></Field>
+        <Field label="字体"><input list={id + '-subtitle-fonts'} value={style.font_family}
+          onChange={(e) => setStyle('font_family',e.target.value)} /></Field>
+        <datalist id={id + '-subtitle-fonts'}>
+          <option value="Source Han Sans CN">思源黑体</option>
+          <option value="Source Han Serif CN">思源宋体</option>
+          <option value="Microsoft YaHei">微软雅黑</option>
+          <option value="SimHei">黑体</option>
+          <option value="SimSun">宋体</option>
+          <option value="KaiTi">楷体</option>
+          <option value="Segoe UI"/>
+          <option value="Arial"/>
+        </datalist>
         <Field label="字号模式"><Select value={style.font_size_mode} onChange={(v) => setStyle('font_size_mode',v)}
           options={[[ 'manual','手动' ],[ 'auto','自动' ]]}/></Field>
         {style.font_size_mode !== 'auto' && range('字号','font_size',18,96)}
@@ -258,9 +322,16 @@ export function Inspector({ options, change, settings, row, perItem, onScope, re
         </>}
         <Button size="small" variant="ghost" leadingIcon={RotateCcw} onClick={() => set('subtitle_style',defaultStyle)}>重置字幕样式</Button>
       </div>
-    </Disclosure>
-    <Disclosure title="翻译上下文"><Context options={options} change={change}/></Disclosure>
-    <Disclosure title="B 站投稿"><Bilibili options={options.bilibili_upload} change={(v) => set('bilibili_upload',v)}
-      row={row} configured={Boolean(settings?.has_bilibili_credentials)}/></Disclosure>
+    </section>
+    <section id={id + '-panel-translation'} role="tabpanel" aria-labelledby={id + '-tab-translation'} tabIndex={0} hidden={section !== 'translation'}>
+      <h3>翻译上下文</h3>
+      <Context options={options} change={change}/>
+    </section>
+    <section id={id + '-panel-publish'} role="tabpanel" aria-labelledby={id + '-tab-publish'} tabIndex={0} hidden={section !== 'publish'}>
+      <h3>B 站投稿</h3>
+      <Bilibili options={options.bilibili_upload} change={(v) => set('bilibili_upload',v)} aiConfigured={Boolean(settings?.has_ai_key)}
+        row={row} configured={Boolean(settings?.has_bilibili_credentials)}/>
+    </section>
+    </div>
   </div>
 }

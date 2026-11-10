@@ -18,6 +18,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import urlparse
+from urllib import request as urllib_request
 
 import httpx
 import srt
@@ -36,6 +37,14 @@ DEFAULT_WHISPER_MODEL = "small"
 DEFAULT_TRANSLATE_MODEL = "deepseek-chat"
 DEFAULT_FONT = "Microsoft YaHei"
 DEFAULT_FONTS_DIR = os.getenv("SUBTITLE_FONTS_DIR", "/mnt/c/Windows/Fonts")
+BUNDLED_FONT_FAMILIES = {"Source Han Sans CN", "Source Han Serif CN"}
+
+
+def subtitle_fonts_dir(family: str) -> Path:
+    bundled = os.getenv("MEDIA_BUNDLED_FONTS")
+    if DESKTOP and bundled and family in BUNDLED_FONT_FAMILIES and Path(bundled).is_dir():
+        return Path(bundled)
+    return Path(DEFAULT_FONTS_DIR)
 
 ROOT_DIR = Path(os.getenv("MEDIA_ROOT_DIR", Path(__file__).resolve().parents[1])).resolve()
 DATA_DIR = Path(os.getenv("MEDIA_DATA_DIR", ROOT_DIR / "data")).resolve()
@@ -196,12 +205,13 @@ OutputNameMode = Literal["original", "sequence", "custom"]
 SubtitleOutputMode = Literal["bilingual", "zh_only", "en_only"]
 SubtitleFontSizeMode = Literal["auto", "manual"]
 SubtitleBilingualOrder = Literal["en_top_zh_bottom", "zh_top_en_bottom"]
-WhisperInferenceMode = Literal["standard", "batched", "auto_repair"]
-SourceKind = Literal["youtube", "local"]
+WhisperInferenceMode = Literal["standard", "batched", "auto_repair", "auto", "gpu_only"]
+SourceKind = Literal["youtube", "bilibili", "local"]
 BatchItemStatus = Literal["queued", "running", "succeeded", "failed"]
 BilibiliCopyright = Literal[1, 2]
 BilibiliSourceMode = Literal["original_url", "custom"]
 BilibiliCoverMode = Literal[
+    "source_cover",
     "auto_middle_frame",
     "auto_first_frame",
     "custom_path",
@@ -258,8 +268,6 @@ class SourceInput(BaseModel):
         value = (self.source_value or "").strip()
         if not value:
             raise ValueError("source_value is required")
-        if kind not in {"youtube", "local"}:
-            raise ValueError("source_kind must be youtube or local")
         object.__setattr__(self, "source_kind", kind)
         object.__setattr__(self, "source_value", value)
         object.__setattr__(self, "client_row_id", (self.client_row_id or "").strip())
@@ -268,7 +276,8 @@ class SourceInput(BaseModel):
 
 class BilibiliUploadSettings(BaseModel):
     enabled: bool = Field(default=False)
-    tid: int = Field(default=130, ge=1)
+    auto_metadata: bool = False
+    tid: int | None = Field(default=130, ge=1)
     tags: list[str] = Field(default_factory=lambda: ["音乐综合", "音乐"])
     desc: str = Field(default="", max_length=2000)
     dynamic: str = Field(default="", max_length=233)
@@ -277,7 +286,7 @@ class BilibiliUploadSettings(BaseModel):
     source: str = Field(default="", max_length=512)
     no_reprint: bool = Field(default=True)
     title_template: str = Field(default="{output_name}", max_length=80)
-    cover_mode: BilibiliCoverMode = Field(default="auto_middle_frame")
+    cover_mode: BilibiliCoverMode = Field(default="source_cover")
     cover_path: str = Field(default="", max_length=1024)
     cover_scope: BilibiliCoverScope = Field(default="batch")
     cover_source: BilibiliCoverSource = Field(default="frame")
@@ -305,10 +314,11 @@ class BilibiliUploadSettings(BaseModel):
     @model_validator(mode="after")
     def normalize(self) -> "BilibiliUploadSettings":
         tags = [str(item).strip()[:20] for item in self.tags if str(item).strip()]
-        if self.enabled and not tags:
+        if self.enabled and not tags and not DESKTOP:
             raise ValueError("bilibili tags are required when upload is enabled")
-        object.__setattr__(self, "tags", tags[:12])
-        object.__setattr__(self, "title_template", (self.title_template or "{output_name}").strip()[:80])
+        object.__setattr__(self, "tags", tags[:10])
+        title_template = self.title_template.strip()
+        object.__setattr__(self, "title_template", title_template if DESKTOP else title_template or "{output_name}")
         collection_id = (self.collection_id or self.series_id or "").strip()
         collection_type = self.collection_type
         if self.series_id and self.collection_type == "none":
@@ -424,8 +434,6 @@ class StageDownloadRequest(BaseModel):
             value = youtube_url
         if not value:
             raise ValueError("source_value is required")
-        if kind not in {"youtube", "local"}:
-            raise ValueError("source_kind must be youtube or local")
         object.__setattr__(self, "source_kind", kind)
         object.__setattr__(self, "source_value", value)
         object.__setattr__(self, "youtube_url", youtube_url or value)
@@ -519,10 +527,16 @@ class StageBurnRequest(BaseModel):
 
 class StageBilibiliUploadRequest(BaseModel):
     final_video_url: str = Field(min_length=1)
+    source_video_url: str = ""
+    english_srt_url: str = ""
+    translate_model: str = ""
     original_source: str = Field(default="")
     output_name: str = Field(default="")
     original_title: str = Field(default="")
+    source_thumbnail: str | None = None
+    bilibili_metadata: dict[str, Any] | None = None
     upload_settings: BilibiliUploadSettings = Field(default_factory=BilibiliUploadSettings)
+    allow_automatic_retry: bool = True
     operator_batch_id: str = Field(default="")
     operator_item_id: str = Field(default="")
 
@@ -673,8 +687,6 @@ class PreviewFrameRequest(BaseModel):
             value = youtube_url
         if not value:
             raise ValueError("source_value is required")
-        if kind not in {"youtube", "local"}:
-            raise ValueError("source_kind must be youtube or local")
         object.__setattr__(self, "source_kind", kind)
         object.__setattr__(self, "source_value", value)
         object.__setattr__(self, "youtube_url", youtube_url or value)
@@ -697,8 +709,6 @@ class BilibiliCoverPreviewRequest(BaseModel):
             value = youtube_url
         if not value:
             raise ValueError("source_value is required")
-        if kind not in {"youtube", "local"}:
-            raise ValueError("source_kind must be youtube or local")
         object.__setattr__(self, "source_kind", kind)
         object.__setattr__(self, "source_value", value)
         object.__setattr__(self, "youtube_url", youtube_url or value)
@@ -895,12 +905,22 @@ def is_http_url(value: str) -> bool:
 
 
 def is_youtube_url(value: str) -> bool:
-    parsed = urlparse(value)
-    host = parsed.netloc.lower()
-    return any(
-        needle in host
-        for needle in ("youtube.com", "youtu.be", "m.youtube.com", "music.youtube.com")
-    )
+    return video_url_kind(value) == "youtube"
+
+
+def video_url_kind(value: str) -> str | None:
+    try:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or parsed.username is not None or parsed.port is not None:
+            return None
+        host = parsed.hostname or ""
+    except ValueError:
+        return None
+    if host in {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}:
+        return "youtube"
+    if host in {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv"}:
+        return "bilibili"
+    return None
 
 
 def is_local_source_url(value: str) -> bool:
@@ -1757,6 +1777,44 @@ def yt_dlp_ffmpeg_location() -> str:
     return str(path)
 
 
+def online_media_proxy(url: str) -> str | None:
+    if YT_DLP_PROXY or not DESKTOP:
+        return YT_DLP_PROXY or None
+    target = urlparse(url)
+    if os.name == "nt":
+        windows_proxies = urllib_request.getproxies_registry()
+        if windows_proxies:
+            if urllib_request.proxy_bypass_registry(target.hostname or ""):
+                return None
+            return windows_proxies.get(target.scheme) or windows_proxies.get("all")
+    if urllib_request.proxy_bypass(target.hostname or ""):
+        return None
+    proxies = urllib_request.getproxies()
+    return proxies.get(target.scheme) or proxies.get("all")
+
+
+def yt_dlp_network_flags(url: str) -> list[str]:
+    proxy = online_media_proxy(url)
+    if not DESKTOP:
+        return ["--proxy", proxy] if proxy else []
+    return ["--ignore-config", "--encoding", "utf-8", "--proxy", proxy or "",
+            "--js-runtimes", f"deno:{Path(YT_DLP_BIN).with_name('deno.exe')}"]
+
+
+def online_media_error(url: str, diagnostics: str) -> str:
+    site = "B 站" if video_url_kind(url) == "bilibili" else "YouTube"
+    reason = diagnostics.lower()
+    if any(term in reason for term in ("10061", "connection refused", "actively refused", "proxyerror")):
+        return f"无法连接到{site}。请检查 Windows 系统代理或网络连接后重试。"
+    if any(term in reason for term in ("timed out", "timeout", "getaddrinfo", "failed to establish", "network is unreachable")):
+        return f"连接{site}超时或网络不可达，请检查网络后重试。"
+    if "sign in" in reason or "login required" in reason:
+        return f"{site}要求登录或验证，此链接暂时无法读取。"
+    if "unavailable" in reason or "private video" in reason:
+        return f"{site}上的视频暂不可用，请确认链接仍可访问。"
+    return f"读取{site}素材失败，请核对链接后重试。详细信息已记录。"
+
+
 def download_youtube(
     job_id: str,
     youtube_url: str,
@@ -1789,13 +1847,17 @@ def download_youtube(
         output_template,
         youtube_url,
     ]
-    if DESKTOP:
-        cmd[1:1] = ["--ignore-config", "--js-runtimes", f"deno:{Path(YT_DLP_BIN).with_name('deno.exe')}"]
+    cmd[1:1] = yt_dlp_network_flags(youtube_url)
+    if DESKTOP and not audio_only:
+        metadata_file = source_dir / "source-metadata.jsonl"
+        metadata_file.unlink(missing_ok=True)
+        cmd[1:1] = [
+            "--no-simulate", "--print-to-file", "after_move:%(.{title,thumbnail})j",
+            to_windows_path(metadata_file) if YT_DLP_BIN.lower().endswith(".exe") else str(metadata_file),
+        ]
     ffmpeg_location = yt_dlp_ffmpeg_location()
     if ffmpeg_location:
         cmd[1:1] = ["--ffmpeg-location", ffmpeg_location]
-    if YT_DLP_PROXY:
-        cmd[1:1] = ["--proxy", YT_DLP_PROXY]
     def handle_yt_dlp_line(line: str) -> None:
         if not progress_callback:
             return
@@ -2487,13 +2549,13 @@ def resolve_whisper_model_ref(model_name: str) -> str:
 
 def whisper_model_status(model_name: str) -> dict[str, Any]:
     requested = model_name.strip() or DEFAULT_WHISPER_MODEL
+    if DESKTOP:
+        from app.desktop_models import status
+        return status(DATA_DIR, requested)
     local_candidates = [
         DATA_DIR / "models" / f"faster-whisper-{requested}",
         DATA_DIR / "models" / requested,
     ]
-    if DESKTOP:
-        cache = DATA_DIR / "models" / "huggingface" / "hub" / f"models--Systran--faster-whisper-{requested}" / "snapshots"
-        local_candidates.extend(cache.glob("*"))
     local_path = next((candidate for candidate in local_candidates if (candidate / "model.bin").is_file()), None)
     return {
         "name": requested,
@@ -2514,6 +2576,9 @@ def transcribe_video(
 ) -> Path:
     whisper_cli = WHISPER_BIN or shutil.which("whisper") or ""
     requested_model = (model_name or WHISPER_MODEL).strip() or DEFAULT_WHISPER_MODEL
+    mode = (inference_mode or WHISPER_INFERENCE_MODE).strip() or WHISPER_INFERENCE_MODE
+    if DESKTOP and not whisper_model_status(requested_model)["available"]:
+        raise RuntimeError(f"本地 Whisper {requested_model} 未准备好，请在「设置 → 本地资源与环境」下载模型后重试。")
     runtime = {"backend": "faster-whisper"} if DESKTOP else resolve_whisper_runtime(requested_model)
 
     if runtime["backend"] == "cli":
@@ -2556,7 +2621,7 @@ def transcribe_video(
             "--model",
             requested_model,
             "--inference-mode",
-            (inference_mode or WHISPER_INFERENCE_MODE).strip() or WHISPER_INFERENCE_MODE,
+            mode,
         ]
         def handle_whisper_line(line: str) -> None:
             if not progress_callback:
@@ -2571,6 +2636,8 @@ def transcribe_video(
         if DESKTOP:
             from app.desktop_config import worker_environment
             env = worker_environment()
+            if mode == "gpu_only" and env["WHISPER_DEVICE"] != "cuda":
+                raise RuntimeError("严格 GPU 模式需要可用且已启用的 NVIDIA 转录环境。请到设置检测。")
         else:
             env = None
         try:
@@ -2579,7 +2646,7 @@ def transcribe_video(
                 on_stdout_line=handle_whisper_line, on_stderr_line=handle_whisper_line, env=env,
             )
         except RuntimeError:
-            if not env or env.get("WHISPER_DEVICE") != "cuda":
+            if mode == "gpu_only" or not env or env.get("WHISPER_DEVICE") != "cuda":
                 raise
             if progress_callback:
                 progress_callback(5, "GPU 转录失败，改用 CPU 重试", None)
@@ -2595,6 +2662,10 @@ def transcribe_video(
             raise RuntimeError("faster-whisper worker finished but no english.srt was produced")
         return path
     except Exception as exc:
+        if DESKTOP:
+            if mode == "gpu_only":
+                raise RuntimeError("严格 GPU 转录失败，任务已停止。请检查 NVIDIA 环境和显存，详情见本地 Whisper 日志。") from exc
+            raise RuntimeError("Whisper 转录失败。请在设置中检查本地模型和运行环境，详情见本地 Whisper 日志。") from exc
         if runtime["backend"] == "auto" and whisper_cli:
             output_dir = job_dir(job_id) / "transcript"
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -3182,7 +3253,7 @@ def detect_video_duration_seconds(source_path: Path) -> float:
         "default=noprint_wrappers=1:nokey=1",
         str(source_path),
     ]
-    completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    completed = subprocess.run(cmd, capture_output=True, text=True, check=False, creationflags=WINDOW_FLAGS)
     if completed.returncode != 0:
         return 0.0
     try:
@@ -3302,7 +3373,7 @@ def burn_subtitle(
         play_res_y=canvas_height,
     )
     subtitle_filter = f"ass='{ass_path.name if DESKTOP else ffmpeg_escape_path(ass_path)}'"
-    fonts_dir = Path(DEFAULT_FONTS_DIR)
+    fonts_dir = subtitle_fonts_dir(style.font_family)
     if fonts_dir.exists():
         subtitle_filter += f":fontsdir='{ffmpeg_escape_path(fonts_dir)}'"
     video_filters = []
@@ -3504,8 +3575,8 @@ def run_stage_download(job_id: str) -> None:
                 else:
                     raise RuntimeError(f"local source import failed: {exc}") from exc
         else:
-            if not is_youtube_url(source_value):
-                raise ValueError("source_value must be a YouTube link or local source")
+            if video_url_kind(source_value) != request.source_kind:
+                raise ValueError("请输入有效的 YouTube 或 B 站链接")
 
             report_stage_progress(job_id, "download", 5, "starting download", status="running", force=True)
             try:
@@ -3523,12 +3594,15 @@ def run_stage_download(job_id: str) -> None:
                     source_path = ensure_placeholder_video(job_id, source_value)
                     report_stage_progress(job_id, "download", 70, "download fallback created", status="running", force=True)
                 else:
+                    if DESKTOP:
+                        raise RuntimeError(online_media_error(source_value, str(exc))) from exc
                     raise RuntimeError(f"download failed: {exc}") from exc
 
+        metadata = read_source_download_metadata(source_path) if DESKTOP else {}
         result = {
             "result_url": public_file_url(job_id, source_path.name),
             "source_video_url": public_file_url(job_id, source_path.name),
-            "title": request.title or source_path.stem,
+            "title": metadata.get("title") or request.title or source_path.stem,
             "artifact_name": source_path.name,
             "resolution": request.resolution,
             "fps": request.fps,
@@ -3663,7 +3737,37 @@ def build_bilibili_credential() -> Any:
     return Credential(**kwargs)
 
 
-def create_bilibili_cover(job_id: str, video_path: Path, settings: BilibiliUploadSettings, source_value: str = "") -> tuple[Path, dict[str, Any]]:
+def read_source_download_metadata(source_path: Path) -> dict[str, Any]:
+    try:
+        with source_path.with_name("source-metadata.jsonl").open(encoding="utf-8") as stream:
+            data = json.loads(stream.readline(65536))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def bilibili_source_metadata(source_value: str, source_video_url: str) -> dict[str, Any]:
+    if not video_url_kind(source_value):
+        return {}
+    if source_video_url:
+        try:
+            _, path = resolve_local_artifact_from_url(source_video_url)
+            data = read_source_download_metadata(path)
+            if data.get("thumbnail"):
+                return data
+        except (OSError, ValueError):
+            pass
+    try:
+        data = load_youtube_preview_metadata(source_value)
+        return {"title": data.get("title"), "thumbnail": data.get("thumbnail") or best_thumbnail_url(data)}
+    except (OSError, RuntimeError, ValueError):
+        return {}
+
+
+def create_bilibili_cover(
+    job_id: str, video_path: Path, settings: BilibiliUploadSettings, source_value: str = "",
+    *, source_video_url: str = "", source_thumbnail: str | None = None,
+) -> tuple[Path, dict[str, Any]]:
     cover_config = selected_bilibili_cover_config(settings, source_value)
     cover_selection = str(cover_config.pop("_cover_selection", "") or "")
     if not cover_selection:
@@ -3700,6 +3804,44 @@ def create_bilibili_cover(job_id: str, video_path: Path, settings: BilibiliUploa
             "cover_asset_url": "",
         }
 
+    if mode == "source_cover":
+        if source_thumbnail is None:
+            source_thumbnail = str(bilibili_source_metadata(source_value, source_video_url).get("thumbnail") or "")
+        if is_http_url(source_thumbnail):
+            try:
+                image = download_thumbnail_for_preview(job_id, source_thumbnail)
+                cover_path = normalize_bilibili_cover_image(job_id, image)
+                return cover_path, {
+                    "cover_selection": cover_selection, "cover_mode": mode, "cover_source": "source_thumbnail",
+                    "cover_asset_url": public_file_url(job_id, cover_path.name),
+                }
+            except (OSError, RuntimeError, httpx.HTTPError):
+                pass
+        original = None
+        try:
+            if source_video_url:
+                _, original = resolve_local_artifact_from_url(source_video_url)
+            elif not is_http_url(source_value):
+                original = normalize_local_source_path(source_value)
+        except (OSError, ValueError):
+            pass
+        if original and original.is_file() and not is_http_url(source_value):
+            try:
+                image = artifact_path(job_id, "embedded_cover.jpg")
+                run_command([
+                    FFMPEG_BIN, "-y", "-i", str(original), "-map", "0:v:disp:attached_pic",
+                    "-frames:v", "1", str(image),
+                ], log_dir=job_dir(job_id), log_name="ffmpeg-bilibili-cover-embedded")
+                cover_path = normalize_bilibili_cover_image(job_id, image)
+                return cover_path, {
+                    "cover_selection": cover_selection, "cover_mode": mode, "cover_source": "embedded_picture",
+                    "cover_asset_url": public_file_url(job_id, cover_path.name),
+                }
+            except (OSError, RuntimeError):
+                pass
+        if original and original.is_file():
+            video_path = original
+
     duration = detect_video_duration_seconds(video_path)
     percent = float(cover_config.get("cover_time_percent") or settings.cover_time_percent or 50)
     if mode == "auto_first_frame":
@@ -3716,6 +3858,7 @@ def create_bilibili_cover(job_id: str, video_path: Path, settings: BilibiliUploa
         f"{seconds:.3f}",
         "-i",
         str(video_path),
+        *(["-map", "0:V:0"] if mode == "source_cover" else []),
         "-frames:v",
         "1",
         "-q:v",
@@ -3728,7 +3871,7 @@ def create_bilibili_cover(job_id: str, video_path: Path, settings: BilibiliUploa
     return cover_path, {
         "cover_selection": cover_selection if cover_selection in {"item_override", "legacy_per_item"} else "generated_frame",
         "cover_mode": mode,
-        "cover_source": cover_source,
+        "cover_source": "frame" if mode == "source_cover" else cover_source,
         "cover_asset_url": public_file_url(job_id, cover_path.name),
         "cover_time_percent": percent,
     }
@@ -3800,7 +3943,10 @@ def upload_video_to_bilibili(
     credential = build_bilibili_credential()
     if progress_callback:
         progress_callback(8, "extracting upload cover", None)
-    cover_path, cover_metadata = create_bilibili_cover(job_id, video_path, settings, request.original_source)
+    cover_path, cover_metadata = create_bilibili_cover(
+        job_id, video_path, settings, request.original_source,
+        source_video_url=request.source_video_url, source_thumbnail=request.source_thumbnail,
+    )
     if progress_callback:
         progress_callback(
             10,
@@ -3824,7 +3970,7 @@ def upload_video_to_bilibili(
 
     async def do_upload(line_value: str, include_collection_meta: bool = True) -> dict[str, Any]:
         meta_kwargs = {
-            "tid": settings.tid,
+            "tid": settings.tid or 130,
             "title": title,
             "tags": tags,
             "desc": description,
@@ -3889,14 +4035,17 @@ def upload_video_to_bilibili(
     collection_submit_warning = ""
     upload_result: dict[str, Any] | None = None
     upload_errors: list[dict[str, Any]] = []
-    for line_value in bilibili_upload_line_candidates(settings.line):
+    lines = bilibili_upload_line_candidates(settings.line)
+    if not request.allow_automatic_retry:
+        lines = lines[:1]
+    for line_value in lines:
         if progress_callback:
             progress_callback(15, f"starting bilibili uploader via {line_value}", None)
         try:
             try:
                 candidate_result = sync(do_upload(line_value, include_collection_meta=True))
             except Exception as exc:
-                if settings.collection_type != "season":
+                if not request.allow_automatic_retry or settings.collection_type != "season":
                     raise
                 collection_submit_warning = f"season metadata submit failed, retried without season binding: {exception_diagnostics(exc).get('message')}"
                 if progress_callback:
@@ -3922,7 +4071,7 @@ def upload_video_to_bilibili(
         last = upload_errors[-1] if upload_errors else {"message": "unknown upload error"}
         raise RuntimeError(
             "Bilibili upload failed after trying lines "
-            f"{', '.join(bilibili_upload_line_candidates(settings.line))}: {last.get('message')}; "
+            f"{', '.join(lines)}: {last.get('message')}; "
             f"details={json.dumps(upload_errors, ensure_ascii=False)[:1600]}"
         )
     ids = extract_bilibili_submission_ids(upload_result)
@@ -3934,7 +4083,10 @@ def upload_video_to_bilibili(
     if settings.collection_type != "none" and settings.collection_id:
         if progress_callback:
             progress_callback(96, f"adding archive to {settings.collection_type} {settings.collection_id}", None)
-        collection_status = add_bilibili_archive_to_collection(aid, settings)
+        try:
+            collection_status = add_bilibili_archive_to_collection(aid, settings)
+        except Exception:
+            collection_status = {"skipped": False, "message": "投稿已成功，但加入合集或系列失败，可在 B 站创作中心调整"}
     if collection_submit_warning:
         collection_status = {
             **collection_status,
@@ -3963,6 +4115,29 @@ def run_stage_bilibili_upload(job_id: str) -> None:
             result = {"result_url": request.final_video_url, "bilibili_upload_skipped": True}
             report_stage_progress(job_id, "bilibili_upload", 100, "bilibili upload skipped", status="succeeded", result=result, force=True)
             return
+        if DESKTOP:
+            from app import desktop_bilibili
+
+            report_stage_progress(job_id, "bilibili_upload", 2, "准备来源封面和投稿信息", status="running", force=True)
+            if request.upload_settings.cover_mode == "source_cover" or (
+                request.upload_settings.auto_metadata and is_http_url(request.original_title)
+                and request.bilibili_metadata is None
+            ):
+                source = bilibili_source_metadata(request.original_source, request.source_video_url)
+                request.source_thumbnail = str(source.get("thumbnail") or "")
+                request.original_title = str(source.get("title") or request.original_title)
+            request.upload_settings, request.bilibili_metadata = desktop_bilibili.prepare_metadata(request)
+            state = load_state(job_id)
+            state.request.update({
+                "original_title": request.original_title, "upload_settings": request.upload_settings.model_dump(),
+                "bilibili_metadata": request.bilibili_metadata,
+            })
+            state.result = {"bilibili_metadata": request.bilibili_metadata}
+            save_state(state)
+            if request.operator_batch_id and request.operator_item_id:
+                batch = load_batch(request.operator_batch_id)
+                item = next(item for item in batch.items if item.item_id == request.operator_item_id)
+                update_batch_item(batch.batch_id, item.item_id, result={**(item.result or {}), **state.result})
         report_stage_progress(job_id, "bilibili_upload", 5, "waiting for upload slot", status="running", force=True)
         _, video_path = resolve_local_artifact_from_url(request.final_video_url)
         with BILI_UPLOAD_SEMAPHORE:
@@ -3975,6 +4150,8 @@ def run_stage_bilibili_upload(job_id: str) -> None:
                 ),
             )
         result["result_url"] = request.final_video_url
+        if request.bilibili_metadata is not None:
+            result["bilibili_metadata"] = request.bilibili_metadata
         report_stage_progress(job_id, "bilibili_upload", 100, "bilibili upload completed", status="succeeded", result=result, force=True)
     except Exception as error:
         fail_job(job_id, "bilibili_upload", error)
@@ -4290,7 +4467,7 @@ def ui_whisper_models() -> dict[str, Any]:
     return {
         "default": WHISPER_MODEL,
         "default_inference_mode": WHISPER_INFERENCE_MODE,
-        "inference_modes": ["standard", "auto_repair", "batched"],
+        "inference_modes": ["auto", "gpu_only", "standard", "auto_repair", "batched"] if DESKTOP else ["standard", "auto_repair", "batched"],
         "models": [whisper_model_status(model) for model in models],
     }
 
@@ -4527,14 +4704,24 @@ def load_youtube_preview_metadata(youtube_url: str) -> dict[str, Any]:
         if isinstance(cached, dict):
             return cached
 
-    cmd = [YT_DLP_BIN, "--dump-single-json", "--no-download", "--no-playlist", youtube_url]
-    if YT_DLP_PROXY:
-        cmd[1:1] = ["--proxy", YT_DLP_PROXY]
+    cmd = [YT_DLP_BIN, *yt_dlp_network_flags(youtube_url), "--dump-single-json", "--no-download", "--no-playlist", youtube_url]
+    if DESKTOP:
+        cmd[1:1] = ["--socket-timeout", "12", "--retries", "1", "--extractor-retries", "1"]
     try:
-        completed = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=45)
+        completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8" if DESKTOP else None,
+                                   errors="replace", check=False, timeout=45, creationflags=WINDOW_FLAGS)
+    except subprocess.TimeoutExpired as exc:
+        if DESKTOP:
+            raise RuntimeError(online_media_error(youtube_url, "timeout")) from exc
+        raise
     except Exception as exc:
+        if DESKTOP:
+            raise RuntimeError("无法启动素材读取工具，请检查应用安装后重试。") from exc
         raise RuntimeError(f"preview metadata failed: {exc}") from exc
     if completed.returncode != 0:
+        if DESKTOP:
+            cache_path.with_suffix(".log").write_text(completed.stderr, encoding="utf-8")
+            raise RuntimeError(online_media_error(youtube_url, completed.stderr))
         raise RuntimeError(completed.stderr.strip() or "preview metadata failed")
     try:
         data = json.loads(completed.stdout)
@@ -4658,6 +4845,9 @@ def extract_preview_frame(
         return raw_path
 
     headers = selected_format.get("http_headers") or data.get("http_headers") or {}
+    media_url = str(selected_format.get("url"))
+    proxy = online_media_proxy(media_url) if DESKTOP else None
+    proxy_args = ["-http_proxy", proxy] if proxy and proxy.lower().startswith("http://") else []
     cmd = [
         FFMPEG_BIN,
         "-y",
@@ -4666,11 +4856,12 @@ def extract_preview_frame(
         "error",
         "-rw_timeout",
         str(PREVIEW_FRAME_TIMEOUT_SECONDS * 1_000_000),
+        *proxy_args,
         *ffmpeg_headers_args(headers),
-        "-i",
-        str(selected_format.get("url")),
         "-ss",
         f"{seconds:.3f}",
+        "-i",
+        media_url,
         "-frames:v",
         "1",
         "-q:v",
@@ -4715,7 +4906,7 @@ def download_thumbnail_for_preview(preview_job_id: str, thumbnail: str) -> Path:
     thumbnail_path = artifact_path(preview_job_id, "thumbnail.jpg")
     if thumbnail_path.exists():
         return thumbnail_path
-    with httpx.Client(timeout=30, follow_redirects=True, proxy=YT_DLP_PROXY or None) as client:
+    with httpx.Client(timeout=30, follow_redirects=True, proxy=online_media_proxy(thumbnail), trust_env=not DESKTOP) as client:
         image_response = client.get(thumbnail)
         image_response.raise_for_status()
         thumbnail_path.write_bytes(image_response.content)
@@ -4784,7 +4975,7 @@ def render_preview_with_subtitle(
         play_res_y=render_height,
     )
     subtitle_filter = f"ass='{ffmpeg_escape_path(ass_path)}'"
-    fonts_dir = Path(DEFAULT_FONTS_DIR)
+    fonts_dir = subtitle_fonts_dir(style.font_family)
     if fonts_dir.exists():
         subtitle_filter += f":fontsdir='{ffmpeg_escape_path(fonts_dir)}'"
     filters = [fixed_canvas_filter(render_width, render_height), subtitle_filter]
@@ -4859,8 +5050,8 @@ def generate_bilibili_cover_from_source(request: BilibiliCoverPreviewRequest, jo
             "render_height": 717,
         }
 
-    if not is_youtube_url(request.source_value):
-        raise ValueError("source_value must be a YouTube link or local file")
+    if video_url_kind(request.source_value) != request.source_kind:
+        raise ValueError("请输入有效的 YouTube 或 B 站链接")
     data = load_youtube_preview_metadata(request.source_value)
     if request.cover_source_mode == "youtube_thumbnail":
         thumbnail = best_thumbnail_url(data)
@@ -4992,8 +5183,8 @@ def preview_frame(request: PreviewFrameRequest) -> dict[str, Any]:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if not is_youtube_url(request.source_value):
-        raise HTTPException(status_code=400, detail="source_value must be a YouTube link or local file")
+    if video_url_kind(request.source_value) != request.source_kind:
+        raise HTTPException(status_code=400, detail="请输入有效的 YouTube 或 B 站链接")
     try:
         data = load_youtube_preview_metadata(request.source_value)
     except Exception as exc:
@@ -5035,12 +5226,17 @@ def preview_frame(request: PreviewFrameRequest) -> dict[str, Any]:
     except Exception as exc:
         preview_source = "thumbnail_fallback"
         preview_error = str(exc)
+        if DESKTOP:
+            (job_dir(preview_job_id) / "preview-frame.log").write_text(preview_error, encoding="utf-8")
+            preview_error = "暂时无法读取视频帧，已改用封面图预览。"
         try:
             thumbnail_path = download_thumbnail_for_preview(preview_job_id, thumbnail)
             rendered_path = render_preview_with_subtitle(preview_job_id, thumbnail_path, request, render_width, render_height)
             preview_url = public_file_url(preview_job_id, rendered_path.name)
             rendered_subtitle = True
         except Exception as fallback_exc:
+            if DESKTOP:
+                raise HTTPException(502, "无法取得视频帧或封面图，请检查网络后重试。") from fallback_exc
             if not thumbnail:
                 raise HTTPException(status_code=404, detail=f"real preview failed and no thumbnail fallback found: {preview_error}") from fallback_exc
             preview_url = thumbnail

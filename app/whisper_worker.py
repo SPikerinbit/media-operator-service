@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 from pathlib import Path
 
 import os
+import sys
 
 # Keep handles alive for transitive CUDA DLL loading on Windows.
 _cuda_dll_handles = []
@@ -15,6 +17,7 @@ from faster_whisper import BatchedInferencePipeline, WhisperModel
 
 from app.main import (
     artifact_path,
+    detect_cuda_runtime,
     decode_audio_for_whisper,
     job_dir,
     resolve_whisper_model_ref,
@@ -44,26 +47,39 @@ def progress(percent: int, message: str) -> None:
 
 
 def main() -> None:
+    if sys.argv[1:] == ["--check-gpu"]:
+        from app.desktop_config import GPU_LIBRARIES
+        for dll in GPU_LIBRARIES:
+            ctypes.WinDLL(str(Path(os.environ["MEDIA_GPU_DLL_DIR"]) / dll))
+        runtime = detect_cuda_runtime()
+        if "int8_float16" not in runtime["supported_compute_types"]:
+            raise RuntimeError("CUDA int8_float16 unavailable")
+        print("CUDA_READY", flush=True)
+        return
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--source", required=True)
     parser.add_argument("--language", default="en")
     parser.add_argument("--model", default="small")
-    parser.add_argument("--inference-mode", default="standard", choices=["standard", "batched", "auto_repair"])
+    parser.add_argument("--inference-mode", default="standard", choices=["auto", "standard", "batched", "auto_repair", "gpu_only"])
     args = parser.parse_args()
 
     job_dir(args.job_id).mkdir(parents=True, exist_ok=True)
     runtime = resolve_whisper_runtime(args.model)
+    gpu = runtime["device"] == "cuda"
+    inference_mode = args.inference_mode
+    if inference_mode == "gpu_only" and not gpu:
+        raise RuntimeError("CUDA is required for this transcription")
+    if inference_mode in {"auto", "gpu_only"}:
+        inference_mode = "batched" if gpu else "standard"
+    batch_size = max(WHISPER_BATCH_SIZE, 8) if gpu and args.model in {"base", "small"} else WHISPER_BATCH_SIZE
     model_ref = resolve_whisper_model_ref(args.model)
     if DESKTOP:
         status = whisper_model_status(args.model)
-        if status["available"]:
-            model_ref = status["path"]
-        else:
-            from faster_whisper.utils import download_model
-            progress(5, f"正在下载 Whisper {args.model}，首次转录需要联网")
-            model_ref = download_model(args.model)
-    progress(5, f"loading faster-whisper model {args.model}")
+        if not status["available"]:
+            raise RuntimeError("Local model files are missing or incomplete")
+        model_ref = status["path"]
+    progress(5, f"加载 Whisper {args.model} · {'NVIDIA GPU' if gpu else 'CPU'}")
     model = WhisperModel(
         model_ref,
         device=str(runtime["device"]),
@@ -71,11 +87,12 @@ def main() -> None:
         compute_type=str(runtime["compute_type"]),
         cpu_threads=int(runtime["cpu_threads"]),
         num_workers=int(runtime["num_workers"]),
+        local_files_only=DESKTOP,
     )
     progress(18, "decoding audio for whisper")
     audio, _sample_rate = decode_audio_for_whisper(Path(args.source))
     progress(28, "audio decoded")
-    effective_vad = WHISPER_VAD_ENABLED and args.inference_mode != "standard"
+    effective_vad = WHISPER_VAD_ENABLED and inference_mode != "standard"
     kwargs = {
         "language": None if args.language == "auto" else args.language,
         "word_timestamps": WHISPER_WORD_TIMESTAMPS,
@@ -137,9 +154,9 @@ def main() -> None:
     def run_batched_transcription():
         if not WHISPER_BATCHED_INFERENCE:
             raise RuntimeError("batched inference disabled")
-        progress(35, f"starting batched transcription batch_size={WHISPER_BATCH_SIZE}")
+        progress(35, f"starting batched transcription batch_size={batch_size}")
         batched_model = BatchedInferencePipeline(model)
-        segments_iter, info = batched_model.transcribe(audio, batch_size=WHISPER_BATCH_SIZE, **kwargs)
+        segments_iter, info = batched_model.transcribe(audio, batch_size=batch_size, **kwargs)
         return (*collect_transcription(segments_iter, info), info)
 
     def count_suspicious_gaps(candidate_segments: list[dict], candidate_words: list[dict], info) -> tuple[int, float]:
@@ -156,12 +173,12 @@ def main() -> None:
     fallback_error = ""
     repair_reason = ""
     try:
-        if args.inference_mode == "standard":
+        if inference_mode == "standard":
             segments, words, info = run_standard_transcription()
         else:
             segments, words, info = run_batched_transcription()
             transcribe_mode = "batched"
-            if args.inference_mode == "auto_repair":
+            if inference_mode == "auto_repair":
                 gap_count, max_gap = count_suspicious_gaps(segments, words, info)
                 progress(93, f"detected {gap_count} suspicious gaps, max gap {max_gap:.1f}s")
                 if gap_count:
@@ -170,7 +187,7 @@ def main() -> None:
                     segments, words, info = run_standard_transcription()
                     transcribe_mode = "auto_repair_standard"
     except Exception as exc:
-        if args.inference_mode in {"batched", "auto_repair"}:
+        if inference_mode in {"batched", "auto_repair"}:
             fallback_error = str(exc)
             progress(36, "batched transcription failed, falling back to standard")
             segments, words, info = run_standard_transcription()
@@ -203,7 +220,7 @@ def main() -> None:
                 "batched_inference": WHISPER_BATCHED_INFERENCE,
                 "requested_inference_mode": args.inference_mode,
                 "actual_mode": transcribe_mode,
-                "batch_size": WHISPER_BATCH_SIZE,
+                "batch_size": batch_size,
                 "beam_size": WHISPER_BEAM_SIZE,
                 "best_of": WHISPER_BEST_OF,
                 "condition_on_previous_text": WHISPER_CONDITION_ON_PREVIOUS_TEXT,

@@ -5,13 +5,15 @@ from pathlib import Path
 import shutil
 import tempfile
 import threading
+import subprocess
+import sys
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from app import desktop_config as config, desktop_gpu as gpu, desktop_jobs as jobs, knowledge, obsidian
+from app import desktop_config as config, desktop_gpu as gpu, desktop_jobs as jobs, desktop_models, knowledge, obsidian
 from app import main as media
 
 router = APIRouter(prefix="/desktop")
@@ -36,6 +38,7 @@ class Preferences(BaseModel):
 def settings():
     preferences = config.settings()
     keys = config.credentials()
+    gpu_path = config.gpu_dir(media.DATA_DIR)
     return {
         "data_dir": str(config.data_dir()),
         "active_data_dir": str(media.DATA_DIR),
@@ -44,7 +47,8 @@ def settings():
         "has_ai_key": bool(keys["TRANSLATE_API_KEY"]),
         "has_bilibili_credentials": media.bilibili_configured(),
         "gpu_enabled": bool(preferences.get("gpu_enabled")),
-        "gpu_ready": (config.gpu_dir(media.DATA_DIR) / ".ready").is_file(),
+        "gpu_ready": config.gpu_ready(gpu_path),
+        "gpu_install_dir": str(gpu_path.parent),
         "gpu": dict(gpu.PROGRESS),
     }
 
@@ -57,18 +61,90 @@ def save_settings(preferences: Preferences):
             changes["obsidian_vault"] = str(obsidian.vault_root(changes["obsidian_vault"]))
         config.update(changes, preferences.secrets)
         sync_credentials()
+        if "ai_model" in changes:
+            media.TRANSLATE_MODEL = changes["ai_model"]
+    except config.CredentialError as error:
+        raise HTTPException(503, str(error)) from error
     except (ValueError, OSError) as error:
         raise HTTPException(400, str(error)) from error
     return settings()
 
 
+class GpuInstall(BaseModel):
+    directory: str = Field(min_length=1)
+
+
 @router.post("/gpu")
-def prepare_gpu():
-    if (config.gpu_dir(media.DATA_DIR) / ".ready").is_file():
-        config.update({"gpu_enabled": True}, {})
-    else:
-        gpu.install(media.DATA_DIR)
+def prepare_gpu(request: GpuInstall):
+    try:
+        gpu.install(Path(request.directory))
+    except (ValueError, OSError) as error:
+        raise HTTPException(400, str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from error
     return settings()
+
+
+@router.get("/resources")
+def resources():
+    return {"models": [desktop_models.status(media.DATA_DIR, name) for name in desktop_models.MODELS]}
+
+
+@router.get("/fonts/{filename}")
+def bundled_font(filename: str):
+    if filename not in {"SourceHanSansCN-Regular.otf", "SourceHanSansCN-Bold.otf",
+                        "SourceHanSerifCN-Regular.otf", "SourceHanSerifCN-Bold.otf"}:
+        raise HTTPException(404, "找不到字体")
+    directory = os.getenv("MEDIA_BUNDLED_FONTS")
+    path = Path(directory) / filename if directory else None
+    if not path or not path.is_file():
+        raise HTTPException(404, "找不到字体")
+    return FileResponse(path, media_type="font/otf")
+
+
+@router.post("/resources/models/{name}")
+def prepare_model(name: str):
+    try:
+        desktop_models.prepare(media.DATA_DIR, name, media.online_media_proxy("https://huggingface.co/"))
+    except (ValueError, OSError) as error:
+        raise HTTPException(400, str(error)) from error
+    return resources()
+
+
+@router.get("/resources/check")
+def check_resources():
+    def check(command, expected=None, env=None):
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=15,
+                                    creationflags=media.WINDOW_FLAGS, cwd=media.ROOT_DIR, env=env)
+            return result.returncode == 0 and (expected is None or expected in result.stdout)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    tools = [
+        {"label": "FFmpeg / 字幕压制", "ready": check([media.FFMPEG_BIN, "-hide_banner", "-filters"], b" ass ")},
+        {"label": "ffprobe / 媒体检测", "ready": check([media.FFPROBE_BIN, "-version"])},
+        {"label": "yt-dlp / 在线素材", "ready": check([media.YT_DLP_BIN, "--ignore-config", "--version"])},
+        {"label": "Deno / YouTube 脚本", "ready": check([str(Path(media.YT_DLP_BIN).with_name("deno.exe")), "--version"])},
+        {"label": "WebView2 / 桌面界面", "ready": True},
+        {"label": "思源字幕字体", "ready": all(
+            (Path(os.getenv("MEDIA_BUNDLED_FONTS", "")) / f"{family}-{weight}.otf").is_file()
+            for family in ("SourceHanSansCN", "SourceHanSerifCN") for weight in ("Light", "Regular", "Bold")
+        )},
+    ]
+    env = config.worker_environment(enable_gpu=True)
+    worker = ([str(Path(sys.executable).with_name("MediaWhisper.exe"))] if getattr(sys, "frozen", False)
+              else [sys.executable, "-m", "app.whisper_worker"])
+    tools.append({"label": "NVIDIA / CUDA、cuDNN 和 GPU 推理",
+                  "ready": env["WHISPER_DEVICE"] == "cuda" and check([*worker, "--check-gpu"], b"CUDA_READY", env)})
+    writable = False
+    try:
+        with tempfile.TemporaryFile(dir=media.DATA_DIR):
+            writable = True
+    except OSError:
+        pass
+    tools.append({"label": "资料目录写入", "ready": writable})
+    return {**resources(), "checks": tools, "free_bytes": shutil.disk_usage(media.DATA_DIR).free}
 
 
 @router.get("/batches")
@@ -84,6 +160,36 @@ class Retry(BaseModel):
     upload_checked: bool = False
 
 
+class BatchUpload(BaseModel):
+    item_ids: list[str] = Field(min_length=1, max_length=300)
+    upload_checked: bool = False
+    use_current_settings: bool = False
+    upload_settings: media.BilibiliUploadSettings | None = None
+
+
+@router.get("/batches/{batch_id}/upload-candidates")
+def upload_candidates(batch_id: str):
+    try:
+        return jobs.upload_candidates(batch_id)
+    except FileNotFoundError as error:
+        raise HTTPException(404, "找不到批次") from error
+
+
+@router.post("/batches/{batch_id}/upload")
+def upload_batch(batch_id: str, request: BatchUpload):
+    try:
+        defaults = request.upload_settings
+        if defaults is not None:
+            defaults = media.BilibiliUploadSettings.model_validate({**defaults.model_dump(), "enabled": True})
+        return jobs.queue_history_uploads(
+            batch_id, request.item_ids, request.upload_checked, defaults, request.use_current_settings,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(404, "找不到批次或任务") from error
+    except ValueError as error:
+        raise HTTPException(400, "投稿参数无效，请检查原任务参数或当前投稿设置") from error
+
+
 @router.post("/batches/{batch_id}/{item_id}/retry")
 def retry(batch_id: str, item_id: str, request: Retry):
     try:
@@ -93,7 +199,7 @@ def retry(batch_id: str, item_id: str, request: Retry):
 
 
 class ImportRequest(BaseModel):
-    kind: Literal["youtube", "local"]
+    kind: media.SourceKind
     source: str = Field(min_length=1)
     rights_confirmed: bool = False
     language: str = Field(default="auto", pattern=r"^(auto|[a-z]{2,3})$")
@@ -115,7 +221,7 @@ def import_source(request: ImportRequest):
         batch = jobs.submit_desktop_batch(media.BatchCreateRequest(
             sources=[media.SourceInput(source_kind=request.kind, source_value=source)],
             rights_confirmed=True, knowledge_only=True, source_language=request.language,
-            subtitle_output_mode="en_only", batch_concurrency=1,
+            subtitle_output_mode="en_only", batch_concurrency=1, whisper_inference_mode="auto",
         ))
         return {"batch_id": batch.batch_id}
     except (ValueError, OSError) as error:

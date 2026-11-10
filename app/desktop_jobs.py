@@ -6,6 +6,7 @@ import threading
 from fastapi import HTTPException
 
 from app import knowledge
+from app import desktop_config
 from app import main as media
 
 
@@ -87,6 +88,19 @@ def run_item(batch_id, item_id):
         model = settings.get("whisper_model") or media.WHISPER_MODEL
         inference = settings.get("whisper_inference_mode") or media.WHISPER_INFERENCE_MODE
         mode = settings.get("subtitle_output_mode") or "en_only"
+        explicit_transcripts = batch.request.get("transcript_ids") or {}
+        if inference == "gpu_only" and explicit_transcripts.get(item.client_row_id):
+            raise ValueError("严格 GPU 模式需要重新转录，请直接添加视频素材。")
+        cache_key = knowledge.transcription_key(item.source_kind, item.source_value, language, model, inference)
+        transcript_id = explicit_transcripts.get(item.client_row_id) or (
+            knowledge.cached_id(cache_key) if inference != "gpu_only" else None
+        )
+        if not transcript_id:
+            stage = "transcribe"
+            if not media.whisper_model_status(model)["available"]:
+                raise ValueError(f"本地 Whisper {model} 未准备好，请在「设置 → 本地资源与环境」下载后重试。")
+            if inference == "gpu_only" and desktop_config.worker_environment()["WHISPER_DEVICE"] != "cuda":
+                raise ValueError("严格 GPU 模式需要启用 NVIDIA 转录加速，请先在设置中检测和启用。")
 
         def run(name, payload, transcript_id=None):
             nonlocal stage
@@ -98,11 +112,8 @@ def run_item(batch_id, item_id):
             "source_kind": item.source_kind, "source_value": item.source_value, "rights_confirmed": True,
             "resolution": settings.get("resolution"), "fps": settings.get("fps"),
             "title": Path(item.source_value).stem if item.source_kind == "local" else item.source_value,
-            "audio_only": knowledge_only and item.source_kind == "youtube",
+            "audio_only": knowledge_only and item.source_kind != "local",
         })
-        cache_key = knowledge.transcription_key(item.source_kind, item.source_value, language, model, inference)
-        explicit_transcripts = batch.request.get("transcript_ids") or {}
-        transcript_id = explicit_transcripts.get(item.client_row_id) or knowledge.cached_id(cache_key)
         if explicit_transcripts.get(item.client_row_id):
             transcript = knowledge.read_transcript(transcript_id)
             if transcript["source"] != item.source_value or transcript["source_kind"] != item.source_kind:
@@ -149,6 +160,8 @@ def run_item(batch_id, item_id):
             if upload.enabled:
                 run("bilibili_upload", {
                     "final_video_url": result["final_video_url"], "original_source": item.source_value,
+                    "source_video_url": result["source_video_url"], "english_srt_url": result["english_srt_url"],
+                    "translate_model": settings.get("translate_model") or "",
                     "output_name": output_name, "original_title": result.get("title", output_name),
                     "upload_settings": upload.model_dump(),
                 })
@@ -156,24 +169,37 @@ def run_item(batch_id, item_id):
                                 message="已完成", result={**result, "output_name": output_name}, clear_error=True)
     except Exception as error:
         message = str(error)
+        if stage == "bilibili_upload":
+            _, current = batch_item(batch_id, item_id)
+            result.update(current.result or {})
         media.update_batch_item(batch_id, item_id, status="failed", stage=stage, message=message,
                                 result=result or None, error={"stage": stage, "message": message})
 
 
-def enqueue(batch, item_id):
-    slots = BATCH_SLOTS.setdefault(batch.batch_id, threading.BoundedSemaphore(batch.request["batch_concurrency"]))
+def enqueue(batch, item_id, upload_job_id=None):
+    slots = BATCH_SLOTS.setdefault(batch.batch_id, threading.BoundedSemaphore(
+        batch.request.get("batch_concurrency") or media.BATCH_WORKER_CONCURRENCY,
+    ))
 
     def work():
         with slots:
-            run_item(batch.batch_id, item_id)
+            if upload_job_id:
+                run_history_upload(batch.batch_id, item_id, upload_job_id)
+            else:
+                run_item(batch.batch_id, item_id)
 
     media.batch_executor.submit(work)
 
 
+def validate_upload_category(upload):
+    if upload.tid is None and not (upload.auto_metadata and media.TRANSLATE_API_KEY):
+        raise HTTPException(400, "请手动选择 B 站投稿分区，或配置 DeepSeek 后使用自动分区")
+
+
 def submit_desktop_batch(request):
-    if any(source.source_kind == "youtube" and not media.is_youtube_url(source.source_value)
+    if any(source.source_kind != "local" and media.video_url_kind(source.source_value) != source.source_kind
            for source in request.sources):
-        raise HTTPException(400, "请输入有效的 YouTube 链接")
+        raise HTTPException(400, "请输入有效的 YouTube 或 B 站链接")
     if not request.knowledge_only:
         for override in [{}, *request.item_overrides.values()]:
             if not isinstance(override, dict):
@@ -184,8 +210,10 @@ def submit_desktop_batch(request):
             upload = media.BilibiliUploadSettings.model_validate({
                 **request.bilibili_upload.model_dump(), **(override.get("bilibili_upload") or {}),
             })
-            if upload.enabled and not media.bilibili_configured():
-                raise HTTPException(400, "请先在设置中配置 B 站投稿凭据")
+            if upload.enabled:
+                if not media.bilibili_configured():
+                    raise HTTPException(400, "请先在设置中配置 B 站投稿凭据")
+                validate_upload_category(upload)
     batch = media.create_batch(request)
     for item in batch.items:
         enqueue(batch, item.item_id)
@@ -211,13 +239,146 @@ def recover_interrupted():
                                         error={"stage": item.stage, "message": message})
 
 
+def previous_upload(item):
+    job_id = item.stage_jobs.get("bilibili_upload")
+    try:
+        return media.load_state(job_id) if job_id else None
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def upload_candidate(item):
+    previous = previous_upload(item)
+    result = item.result or {}
+    submitted = result.get("bilibili_url") or result.get("bvid") or result.get("aid")
+    if submitted or (previous and previous.status == "succeeded"
+                     and not (previous.result or {}).get("bilibili_upload_skipped")):
+        return {"state": "posted", "message": "已有成功投稿记录"}
+    if item.status in {"queued", "running"}:
+        return {"state": "busy", "message": "任务正在处理"}
+    if not result.get("final_video_url"):
+        return {"state": "missing", "message": "任务尚未生成成片"}
+    try:
+        _, path = media.resolve_local_artifact_from_url(result["final_video_url"])
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError("missing video")
+    except (ValueError, OSError):
+        return {"state": "missing", "message": "原成片已移走或不可读取"}
+    if item.stage == "bilibili_upload" or item.stage_jobs.get("bilibili_upload"):
+        return {"state": "retry", "message": "复用成片和原投稿参数"}
+    return {"state": "ready", "message": "复用成片，使用当前批次默认投稿参数"}
+
+
+def upload_candidates(batch_id):
+    batch = media.load_batch(batch_id)
+    if batch.request.get("knowledge_only"):
+        return {}
+    return {item.item_id: upload_candidate(item) for item in batch.items}
+
+
+def run_history_upload(batch_id, item_id, job_id):
+    try:
+        RUNNERS["bilibili_upload"](job_id)
+    except Exception as error:
+        media.fail_job(job_id, "bilibili_upload", error)
+    finished = media.load_state(job_id)
+    with media.batch_lock:
+        _, item = batch_item(batch_id, item_id)
+        if item.stage_jobs.get("bilibili_upload") != job_id:
+            return
+        if finished.status == "succeeded":
+            media.update_batch_item(batch_id, item_id, status="succeeded", stage="done", progress=100,
+                                    message="投稿完成", result={**(item.result or {}), **(finished.result or {})},
+                                    clear_error=True)
+        else:
+            error = finished.error or {"stage": "bilibili_upload", "message": finished.message}
+            media.update_batch_item(batch_id, item_id, status="failed", stage="bilibili_upload",
+                                    message=str(error.get("message") or "投稿失败"), error=error)
+
+
+def queue_history_uploads(batch_id, item_ids, confirmed, defaults=None, use_current_settings=False):
+    if not confirmed:
+        raise HTTPException(409, "请先到 B 站核对稿件状态，再确认投稿")
+    if not media.bilibili_configured():
+        raise HTTPException(400, "请先在设置中配置 B 站投稿凭据")
+    if len(set(item_ids)) != len(item_ids):
+        raise HTTPException(400, "投稿选项中包含重复任务")
+    with media.batch_lock:
+        batch = media.load_batch(batch_id)
+        if batch.request.get("knowledge_only"):
+            raise HTTPException(409, "字幕分析任务没有可投稿的成片")
+        indexed = {item.item_id: item for item in batch.items}
+        planned = []
+        for item_id in item_ids:
+            item = indexed.get(item_id)
+            if item is None:
+                raise FileNotFoundError(item_id)
+            state = upload_candidate(item)
+            if state["state"] not in {"retry", "ready"}:
+                raise HTTPException(409, f"第 {item.index} 项无法投稿：{state['message']}")
+            previous = previous_upload(item)
+            reuse_settings = state["state"] == "retry" and not use_current_settings
+            previous_request = previous.request if previous and reuse_settings else {}
+            settings = media.batch_item_settings(batch.request, item)
+            if reuse_settings:
+                old = previous_request.get("upload_settings") or settings.get("bilibili_upload")
+                upload = media.BilibiliUploadSettings.model_validate({**(old or {}), "enabled": True})
+            else:
+                if defaults is None:
+                    raise HTTPException(400, "请为首次投稿的成片提供投稿参数")
+                upload = defaults
+            validate_upload_category(upload)
+            if upload.copyright == 2:
+                source = upload.source if upload.source_mode == "custom" else item.source_value
+                if not media.is_http_url(source):
+                    raise HTTPException(400, f"第 {item.index} 项是转载，请在投稿参数中填写有效的来源网址")
+            result = item.result or {}
+            planned.append((item, media.StageBilibiliUploadRequest(
+                final_video_url=result["final_video_url"], original_source=item.source_value,
+                source_video_url=result.get("source_video_url") or "",
+                english_srt_url=result.get("english_srt_url") or "",
+                translate_model=previous_request.get("translate_model") or "",
+                bilibili_metadata=previous_request.get("bilibili_metadata"),
+                output_name=item.output_name or f"source{item.index}",
+                original_title=str(previous_request.get("original_title") or result.get("title") or item.output_name or f"source{item.index}"),
+                upload_settings=upload, allow_automatic_retry=False,
+                operator_batch_id=batch_id, operator_item_id=item_id,
+            )))
+
+        queued = []
+        for item, payload in planned:
+            job = media.create_stage_job("bilibili_upload", payload.model_dump())
+            item.stage_jobs["bilibili_upload"] = job.job_id
+            item.stage_details["bilibili_upload"] = {
+                "job_id": job.job_id, "status": "queued", "progress": 0, "message": "等待投稿",
+            }
+            item.status = "queued"
+            item.stage = "bilibili_upload"
+            item.progress = media.stage_overall_progress("bilibili_upload", 0)
+            item.local_progress = 0
+            item.message = "等待投稿"
+            item.progress_detail = ""
+            item.log_tail = []
+            item.error = None
+            item.active_stage_job_id = job.job_id
+            item.updated_at = media.now_iso()
+            queued.append((item.item_id, job.job_id))
+        data = batch.model_dump()
+        data["updated_at"] = media.now_iso()
+        media.recompute_batch_counts(data)
+        batch = media.save_batch(media.BatchState.model_validate(data))
+        for item_id, job_id in queued:
+            enqueue(batch, item_id, job_id)
+        return batch
+
+
 def retry(batch_id, item_id, confirmed):
     with media.batch_lock:
         batch, item = batch_item(batch_id, item_id)
         if item.status != "failed":
             raise HTTPException(409, "任务当前无法重试")
-        if item.stage == "bilibili_upload" and not confirmed:
-            raise HTTPException(409, "请先到 B 站核对稿件状态，再确认重试")
+        if item.stage == "bilibili_upload":
+            return queue_history_uploads(batch_id, [item_id], confirmed)
         updated = media.update_batch_item(batch_id, item_id, status="queued", message="等待重试", clear_error=True)
         enqueue(batch, item_id)
     return updated

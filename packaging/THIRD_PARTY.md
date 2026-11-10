@@ -13,3 +13,4 @@ The installer includes Python runtime components and the Python libraries descri
 | Optional NVIDIA acceleration | NVIDIA CUDA 12 and cuDNN 9, downloaded separately from NVIDIA at the user's request. [NVIDIA release and license information](https://docs.nvidia.com/cudnn/latest/installation/backend/windows.html). |
 
 When sharing this preview, keep the relevant license material and corresponding source accessible alongside the installer.
+The installer also includes the Adobe Source Han Sans CN 2.005R and Source Han Serif CN 2.003R subtitle fonts (Light, Regular and Bold) under the SIL Open Font License 1.1. The bundled licenses identify the original copyright holders.

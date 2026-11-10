@@ -1,11 +1,12 @@
 
-#define AppVersion "0.2.0"
+#define AppVersion "0.2.7"
 [Setup]
 AppId={{102997A8-6D84-4A52-B13E-9F5E9F29DD64}
 AppName=Media Operator
 AppVersion={#AppVersion}
 AppPublisher=Media Operator
-DefaultDirName={localappdata}\Programs\Media Operator
+DefaultDirName={code:DefaultInstallDir}
+DisableDirPage=no
 DefaultGroupName=Media Operator
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -46,6 +47,14 @@ Name: "{autodesktop}\Media Operator"; Filename: "{app}\MediaOperator.exe"; Tasks
 Filename: "{app}\MediaOperator.exe"; Description: "Open Media Operator"; Flags: postinstall skipifsilent nowait
 
 [Code]
+function DefaultInstallDir(Param: String): String;
+begin
+  if DirExists('D:\') then
+    Result := 'D:\Media Operator'
+  else
+    Result := ExpandConstant('{localappdata}\Programs\Media Operator');
+end;
+
 function WebViewAt(Root: Integer): Boolean;
 var
   Version: String;

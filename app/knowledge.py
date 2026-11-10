@@ -279,7 +279,7 @@ def markdown(transcript_id):
     transcript = read_transcript(transcript_id)
     cues = {cue["number"]: cue for cue in transcript["cues"]}
     output = [f"# {transcript['title']}", ""]
-    if transcript["source_kind"] == "youtube":
+    if transcript["source_kind"] in {"youtube", "bilibili"}:
         output += [f"来源：{transcript['source']}", ""]
     for card in transcript["cards"]:
         title = re.sub(r"\s+", " ", card["claim"]).strip()

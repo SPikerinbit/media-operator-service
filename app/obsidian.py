@@ -58,7 +58,7 @@ def _youtube_url(doc):
     parts = urlsplit(doc["source"])
     if parts.hostname == "youtu.be":
         video_id = parts.path.strip("/").split("/")[0]
-    elif parts.hostname in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+    elif parts.hostname in {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}:
         video_id = parse_qs(parts.query).get("v", [""])[0]
         if not video_id and parts.path.startswith(("/shorts/", "/live/", "/embed/")):
             video_id = parts.path.split("/")[2]
@@ -69,9 +69,27 @@ def _youtube_url(doc):
     return ""
 
 
+def _bilibili_url(doc):
+    if doc["source_kind"] != "bilibili":
+        return ""
+    parts = urlsplit(doc["source"])
+    if parts.hostname in {"bilibili.com", "www.bilibili.com", "m.bilibili.com"}:
+        video = re.fullmatch(r"/video/(BV[0-9A-Za-z]+|av[0-9]+)/?", parts.path)
+        if video:
+            page = parse_qs(parts.query).get("p", ["1"])[0]
+            if not re.fullmatch(r"[1-9][0-9]{0,5}", page):
+                page = "1"
+            return f"https://www.bilibili.com/video/{video[1]}/?p={page}"
+    if parts.hostname == "b23.tv" and re.fullmatch(r"/[0-9A-Za-z]+/?", parts.path):
+        return "https://b23.tv" + parts.path
+    return ""
+
+
 def _source_text(doc, source_id):
-    url = _youtube_url(doc)
-    source = f"[YouTube]({url})" if url else _heading(PureWindowsPath(doc["source"]).name)
+    youtube = _youtube_url(doc)
+    bilibili = _bilibili_url(doc)
+    source = (f"[YouTube]({youtube})" if youtube else f"[B 站]({bilibili})" if bilibili
+              else _heading(PureWindowsPath(doc["source"]).name))
     return (
         _metadata(source_id, doc["title"], "source", source_id)
         + f"# {_heading(doc['title'])}\n\n来源：{source}\n\n"
@@ -83,6 +101,7 @@ def _card_text(doc, card, note_id, snapshot, source_path):
     source = source_path.with_suffix("").as_posix()
     source_link = quote(source, safe="/")
     youtube = _youtube_url(doc)
+    bilibili = _bilibili_url(doc)
     sections = [
         _metadata(note_id, card["claim"], "viewpoint", snapshot),
         f"# {_heading(card['claim'])}\n\n",
@@ -98,6 +117,8 @@ def _card_text(doc, card, note_id, snapshot, source_path):
         stamp = f"{knowledge.clock(cue['start_ms'])}–{knowledge.clock(cue['end_ms'])}"
         if youtube:
             stamp = f"[{stamp}]({youtube}&t={cue['start_ms'] // 1000}s)"
+        elif bilibili.startswith("https://www.bilibili.com/"):
+            stamp = f"[{stamp}]({bilibili}&t={cue['start_ms'] // 1000})"
         text = "\n> ".join(_plain(cue["text"]).splitlines())
         sections.append(f"> {stamp}\n> {text}\n\n")
     return "".join(sections)

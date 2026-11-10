@@ -1,16 +1,16 @@
-import { ArrowDown, ArrowRight, ArrowUp, Clapperboard, Download, Film, FolderOpen, GripVertical, HistoryIcon, Link2, ListVideo, Play, SlidersHorizontal, Trash2 } from 'lucide-react'
-import { Reorder, useDragControls } from 'motion/react'
+import { ArrowDown, ArrowRight, ArrowUp, Clapperboard, Download, Film, FolderOpen, GripVertical, HistoryIcon, Link2, ListVideo, Play, Send, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { motion, Reorder, useDragControls } from 'motion/react'
 import { useEffect, useState } from 'react'
-import { leaf, native, request, saveAs, watchBatch, labels, type Batch, type History, type Item, type Settings, type SourceKind } from './api'
+import { errorMessage, leaf, native, request, saveAs, sourceNames, videoLinkKind, watchBatch, labels, type Batch, type History, type Item, type Settings, type SourceKind, type UploadCandidate } from './api'
 import { Button, Busy, Feedback, Field, Modal, Select, StateChip, useActions } from './ui'
-import { defaultOptions, getOverride, Inspector, resolveOptions, videoPayload, type Override, type Row, type VideoOptions } from './videoOptions'
+import { defaultOptions, getOverride, Inspector, resolveOptions, videoPayload, type InspectorSection, type Override, type Row, type VideoOptions } from './videoOptions'
 
 const steps = [['download','导入'],['transcribe','转录'],['translate','翻译'],['burn','压制'],['bilibili_upload','投稿']]
 export type VideoTransfer = { id: number; source: string; kind: SourceKind }
 
 function sourceLabel(source: string, kind: SourceKind) {
   if (kind === 'local') return leaf(source)
-  try { const url = new URL(source); return 'YouTube · ' + (url.searchParams.get('v') || leaf(url.pathname) || url.hostname) }
+  try { const url = new URL(source); return sourceNames[kind] + ' · ' + (url.searchParams.get('v') || leaf(url.pathname) || url.hostname) }
   catch { return source }
 }
 
@@ -53,17 +53,25 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
   const [overrides, setOverrides] = useState<Record<string, Override>>({})
   const [perItem, setPerItem] = useState(false)
   const [inspector, setInspector] = useState(false)
+  const [inspectorSection, setInspectorSection] = useState<InspectorSection>('output')
+  const [linkError, setLinkError] = useState('')
   const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 1150px)').matches)
   const [paste, setPaste] = useState(false)
   const [links, setLinks] = useState('')
-  const [rights, setRights] = useState(false)
   const [concurrency, setConcurrency] = useState(2)
   const [history, setHistory] = useState<History[]>([])
   const [batchId, setBatchId] = useState('')
   const [batch, setBatch] = useState<Batch | null>(null)
   const [selectedTask, setSelectedTask] = useState('')
+  const [watchRevision, setWatchRevision] = useState(0)
+  const [uploadPlan, setUploadPlan] = useState<Record<string,UploadCandidate> | null>(null)
+  const [uploadSelection, setUploadSelection] = useState<string[]>([])
+  const [uploadChecked, setUploadChecked] = useState(false)
+  const [useCurrentUploadSettings, setUseCurrentUploadSettings] = useState(false)
+  const [uploadPending, setUploadPending] = useState(false)
+  const [uploadError, setUploadError] = useState('')
   const [pending, setPending] = useState(false)
-  const [preview, setPreview] = useState<{ key: string; url: string }>({ key: '', url: '' })
+  const [preview, setPreview] = useState<{ key: string; url: string; cover?: boolean }>({ key: '', url: '' })
   const [framePosition, setFramePosition] = useState(50)
   const [previewBusy, setPreviewBusy] = useState(false)
   const { notice, setNotice, perform } = useActions()
@@ -97,7 +105,7 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
   useEffect(() => {
     if (!batchId) return
     return watchBatch(batchId, setBatch, (text) => setNotice({text,error:true}))
-  }, [batchId, setNotice])
+  }, [batchId, watchRevision, setNotice])
 
   useEffect(() => {
     if (!batch) return
@@ -116,13 +124,13 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
     ids.splice(next, 0, id); reorder(ids)
     setNotice({text: '素材已移至第 ' + (next + 1) + ' 项'})
   }
-  function add(sources: string[], kind: SourceKind) {
+  function add(sources: string[], kind?: 'local') {
     const seen = new Set(rows.map((entry) => entry.source))
     const entries: Row[] = []
     for (const source of sources) {
       if (!source || seen.has(source)) continue
       seen.add(source)
-      entries.push({id: crypto.randomUUID(), source, kind})
+      entries.push({id: crypto.randomUUID(), source, kind:kind ?? videoLinkKind(source)})
     }
     setRows([...rows, ...entries])
     if (entries[0]) setSelectedId(entries[0].id)
@@ -131,12 +139,11 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
     const candidates = selectedOnly ? (row ? [row] : []) : rows.filter((entry) => !entry.submitted)
     if (pending || !candidates.length) return
     perform(async () => {
-      if (!rights) throw new Error('请先确认你有权处理这些素材')
       setPending(true)
       try {
         const model = settings?.ai_model || 'deepseek-flash'
         const data = await request<Batch>('/ui/batches', 'POST', {
-          ...videoPayload(base,model), batch_concurrency: concurrency, rights_confirmed: rights,
+          ...videoPayload(base,model), batch_concurrency: concurrency, rights_confirmed: true,
           sources: candidates.map((entry) => ({source_kind:entry.kind, source_value:entry.source, client_row_id:entry.id})),
           item_overrides: Object.fromEntries(candidates.filter((entry) => overrides[entry.id] && Object.keys(overrides[entry.id]).length)
             .map((entry) => [entry.id,videoPayload(resolveOptions(base,overrides[entry.id]),model,true)])),
@@ -150,15 +157,53 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
     })
   }
   function retry(task: Item) {
-    if (task.stage === 'bilibili_upload' && !window.confirm('请先核对 B 站稿件。确认没有重复投稿后再重试。')) return
+    if (task.stage === 'bilibili_upload') {
+      openHistoryUpload(task.item_id)
+      return
+    }
     perform(async () => {
       const result = await request<Batch>('/desktop/batches/' + batchId + '/' + task.item_id + '/retry','POST',
-        {upload_checked:task.stage === 'bilibili_upload'})
+        {})
       setBatch(result)
-      // Start a fresh stream even when this is the currently displayed batch.
-      setBatchId('')
-      requestAnimationFrame(() => setBatchId(result.batch_id))
+      setWatchRevision((revision) => revision + 1)
     })
+  }
+  const uploadable = batch?.items.filter((entry) => {
+    const state = uploadPlan?.[entry.item_id]?.state
+    return state === 'retry' || state === 'ready'
+  }) || []
+  const hasUploadRetries = uploadSelection.some((id) => uploadPlan?.[id]?.state === 'retry')
+  const useBatchDefaults = uploadSelection.some((id) => uploadPlan?.[id]?.state === 'ready') ||
+    (hasUploadRetries && useCurrentUploadSettings)
+  const posting = item?.result?.bilibili_metadata
+
+  function openHistoryUpload(itemId?: string) {
+    const current = batch?.batch_id
+    if (!current || uploadPending) return
+    perform(async () => {
+      const candidates = await request<Record<string,UploadCandidate>>('/desktop/batches/' + current + '/upload-candidates')
+      setUploadSelection(itemId && ['retry','ready'].includes(candidates[itemId]?.state) ? [itemId] : [])
+      setUploadChecked(false)
+      setUseCurrentUploadSettings(false)
+      setUploadError('')
+      setUploadPlan(candidates)
+    })
+  }
+  function submitHistoryUpload() {
+    if (!batch || uploadPending || !uploadChecked || !uploadSelection.length) return
+    setUploadPending(true)
+    setUploadError('')
+    const defaults = videoPayload(base,settings?.ai_model || 'deepseek-flash').bilibili_upload
+    void request<Batch>('/desktop/batches/' + batch.batch_id + '/upload', 'POST', {
+      item_ids: uploadSelection, upload_checked: true,
+      use_current_settings: hasUploadRetries && useCurrentUploadSettings,
+      ...(useBatchDefaults ? {upload_settings: {...defaults, enabled:true}} : {}),
+    }).then((next) => {
+      setBatch(next)
+      setWatchRevision((revision) => revision + 1)
+      setUploadPlan(null)
+      setNotice({text:'已加入 B 站投稿队列'})
+    }).catch((error) => setUploadError(errorMessage(error))).finally(() => setUploadPending(false))
   }
   const previewKey = JSON.stringify([row?.id,options.aspect_ratio,options.resolution,options.fps,options.subtitle_output_mode,options.subtitle_style,framePosition])
   const frame = preview.key === previewKey ? preview.url : ''
@@ -167,13 +212,13 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
     perform(async () => {
       setPreviewBusy(true)
       try {
-        const data = await request<{preview_image_url?: string}>('/ui/preview-frame','POST',{
+        const data = await request<{preview_image_url?: string; preview_source?: string}>('/ui/preview-frame','POST',{
           source_kind:row.kind, source_value:row.source, aspect_ratio:options.aspect_ratio, resolution:options.resolution,
           fps:options.fps, subtitle_output_mode:options.subtitle_output_mode, subtitle_style:options.subtitle_style,
           preview_time_percent:framePosition,
         })
         if (!data.preview_image_url?.startsWith('/files/')) throw new Error('未能取得本地预览，请尝试其他时间点。')
-        setPreview({key:previewKey,url:data.preview_image_url})
+        setPreview({key:previewKey,url:data.preview_image_url,cover:data.preview_source === 'thumbnail_fallback'})
       } finally {setPreviewBusy(false)}
     })
   }
@@ -182,10 +227,11 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
     else setOverrides((current) => ({...current,[row.id]:getOverride(base,value)}))
   }
   function showHistory(id: string) {
-    setBatchId(id); setBatch(null); setSelectedTask('')
+    setBatchId(id); setBatch(null); setSelectedTask(''); setUploadPlan(null)
   }
   const inspectorContent = <Inspector options={options} change={updateOptions} settings={settings} row={row} perItem={perItem}
-    onScope={setPerItem} reset={() => row && setOverrides((current) => ({...current,[row.id]:{}}))}/>
+    section={inspectorSection} onSection={setInspectorSection} onScope={setPerItem}
+    reset={() => row && setOverrides((current) => ({...current,[row.id]:{}}))}/>
 
   return <>
     <div className="workspace-heading">
@@ -199,6 +245,7 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
     </div>
     <Feedback notice={notice}/>
     <div className="video-layout">
+      <motion.div className="production-main thin-scroll" layoutScroll>
       <section className="surface queue-pane" aria-label="素材与任务">
         <div className="section-heading"><div className="section-icon"><ListVideo size={18}/></div><h2>素材队列</h2>
           <span className="count">{rows.length}</span></div>
@@ -215,9 +262,8 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
               if (selectedId === entry.id) setSelectedId(remaining[index]?.id || remaining.at(-1)?.id || '')
             }} onDragStart={() => setDragStart(rows.map((candidate) => candidate.id))}
             onDragEnd={() => setDragStart([])} onDragCancel={() => {if(dragStart.length) reorder(dragStart); setDragStart([])}}/>)}
-        </Reorder.Group> : <div className="empty-state compact"><Film size={23}/><strong>还没有素材</strong><p>添加本地视频或粘贴 YouTube 链接。</p></div>}
+        </Reorder.Group> : <div className="empty-state compact"><Film size={23}/><strong>还没有素材</strong><p>添加本地视频或粘贴 YouTube、B 站链接。</p></div>}
         <div className="queue-bottom">
-          <label className="check"><input type="checkbox" checked={rights} onChange={(e) => setRights(e.target.checked)}/> 我有权处理这些素材</label>
           <Field label="并发任务"><Select value={concurrency} onChange={(v) => setConcurrency(Number(v))}
             options={[[1,'1 项'],[2,'2 项 · 推荐'],[3,'3 项'],[4,'4 项'],[5,'5 项']]}/></Field>
           {row?.submitted && <Button variant="ghost" size="small" leadingIcon={ArrowRight} onClick={() => submit(true)}>重新提交当前素材</Button>}
@@ -225,6 +271,8 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
         <div className="section-heading task-heading"><HistoryIcon size={17}/><h2>任务记录</h2></div>
         <Field label="批次"><Select value={batchId} onChange={showHistory}
           options={[[ '', '选择历史批次' ],...history.map((record) => [record.batch_id,record.title + ' · ' + labels[record.status]] as const)]}/></Field>
+        {batch && <div className="history-actions"><Button variant="secondary" size="small" leadingIcon={Send}
+          onClick={() => openHistoryUpload()}>批量投稿到 B 站</Button></div>}
         {batch?.items.length ? <div className="task-list">{batch.items.map((entry) => <button type="button" className="task-row"
           key={entry.item_id} aria-pressed={item?.item_id === entry.item_id} onClick={() => setSelectedTask(entry.item_id)}>
           <span>{entry.output_name || sourceLabel(entry.source_value,entry.source_kind)}</span><StateChip status={entry.status}/>
@@ -235,10 +283,10 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
       <div className="preview-column">
         <section className="surface preview-pane" aria-label="字幕预览">
           <div className="section-heading"><div className="section-icon"><Clapperboard size={18}/></div><h2>字幕预览</h2>
-            <span className="preview-mode">{frame ? '实际画面 · 示例字幕' : '样式示意'}</span></div>
+            <span className="preview-mode">{frame ? preview.cover ? '封面图 · 示例字幕' : '实际画面 · 示例字幕' : '样式示意'}</span></div>
           <div className="preview-body">
             <div className={'video-canvas ' + (options.aspect_ratio === '9:16' ? 'portrait' : options.aspect_ratio === '1:1' ? 'square' : '')}>
-              {frame ? <img src={frame} alt="含所选字幕样式的视频帧"/> : <>
+              {frame ? <img src={frame} alt={preview.cover ? '含所选字幕样式的封面图' : '含所选字幕样式的视频帧'}/> : <>
                 <div className="preview-art" aria-hidden="true"><div/><div/><div/></div>
                 <div className={'sample-caption ' + options.subtitle_style.position} style={{
                   color: options.subtitle_style.primary_color, fontFamily: options.subtitle_style.font_family,
@@ -276,9 +324,23 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
             })}</ol>
             {item.status === 'running' && <Busy>{item.progress_detail || item.message}</Busy>}
             {item.error && <div className="notice error" role="alert">{item.error.message}</div>}
+            {posting && <details className="task-log">
+              <summary>{posting.generated_fields.length ? '投稿信息 · DeepSeek 已填写' : '投稿信息'}</summary>
+              <div className="posting-summary">
+                <p><strong>分区</strong> {posting.zone || posting.tid}</p>
+                <p><strong>标题</strong> {posting.title}</p>
+                {posting.desc && <p><strong>简介</strong> {posting.desc}</p>}
+                <p><strong>标签</strong> {posting.tags.join(' · ')}</p>
+                {posting.notice && <p className="muted">{posting.notice}</p>}
+                {item.result?.cover_asset_url?.startsWith('/files/') && <img className="cover-image"
+                  src={item.result.cover_asset_url} alt={item.result.cover_source === 'source_thumbnail' ||
+                    item.result.cover_source === 'embedded_picture' ? '来源封面' : '实际投稿封面'}/>}
+              </div>
+            </details>}
             {item.log_tail?.length ? <details className="task-log"><summary>运行详情</summary><pre>{item.log_tail.join('\n')}</pre></details> : null}
             <div className="toolbar compact">
-              {item.status === 'failed' && <Button size="small" onClick={() => retry(item)}>从失败阶段重试</Button>}
+              {item.status === 'failed' && <Button size="small" onClick={() => retry(item)}>
+                {item.stage === 'bilibili_upload' ? '重试 B 站投稿' : '从失败阶段重试'}</Button>}
               {([
                 [item.result?.final_video_url,'导出 MP4','.mp4'],[item.result?.english_srt_url,'原文 SRT','-原文.srt'],
                 [item.result?.translated_srt_url,'译文 SRT','-译文.srt'],[item.result?.bilingual_srt_url,'双语 SRT','-双语.srt'],
@@ -292,20 +354,60 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
           </>}
         </section>
       </div>
+      </motion.div>
       {!narrow && <aside className="surface inspector" aria-label="输出参数">
-        <div className="section-heading"><div className="section-icon"><SlidersHorizontal size={18}/></div><h2>输出参数</h2></div>
+        <div className="section-heading inspector-heading"><div className="section-icon"><SlidersHorizontal size={18}/></div><h2>输出参数</h2></div>
         {inspectorContent}
       </aside>}
     </div>
     {narrow && <Modal open={inspector} title="输出参数" onClose={() => setInspector(false)} drawer>{inspectorContent}</Modal>}
-    <Modal open={paste} title="添加 YouTube 链接" onClose={() => setPaste(false)}>
+    <Modal open={Boolean(uploadPlan)} title="从历史成片投稿到 B 站" onClose={() => {if (!uploadPending) setUploadPlan(null)}}>
+      <div className="form-stack">
+        <p className="muted">直接使用已生成的成片。重试沿用原投稿参数，首次投稿使用当前「输出参数 → 投稿」的批次默认参数。</p>
+        {uploadable.length > 0 && <Button variant="secondary" size="small" disabled={uploadPending}
+          onClick={() => setUploadSelection(uploadSelection.length === uploadable.length ? [] : uploadable.map((entry) => entry.item_id))}>
+          {uploadSelection.length === uploadable.length ? '取消全选' : '全选可投稿项'}</Button>}
+        <ul className="history-upload-list thin-scroll" aria-label="历史成片">
+          {batch?.items.map((entry) => {
+            const candidate = uploadPlan?.[entry.item_id]
+            const available = candidate?.state === 'ready' || candidate?.state === 'retry'
+            return <li key={entry.item_id}><label className="check">
+              <input type="checkbox" disabled={!available || uploadPending} checked={uploadSelection.includes(entry.item_id)}
+                onChange={(event) => setUploadSelection((current) => event.target.checked ?
+                  [...current,entry.item_id] : current.filter((id) => id !== entry.item_id))}/>
+              <span><strong>{entry.output_name || sourceLabel(entry.source_value,entry.source_kind)}</strong>
+                <small>{candidate?.message}</small></span>
+            </label></li>
+          })}
+        </ul>
+        {hasUploadRetries && <label className="check"><input type="checkbox" checked={useCurrentUploadSettings} disabled={uploadPending}
+          onChange={(event) => setUseCurrentUploadSettings(event.target.checked)}/>重试项改用当前批次投稿参数</label>}
+        {useBatchDefaults && <p className="muted">当前默认参数 · {base.bilibili_upload.copyright === 1 ? '自制' : '转载'} ·
+          {' '}{base.bilibili_upload.cover_mode === 'source_cover' ? '每条使用来源封面' : '自定义封面'} ·
+          {' '}{base.bilibili_upload.tid ? '分区 ' + base.bilibili_upload.tid :
+            base.bilibili_upload.auto_metadata ? 'DeepSeek 自动选择分区' : '尚未选择分区'}
+          {base.bilibili_upload.auto_metadata && '。空白投稿字段会用来源标题和部分原文字幕生成。'}</p>}
+        {uploadable.length > 0 && <label className="check"><input type="checkbox" checked={uploadChecked} disabled={uploadPending}
+          onChange={(event) => setUploadChecked(event.target.checked)}/> 我已在 B 站创作中心核对所选成片，确认可以投稿。</label>}
+        {uploadError && <Feedback notice={{text:uploadError,error:true}}/>}
+        <div className="toolbar modal-actions">
+          <Button variant="ghost" disabled={uploadPending} onClick={() => setUploadPlan(null)}>取消</Button>
+          <Button leadingIcon={Send} disabled={uploadPending || !uploadSelection.length || !uploadChecked} onClick={submitHistoryUpload}>
+            {uploadPending ? '正在加入队列' : '投稿所选（' + uploadSelection.length + '）'}</Button>
+        </div>
+      </div>
+    </Modal>
+    <Modal open={paste} title="添加 YouTube 或 B 站链接" onClose={() => setPaste(false)}>
       <form className="form-stack" onSubmit={(event) => {
         event.preventDefault()
-        add(links.split(/[\s,，]+/).map((text) => text.trim()).filter(Boolean),'youtube')
-        setLinks(''); setPaste(false)
+        try {
+          add(links.split(/[\s,，]+/).filter(Boolean))
+          setLinks(''); setLinkError(''); setPaste(false)
+        } catch (error) { setLinkError(errorMessage(error)) }
       }}>
-        <Field label="链接（每行一个）"><textarea value={links} rows={5} placeholder="https://www.youtube.com/watch?v=…"
-          onChange={(event) => setLinks(event.target.value)}/></Field>
+        <Field label="链接（每行一个）"><textarea value={links} rows={5} placeholder={'https://www.youtube.com/watch?v=…\nhttps://www.bilibili.com/video/BV…'}
+          onChange={(event) => {setLinks(event.target.value); setLinkError('')}}/></Field>
+        {linkError && <Feedback notice={{text:linkError,error:true}}/>}
         <div className="toolbar"><Button variant="ghost" onClick={() => setPaste(false)}>取消</Button>
           <Button type="submit" disabled={!links.trim()}>加入队列</Button></div>
       </form>

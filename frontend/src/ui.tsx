@@ -1,6 +1,5 @@
 import { AlertCircle, CircleCheck, LoaderCircle, X } from 'lucide-react'
-import { motion, useReducedMotion } from 'motion/react'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Button } from './vendor/boardui/button'
 import { Chip } from './vendor/boardui/chip'
 import { Collapsible, CollapsibleTrigger, CollapsibleContent, CollapsibleIndicator } from './vendor/beui/collapsible'
@@ -50,10 +49,9 @@ export function Disclosure({ title, children }: { title: string; children: React
 export function Modal({ open, title, onClose, children, drawer = false }: {
   open: boolean; title: string; onClose: () => void; children: ReactNode; drawer?: boolean
 }) {
-  const reduce = useReducedMotion()
   const dialog = useRef<HTMLDialogElement>(null)
   const restore = useRef<HTMLElement | null>(null)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = dialog.current
     if (!node) return
     if (open && !node.open) {
@@ -61,20 +59,16 @@ export function Modal({ open, title, onClose, children, drawer = false }: {
       node.showModal()
     } else if (!open && node.open) {
       node.close()
-      if (restore.current?.isConnected) restore.current.focus()
+      if (restore.current?.isConnected) restore.current.focus({preventScroll:true})
     }
   }, [open])
-  return <dialog ref={dialog} className={drawer ? 'drawer glass' : 'modal glass'} aria-label={title}
+  return <dialog ref={dialog} className={drawer ? 'drawer' : 'modal thin-scroll'} aria-label={title}
     onCancel={(event) => { event.preventDefault(); onClose() }}
     onClick={(event) => { if (event.target === dialog.current) {
       const rect = event.currentTarget.getBoundingClientRect()
       if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose()
     } }}>
-    <motion.div initial={false} animate={{opacity: open || reduce ? 1 : .8,
-      x: drawer && !open && !reduce ? 15 : 0, y: !drawer && !open && !reduce ? 8 : 0}}
-      transition={reduce ? {duration:0} : {type:'spring',stiffness:450,damping:40}}>
-      <header className="modal-heading"><h2>{title}</h2><Button variant="ghost" iconOnly leadingIcon={X} aria-label="关闭" onClick={onClose} /></header>
-      {children}
-    </motion.div>
+    <header className="modal-heading"><h2>{title}</h2><Button variant="ghost" iconOnly leadingIcon={X} aria-label="关闭" onClick={onClose} /></header>
+    {children}
   </dialog>
 }

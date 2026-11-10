@@ -1,6 +1,6 @@
 import { BookOpen, CircleHelp, Clock3, Download, ExternalLink, FileText, FolderOpen, Link2, Plus, Search, Sparkles } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { errorMessage, labels, native, request, saveAs, timestamp, watchBatch,
+import { errorMessage, labels, native, request, saveAs, sourceNames, timestamp, watchBatch,
   type Draft, type History, type Publication, type Settings, type SourceKind, type Transcript, type TranscriptSummary } from './api'
 import { Button, Busy, Feedback, Field, Modal, Select, StateChip, useActions } from './ui'
 import { sourceLanguages } from './videoOptions'
@@ -112,7 +112,7 @@ function TranscriptView({ id, settings, onVideo, onSettings }: {
     })
   }
 
-  const canMakeVideo = doc.source_kind === 'youtube' ||
+  const canMakeVideo = doc.source_kind === 'youtube' || doc.source_kind === 'bilibili' ||
     (doc.source_kind === 'local' && /\.(mp4|mkv|mov|webm|avi|m4v|wmv|mpeg|mpg|ts)$/i.test(doc.source))
   return <div className="transcript-view">
     <section className="surface transcript-header">
@@ -202,7 +202,6 @@ export function Knowledge({ settings, transcriptId, onVideo, onSettings }: {
   const [kind,setKind] = useState<SourceKind>('local')
   const [source,setSource] = useState('')
   const [language,setLanguage] = useState('auto')
-  const [rights,setRights] = useState(false)
   const [importing,setImporting] = useState(false)
   const [history,setHistory] = useState<History[]>([])
   const [taskId,setTaskId] = useState('')
@@ -235,11 +234,10 @@ export function Knowledge({ settings, transcriptId, onVideo, onSettings }: {
 
   function startImport() {
     perform(async () => {
-      if (!rights) throw new Error('请先确认你有权处理这份素材')
       setImporting(true)
       try {
         const result = await request<{transcript_id?:number;batch_id?:string}>('/desktop/knowledge/import','POST',
-          {kind,source,language,rights_confirmed:rights})
+          {kind,source,language,rights_confirmed:true})
         if (result.transcript_id) setCurrent(result.transcript_id)
         if (result.batch_id) {setTask(null); setTaskId(result.batch_id)}
         setRevision((n) => n+1); setShowImport(false); setSource('')
@@ -260,7 +258,7 @@ export function Knowledge({ settings, transcriptId, onVideo, onSettings }: {
           value={query} onChange={(e) => setQuery(e.target.value)}/></label>
         <ul className="library-list">{rows.map((entry) => <li key={entry.id}><button type="button" aria-pressed={current === entry.id}
           onClick={() => setCurrent(entry.id)} title={entry.title}><FileText size={17}/><span><strong>{entry.title}</strong>
-            <small>{entry.source_kind === 'youtube' ? 'YouTube' : entry.source_kind === 'subtitle' ? '字幕文件' : '本地媒体'}</small></span>
+            <small>{sourceNames[entry.source_kind]}</small></span>
         </button></li>)}</ul>
         {!rows.length && <div className="empty-state compact"><FileText size={22}/><p>{query ? '没有匹配的素材' : '导入媒体或现成字幕后，在这里查看原文。'}</p></div>}
         {history.length > 0 && <div className="library-jobs">
@@ -283,19 +281,19 @@ export function Knowledge({ settings, transcriptId, onVideo, onSettings }: {
     <Modal open={showImport} title="导入到字幕分析" onClose={() => {if(!importing) setShowImport(false)}}>
       <form className="form-stack" onSubmit={(e) => {e.preventDefault();startImport()}}>
         <Field label="素材类型"><Select value={kind} onChange={(v) => setKind(v as SourceKind)}
-          options={[[ 'local','本地音视频或字幕' ],['youtube','YouTube 链接']]}/></Field>
-        <div className="path-row"><Field label={kind === 'local' ? '文件路径' : 'YouTube 链接'}>
-          <input value={source} onChange={(e) => setSource(e.target.value)} placeholder={kind === 'local' ? '选择本地文件' : 'https://www.youtube.com/watch?v=…'}/>
+          options={[[ 'local','本地音视频或字幕' ],['youtube','YouTube 链接'],['bilibili','B 站链接']]}/></Field>
+        <div className="path-row"><Field label={kind === 'local' ? '文件路径' : sourceNames[kind] + '链接'}>
+          <input value={source} onChange={(e) => setSource(e.target.value)} placeholder={kind === 'local' ? '选择本地文件' :
+            kind === 'youtube' ? 'https://www.youtube.com/watch?v=…' : 'https://www.bilibili.com/video/BV…'}/>
         </Field>
           {kind === 'local' && <Button variant="secondary" leadingIcon={FolderOpen} onClick={() => perform(async () => {
             const files = await (await native()).choose_media(); if(files[0]) setSource(files[0])
           })}>选择文件</Button>}
         </div>
         <Field label="转录语言"><Select value={language} onChange={setLanguage} options={sourceLanguages}/></Field>
-        <label className="check"><input type="checkbox" checked={rights} onChange={(e) => setRights(e.target.checked)}/> 我有权处理这份素材</label>
         <Feedback notice={notice}/>
         <div className="toolbar"><Button variant="ghost" disabled={importing} onClick={() => setShowImport(false)}>取消</Button>
-          <Button leadingIcon={kind === 'youtube' ? Link2 : Plus} type="submit" disabled={importing || !source.trim()}>
+          <Button leadingIcon={kind === 'local' ? Plus : Link2} type="submit" disabled={importing || !source.trim()}>
             {importing ? '导入中' : '导入'}</Button></div>
       </form>
     </Modal>
