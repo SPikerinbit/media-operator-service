@@ -18,8 +18,8 @@ import uvicorn
 from app import desktop_config as config
 
 WINDOW_PALETTE = {
-    False: ("#eef1f7", "#f8faff", "#18213a"),
-    True: ("#111521", "#1a2133", "#edf2ff"),
+    False: ("#f5f5f4", "#fafafa", "#24272c"),
+    True: ("#17191c", "#1c1f23", "#eceef0"),
 }
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 DWMWA_CAPTION_COLOR = 35

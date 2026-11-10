@@ -1,9 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { Captions, Globe2, ImagePlus, RotateCcw, Save, Send, SlidersHorizontal } from 'lucide-react'
-import { request, type Settings, type SourceKind } from './api'
+import { request, type Settings, type SourceKind, type SourceProbe, type WorkflowStage } from './api'
 import { Button, Feedback, Field, Modal, Select, useActions } from './ui'
 
-export type Row = { id: string; source: string; kind: SourceKind; title?: string; transcriptId?: number; submitted?: boolean }
+export type Row = { id: string; source: string; kind: SourceKind; title?: string; transcriptId?: number; submitted?: boolean;
+  probe?: SourceProbe; terminal?: WorkflowStage; sessionId?: string; allowMuxed?: boolean; unknownAudio?: boolean;
+  continueFrom?: [string, string] }
 export const sourceLanguages = [['auto','自动识别'],['zh','中文'],['en','英语'],['ja','日语'],['ko','韩语'],['fr','法语'],['de','德语'],['es','西班牙语']] as const
 export const defaultStyle = {
   font_family: 'Microsoft YaHei', font_size: 44, font_size_mode: 'manual', font_weight: 700,
@@ -148,7 +150,7 @@ function CoverPicker({ row, options, change }: {
           <p className="muted">默认逐条使用来源封面。本地视频优先使用内嵌封面，取不到封面时使用视频画面。</p>}
         <Field label={'取帧位置 ' + time + '%'}><input type="range" min="0" max="100" value={time} onChange={(e) => setTime(Number(e.target.value))}/></Field>
         <div className="toolbar compact">
-          <Button variant="secondary" size="small" disabled={!row || busy} onClick={() => capture('frame')}>抓取画面</Button>
+          <Button variant="secondary" size="small" disabled={!row || row.kind === 'url' || busy} onClick={() => capture('frame')}>抓取画面</Button>
           <Button variant="secondary" size="small" disabled={!row || row.kind === 'local' || busy} onClick={() => capture('youtube_thumbnail')}>使用当前素材的封面</Button>
         </div>
         <Field label="上传封面图片"><input disabled={busy} type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => {
@@ -168,30 +170,23 @@ function Bilibili({ options, change, row, configured, aiConfigured }: {
 }) {
   const [zones, setZones] = useState<Zone[]>([])
   const [collections, setCollections] = useState<Collection[]>([])
-  const uploadOptions = useId()
   useEffect(() => {
-    if (!options.enabled) return
     let alive = true
     void request<{flat: Zone[]}>('/ui/bilibili/zones').then((data) => {if (alive) setZones(data.flat)}).catch(() => {})
     if (configured) void request<{collections: Collection[]}>('/ui/bilibili/collections')
       .then((data) => {if (alive) setCollections(data.collections)}).catch(() => {})
     return () => { alive = false }
-  }, [configured, options.enabled])
+  }, [configured])
   const set = <K extends keyof typeof defaultBili>(key: K, value: typeof defaultBili[K]) => change({...options, [key]: value})
   const text = (key: 'tags'|'title_template'|'source', placeholder?: string, maxLength?: number) =>
     <input value={options[key]} placeholder={placeholder} maxLength={maxLength} onChange={(e) => set(key,e.target.value)} />
   return <div className="form-stack">
-    <label className="upload-toggle">
-      <span>成片后投稿到 B 站</span>
-      <input type="checkbox" role="switch" aria-controls={uploadOptions} checked={options.enabled}
-        onChange={(e) => set('enabled',e.target.checked)} />
-    </label>
     {!configured && <p className="muted">投稿凭据可在设置中配置。</p>}
-    <div id={uploadOptions} hidden={!options.enabled} className="form-stack upload-options">
+    <div className="form-stack upload-options">
       <label className="check"><input type="checkbox" checked={options.auto_metadata}
         onChange={(event) => set('auto_metadata', event.target.checked)}/>用 DeepSeek 填写空白投稿信息</label>
       {options.auto_metadata && <p className="muted">{aiConfigured ?
-        '每条视频会发送来源标题和部分原文字幕，用于填写分区、标题、简介和标签。' :
+        '发送原标题、原简介和字幕节选。标题按原意中文化，简介按要点整理。' :
         '尚未配置 DeepSeek。请先在设置中配置，或手动选择分区。'}</p>}
       <Field label="分区">{zones.length ? <Select value={options.tid} onChange={(v) => set('tid',Number(v))}
         options={Array.from(new Map([[0, options.auto_metadata ? '自动选择（DeepSeek）' : '请选择分区'],
@@ -229,19 +224,31 @@ const inspectorSections = [
 export type InspectorSection = typeof inspectorSections[number]['id']
 
 export function Inspector({ options, change, settings, row, rowLabel, perItem, onScope, reset, section, onSection,
-  defaultsReady, savingDefault, onSaveDefault, onResetDefault }: {
+  defaultsReady, savingDefault, onSaveDefault, onResetDefault, defaultsOnly = false, terminal, batchExecution }: {
   options: VideoOptions; change: (options: VideoOptions) => void; settings: Settings | null; row?: Row; rowLabel?: string
   perItem: boolean; onScope: (perItem: boolean) => void; reset: () => void
   section: InspectorSection; onSection: (section: InspectorSection) => void
   defaultsReady: boolean; savingDefault: DefaultGroup | null
   onSaveDefault: (group: DefaultGroup) => void; onResetDefault: (group: DefaultGroup) => void
+  defaultsOnly?: boolean
+  terminal?: WorkflowStage
+  batchExecution?: {concurrency: number; onChange: (value: number) => void}
 }) {
   const id = useId()
   const body = useRef<HTMLDivElement>(null)
+  const positions = useRef<Partial<Record<InspectorSection,number>>>({})
+  const finishing = !terminal || terminal === 'burn' || terminal === 'bilibili_upload'
+  const transcribing = terminal !== 'download'
+  const translating = terminal === 'translate' || (finishing && options.subtitle_output_mode !== 'en_only')
+  const sections = defaultsOnly ? inspectorSections.slice(0,2) : inspectorSections.filter(({id}) =>
+    id === 'output' || (id === 'style' && finishing) || (id === 'translation' && translating)
+    || (id === 'publish' && (!terminal || terminal === 'bilibili_upload')))
+  if (!sections.some(({id}) => id === section)) section = 'output'
   function selectSection(next: InspectorSection) {
     if (next === section) return
-    if (body.current) body.current.scrollTop = 0
+    if (body.current) positions.current[section] = body.current.scrollTop
     onSection(next)
+    requestAnimationFrame(() => {if(body.current) body.current.scrollTop = positions.current[next] || 0})
   }
   const set = <K extends keyof VideoOptions>(key: K, value: VideoOptions[K]) => change({...options, [key]: value})
   const style = options.subtitle_style
@@ -258,24 +265,24 @@ export function Inspector({ options, change, settings, row, rowLabel, perItem, o
   </div>
   return <div className="inspector-inner">
     <div className="inspector-controls">
-    <div className="segmented" role="group" aria-label="设置应用范围">
+    {!defaultsOnly && <div className="segmented" role="group" aria-label="设置应用范围">
       <button type="button" aria-pressed={!perItem} onClick={() => onScope(false)}>批次默认</button>
       <button type="button" aria-pressed={perItem} disabled={!row} onClick={() => onScope(true)}>当前素材</button>
-    </div>
+    </div>}
     {perItem && row && <div className="scope-note"><span title={rowLabel}>{rowLabel}</span>
       <Button size="xs" variant="ghost" onClick={reset}>恢复继承</Button></div>}
     <div className="inspector-tabs" role="tablist" aria-label="参数分类">
-      {inspectorSections.map(({id: key,label,heading,icon: Icon},index) => <button
+      {sections.map(({id: key,label,heading,icon: Icon},index) => <button
         type="button" key={key} id={id + '-tab-' + key} role="tab" aria-label={heading} title={heading}
         aria-selected={section === key} aria-controls={id + '-panel-' + key} tabIndex={section === key ? 0 : -1}
         onClick={() => selectSection(key)} onKeyDown={(event) => {
-          const count = inspectorSections.length
+          const count = sections.length
           const next = event.key === 'ArrowRight' ? (index + 1) % count :
             event.key === 'ArrowLeft' ? (index + count - 1) % count :
             event.key === 'Home' ? 0 : event.key === 'End' ? count - 1 : -1
           if (next === -1) return
           event.preventDefault()
-          const destination = inspectorSections[next].id
+          const destination = sections[next].id
           selectSection(destination)
           document.getElementById(id + '-tab-' + destination)?.focus({preventScroll:true})
         }}><Icon size={15} aria-hidden="true"/><span>{label}</span></button>)}
@@ -283,31 +290,36 @@ export function Inspector({ options, change, settings, row, rowLabel, perItem, o
     </div>
     <div className="inspector-scroll thin-scroll" ref={body}>
     <section id={id + '-panel-output'} role="tabpanel" aria-labelledby={id + '-tab-output'} tabIndex={0} hidden={section !== 'output'}>
+      {batchExecution && !perItem && <section className="inspector-batch" aria-label="批次执行">
+        <h3>批次执行</h3>
+        <Field label="并发任务"><Select value={batchExecution.concurrency} onChange={(value) => batchExecution.onChange(Number(value))}
+          options={[[1,'1 项'],[2,'2 项 · 推荐'],[3,'3 项'],[4,'4 项'],[5,'5 项']]}/></Field>
+      </section>}
       <h3>转录与输出</h3>
     <div className="form-stack">
-      {defaultsActions('output')}
-      <Field label="字幕输出"><Select value={options.subtitle_output_mode} onChange={(v) => set('subtitle_output_mode',v)}
-        options={[[ 'en_only','原文字幕' ],[ 'zh_only','译文字幕' ],[ 'bilingual','双语字幕' ]]}/></Field>
-      <Field label="素材语言"><Select value={options.source_language} onChange={(v) => set('source_language',v)} options={sourceLanguages}/></Field>
-      <Field label="输出画幅"><Select value={options.aspect_ratio} onChange={(v) => set('aspect_ratio',v)}
+      {finishing && defaultsActions('output')}
+      {finishing && <Field label="字幕输出"><Select value={options.subtitle_output_mode} onChange={(v) => set('subtitle_output_mode',v)}
+        options={[[ 'en_only','原文字幕' ],[ 'zh_only','译文字幕' ],[ 'bilingual','双语字幕' ]]}/></Field>}
+      {transcribing && <Field label="素材语言"><Select value={options.source_language} onChange={(v) => set('source_language',v)} options={sourceLanguages}/></Field>}
+      {finishing && <><Field label="输出画幅"><Select value={options.aspect_ratio} onChange={(v) => set('aspect_ratio',v)}
         options={[[ 'source','保留原比例' ],['16:9','16:9 横屏'],['9:16','9:16 竖屏'],['1:1','1:1 方形']]}/></Field>
       <Field label="烧录编码"><Select value={options.burn_encoder} onChange={(v) => set('burn_encoder',v)}
-        options={[[ 'auto','自动 · NVIDIA 优先' ],['nvenc','NVIDIA NVENC · 仅 GPU 编码'],['cpu','CPU · libx264']]}/></Field>
-      {options.subtitle_output_mode !== 'en_only' && <Field label="译文目标语言"><input value={options.target_lang} onChange={(e) => set('target_lang',e.target.value)} /></Field>}
-        <div className="inspector-divider">高级参数</div>
-        <Field label="Whisper 模型"><Select value={options.whisper_model} onChange={(v) => set('whisper_model',v)}
+        options={[[ 'auto','自动 · NVIDIA 优先' ],['nvenc','NVIDIA NVENC · 仅 GPU 编码'],['cpu','CPU · libx264']]}/></Field></>}
+      {translating && <Field label="译文目标语言"><input value={options.target_lang} onChange={(e) => set('target_lang',e.target.value)} /></Field>}
+        {finishing && <div className="inspector-divider">高级参数</div>}
+        {transcribing && <><Field label="Whisper 模型"><Select value={options.whisper_model} onChange={(v) => set('whisper_model',v)}
           options={[[ 'small','small · 推荐' ],['base','base'],['medium','medium'],['large-v3','large-v3'],
             ['large-v3-turbo','large-v3-turbo']]}/></Field>
         <Field label="推理模式"><Select value={options.whisper_inference_mode} onChange={(v) => set('whisper_inference_mode',v)}
-          options={[[ 'auto','自动 · NVIDIA 加速优先' ],['gpu_only','严格 GPU · 仅本地模型'],[ 'standard','精准' ],['auto_repair','自动补漏'],['batched','快速']]}/></Field>
-        <Field label="下载清晰度"><Select value={options.resolution} onChange={(v) => set('resolution',v)}
+          options={[[ 'auto','自动 · NVIDIA 加速优先' ],['gpu_only','严格 GPU · 仅本地模型'],[ 'standard','精准' ],['auto_repair','自动补漏'],['batched','快速']]}/></Field></>}
+        {(finishing || terminal === 'download') && <><Field label="下载清晰度"><Select value={options.resolution} onChange={(v) => set('resolution',v)}
           options={[[ 'best','最高可用' ],['1080p','1080p'],['1440p','1440p'],['2160p','2160p']]}/></Field>
         <Field label="下载帧率"><Select value={options.fps} onChange={(v) => set('fps',v)}
           options={[[ 'source','源帧率' ],['30','30 fps'],['60','60 fps']]}/></Field>
         <Field label="命名方式"><Select value={options.output_name_mode} onChange={(v) => set('output_name_mode',v)}
           options={[[ 'sequence','顺序编号' ],['original','原文件名'],['custom','自定义前缀']]}/></Field>
         {options.output_name_mode === 'custom' && <Field label="输出名称前缀"><input value={options.output_name_prefix}
-          onChange={(e) => set('output_name_prefix',e.target.value)}/></Field>}
+          onChange={(e) => set('output_name_prefix',e.target.value)}/></Field>}</>}
       </div>
     </section>
     <section id={id + '-panel-style'} role="tabpanel" aria-labelledby={id + '-tab-style'} tabIndex={0} hidden={section !== 'style'}>
@@ -356,8 +368,8 @@ export function Inspector({ options, change, settings, row, rowLabel, perItem, o
     </section>
     <section id={id + '-panel-publish'} role="tabpanel" aria-labelledby={id + '-tab-publish'} tabIndex={0} hidden={section !== 'publish'}>
       <h3>B 站投稿</h3>
-      <Bilibili options={options.bilibili_upload} change={(v) => set('bilibili_upload',v)} aiConfigured={Boolean(settings?.has_ai_key)}
-        row={row} configured={Boolean(settings?.has_bilibili_credentials)}/>
+      {section === 'publish' && <Bilibili options={options.bilibili_upload} change={(v) => set('bilibili_upload',v)} aiConfigured={Boolean(settings?.has_ai_key)}
+        row={row} configured={Boolean(settings?.has_bilibili_credentials)}/>}
     </section>
     </div>
   </div>

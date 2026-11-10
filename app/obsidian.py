@@ -88,7 +88,9 @@ def _bilibili_url(doc):
 def _source_text(doc, source_id):
     youtube = _youtube_url(doc)
     bilibili = _bilibili_url(doc)
+    online = doc["source"] if doc["source_kind"] == "url" and urlsplit(doc["source"]).scheme in {"http", "https"} else ""
     source = (f"[YouTube]({youtube})" if youtube else f"[B 站]({bilibili})" if bilibili
+              else f"[原始素材]({quote(online, safe=':/?&=%#@+;')})" if online
               else _heading(PureWindowsPath(doc["source"]).name))
     return (
         _metadata(source_id, doc["title"], "source", source_id)
@@ -107,6 +109,8 @@ def _card_text(doc, card, note_id, snapshot, source_path):
         f"# {_heading(card['claim'])}\n\n",
         f"素材：[来源笔记]({source_link})\n\n",
     ]
+    if card.get("quote_translation"):
+        sections.append(f"## 中文译句\n\n{_plain(card['quote_translation'])}\n\n")
     for label, key in (("论据", "evidence"), ("例子", "example")):
         if card[key].strip():
             sections.append(f"## {label}\n\n{_plain(card[key])}\n\n")
@@ -229,6 +233,8 @@ def _ensure_source(vault, doc, source_id):
 def _publish_card(vault, doc, card, source_id, new_version):
     primary_id = _digest("card", source_id, card["origin_key"])
     snapshot = _digest(card["claim"], card["evidence"], card["example"], card["refs"])
+    if card.get("quote_translation"):
+        snapshot = _digest("translated-quote-v2", snapshot, card["quote_translation"])
     record = _receipt(vault, primary_id)
     note_id = primary_id
     if record and new_version and record["snapshot"] != snapshot:

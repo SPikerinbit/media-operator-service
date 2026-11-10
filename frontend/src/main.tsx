@@ -7,21 +7,24 @@ import { Knowledge } from './Knowledge'
 import { Settings } from './Settings'
 import { Video, type VideoTransfer } from './Video'
 import './styles.css'
+import './studio.css'
 
 const navigation = [
-  {id:'video',label:'视频制作',icon:Clapperboard},
+  {id:'video',label:'素材处理',icon:Clapperboard},
   {id:'knowledge',label:'字幕分析',icon:AudioLines},
   {id:'settings',label:'设置',icon:Settings2},
 ] as const
 type View = typeof navigation[number]['id']
+const initial = window.location.hash.slice(1).split('/')
+const initialView: View = navigation.some((entry) => entry.id === initial[0]) ? initial[0] as View : 'video'
 
 function App() {
-  const [view,setView] = useState<View>('video')
+  const [view,setView] = useState<View>(initialView)
   const [settings,setSettings] = useState<Preferences|null>(null)
   const [error,setError] = useState('')
-  const [transcript,setTranscript] = useState<number|null>(null)
+  const [transcript,setTranscript] = useState<number|null>(initialView === 'knowledge' && /^\d+$/.test(initial[1] || '') ? Number(initial[1]) : null)
   const [transfer,setTransfer] = useState<VideoTransfer|null>(null)
-  const [visited,setVisited] = useState<View[]>(['video'])
+  const [visited,setVisited] = useState<View[]>(['video',initialView])
   const scroll = useRef<HTMLElement>(null)
 
   useEffect(() => {
@@ -52,7 +55,7 @@ function App() {
   function show(next: View) {
     setView(next)
     setVisited((values) => values.includes(next) ? values : [...values,next])
-    scroll.current?.scrollTo(0,0)
+    window.history.replaceState(null,'','#' + next)
   }
   const clearTransfer = useCallback(() => setTransfer(null),[])
 
@@ -72,18 +75,18 @@ function App() {
         <div className="sidebar-footer"><span className="local-dot"/><div>本机工作区<small>Windows 桌面版</small></div></div>
       </aside>
       <div className="workarea">
-        <div className="topline chrome"><span>工作台</span><span className="topline-divider">/</span>
-          <strong>{navigation.find((entry) => entry.id === view)?.label}</strong><span className="version">0.2.9</span></div>
+        <div className="topline chrome"><span>Media Operator</span><span className="topline-divider">/</span>
+          <strong>{navigation.find((entry) => entry.id === view)?.label}</strong><span className="version">0.4.1</span></div>
       <main className="workspace thin-scroll" id="workspace" data-view={view} ref={scroll} tabIndex={-1}>
         {error && <div className="notice error" role="alert">{error}</div>}
         <div className="workspace-content">
           <div className="video-view" hidden={view !== 'video'}><Video settings={settings} transfer={transfer} onTransferUsed={clearTransfer}
             onTranscript={(id) => {setTranscript(id);show('knowledge')}}/></div>
-          {visited.includes('knowledge') && <div hidden={view !== 'knowledge'}>
+          {visited.includes('knowledge') && <div className="knowledge-view" hidden={view !== 'knowledge'}>
             <Knowledge settings={settings} transcriptId={transcript} onSettings={() => show('settings')}
               onVideo={(value) => {setTransfer(value);show('video')}}/>
           </div>}
-          {visited.includes('settings') && <div hidden={view !== 'settings'}><Settings current={settings} update={setSettings}/></div>}
+          {visited.includes('settings') && <div className="settings-view" hidden={view !== 'settings'}><Settings current={settings} update={setSettings}/></div>}
         </div>
       </main>
       </div>

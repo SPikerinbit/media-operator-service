@@ -207,7 +207,6 @@ h3 { font-size: 13px; font-weight: 700; }
 .queue-main strong { font-size: 12px; }
 .queue-main small { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .row-actions { display: flex; gap: 1px; }
-.queue-bottom { display: grid; gap: 9px; margin-top: 11px; }
 .task-heading { padding-top: 12px; margin: 16px 0 9px; border-top: 1px solid var(--line); }
 .task-heading svg { color: var(--accent); }
 .task-list { display: grid; gap: 5px; margin-top: 8px; }

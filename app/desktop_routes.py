@@ -9,12 +9,13 @@ import subprocess
 import sys
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app import desktop_config as config, desktop_gpu as gpu, desktop_jobs as jobs, desktop_models, knowledge, obsidian
 from app import main as media
+from app import desktop_sources
 
 router = APIRouter(prefix="/desktop")
 GENERATING = set()
@@ -219,8 +220,41 @@ def get_source_title(request: media.SourceInput):
         return {"title": ""}
 
 
+@router.post("/sources/probe")
+def probe_source(request: media.SourceInput, refresh: bool = False):
+    try:
+        info = desktop_sources.probe(request.source_value, request.source_kind, request.session_id, refresh=refresh)
+        return {"ready": True, **{key: info.get(key) for key in
+                ("title", "platform", "media_type", "duration", "has_audio", "audio_direct")},
+                "description": str(info.get("description") or "")[:5000]}
+    except desktop_sources.SourceError as error:
+        return {"ready": False, "code": error.code, "message": str(error)}
+
+
+@router.post("/sources/session")
+def source_session(source: str = Form(), file: UploadFile = File()):
+    try:
+        return {"session_id": desktop_sources.register_session(source, file.file.read(512 * 1024 + 1))}
+    except (ValueError, OSError) as error:
+        raise HTTPException(400, str(error)) from error
+    finally:
+        file.file.close()
+
+
+@router.delete("/sources/session/{session_id}")
+def delete_source_session(session_id: str):
+    desktop_sources.forget_session(session_id)
+    return {"ok": True}
+
+
+@router.post("/batches/preflight")
+def batch_preflight(request: media.BatchCreateRequest):
+    return jobs.plan_batch(request)
+
+
 class Retry(BaseModel):
     upload_checked: bool = False
+    session_id: str = ""
 
 
 class BatchUpload(BaseModel):
@@ -256,7 +290,7 @@ def upload_batch(batch_id: str, request: BatchUpload):
 @router.post("/batches/{batch_id}/{item_id}/retry")
 def retry(batch_id: str, item_id: str, request: Retry):
     try:
-        return jobs.retry(batch_id, item_id, request.upload_checked)
+        return jobs.retry(batch_id, item_id, request.upload_checked, request.session_id)
     except FileNotFoundError as error:
         raise HTTPException(404, "找不到任务") from error
 
@@ -266,6 +300,8 @@ class ImportRequest(BaseModel):
     source: str = Field(min_length=1)
     rights_confirmed: bool = False
     language: str = Field(default="auto", pattern=r"^(auto|[a-z]{2,3})$")
+    allow_muxed_audio: bool = False
+    session_id: str = ""
 
 
 @router.post("/knowledge/import")
@@ -282,7 +318,9 @@ def import_source(request: ImportRequest):
                     path, source_kind="subtitle", source=source, title=path.name,
                 )}
         batch = jobs.submit_desktop_batch(media.BatchCreateRequest(
-            sources=[media.SourceInput(source_kind=request.kind, source_value=source)],
+            sources=[media.SourceInput(source_kind=request.kind, source_value=source, client_row_id="knowledge",
+                                       stop_after="transcribe", allow_muxed_audio=request.allow_muxed_audio,
+                                       session_id=request.session_id, allow_unknown_audio=True)],
             rights_confirmed=True, knowledge_only=True, source_language=request.language,
             subtitle_output_mode="en_only", batch_concurrency=1, whisper_inference_mode="auto",
         ))
@@ -310,6 +348,11 @@ def transcript(transcript_id: int):
     data.pop("cache_key")
     data.pop("digest")
     data["playable"] = bool(playable and Path(playable).is_file())
+    if data["playable"] and not data.get("asset_type"):
+        try:
+            data["asset_type"] = desktop_sources.inspect_file(playable)["media_type"]
+        except (ValueError, OSError, subprocess.SubprocessError):
+            pass
     return data
 
 
@@ -323,6 +366,7 @@ def get_media(transcript_id: int):
 
 class Consent(BaseModel):
     send_subtitles: bool = False
+    mode: Literal["curated", "comprehensive"] = "curated"
 
 
 @router.post("/knowledge/{transcript_id}/generate")
@@ -338,7 +382,7 @@ def generate(transcript_id: int, consent: Consent):
         GENERATING.add(transcript_id)
     try:
         model = config.settings().get("ai_model", media.TRANSLATE_MODEL)
-        return {"added": knowledge.generate_cards(transcript_id, media.TRANSLATE_API_KEY, model)}
+        return {"added": knowledge.generate_cards(transcript_id, media.TRANSLATE_API_KEY, model, consent.mode)}
     except Exception as error:
         raise HTTPException(502, "DeepSeek 请求失败或返回的引用无效，请检查模型配置后重试。") from error
     finally:
@@ -402,7 +446,7 @@ class Export(BaseModel):
 def diagnostics():
     return {
         "application": "Media Operator Desktop",
-        "version": "0.2.0-preview",
+        "version": "0.4.1",
         "platform": os.name,
         "ffmpeg_available": Path(media.FFMPEG_BIN).is_file(),
         "yt_dlp_available": Path(media.YT_DLP_BIN).is_file(),

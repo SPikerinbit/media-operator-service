@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 import time
+import sqlite3
 
 from fastapi.testclient import TestClient
 import httpx
@@ -19,6 +20,41 @@ from app import desktop, desktop_routes, desktop_jobs, knowledge
 from app import main as media
 
 ORIGIN = "http://127.0.0.1:9810"
+
+
+def test_legacy_card_migration_preserves_ids_and_backup(tmp_path, monkeypatch):
+    monkeypatch.setattr(media, "DATA_DIR", tmp_path)
+    with sqlite3.connect(tmp_path / "knowledge.sqlite3") as db:
+        db.execute("""CREATE TABLE card(id INTEGER PRIMARY KEY, transcript_id INTEGER NOT NULL,
+                   claim TEXT, evidence TEXT, example TEXT, refs TEXT, origin_key TEXT,
+                   UNIQUE(transcript_id, origin_key))""")
+        db.execute("INSERT INTO card VALUES(42,1,'edited','evidence','','[1]','legacy-id')")
+    knowledge.initialize()
+    knowledge.initialize()
+    with knowledge.database() as db:
+        row = dict(db.execute("SELECT * FROM card WHERE id=42").fetchone())
+        assert row["claim"] == "edited" and row["origin_key"] == "legacy-id"
+        assert row["quote_translation"] == ""
+    with sqlite3.connect(tmp_path / "knowledge.before-0.3.0.sqlite3") as backup:
+        assert "quote_translation" not in {row[1] for row in backup.execute("PRAGMA table_info(card)")}
+        assert backup.execute("SELECT claim FROM card WHERE id=42").fetchone()[0] == "edited"
+
+
+def test_legacy_transcript_media_fields_preserve_source_and_backup(tmp_path, monkeypatch):
+    monkeypatch.setattr(media, "DATA_DIR", tmp_path)
+    with sqlite3.connect(tmp_path / "knowledge.sqlite3") as db:
+        db.execute("""CREATE TABLE transcript(id INTEGER PRIMARY KEY, title TEXT, source_kind TEXT,
+                      source TEXT, cache_key TEXT, digest TEXT, playable TEXT, created_at TEXT,
+                      UNIQUE(source, digest))""")
+        db.execute("INSERT INTO transcript VALUES(11,'saved title','youtube','https://youtu.be/example',NULL,'hash',NULL,'')")
+    knowledge.initialize()
+    knowledge.initialize()
+    transcript = knowledge.read_transcript(11)
+    assert transcript["title"] == "saved title" and transcript["source"] == "https://youtu.be/example"
+    assert transcript["media_type"] is None and transcript["asset_type"] is None
+    with sqlite3.connect(tmp_path / "knowledge.before-0.4.0.sqlite3") as backup:
+        assert "asset_type" not in {row[1] for row in backup.execute("PRAGMA table_info(transcript)")}
+        assert backup.execute("SELECT title FROM transcript WHERE id=11").fetchone()[0] == "saved title"
 
 
 @pytest.fixture(scope="module")
@@ -159,6 +195,128 @@ def wait_batch(client, batch_id):
     pytest.fail("batch did not settle")
 
 
+def test_managed_batch_plans_each_source_and_confirms_exact_uploads(desktop_app, monkeypatch):
+    from app import desktop_sources
+
+    client, _ = desktop_app
+    sources = [
+        {"source_kind": "url", "source_value": f"https://example.org/{row}",
+         "stop_after": stop, "client_row_id": row}
+        for row, stop in (("download", "download"), ("audio", "bilibili_upload"), ("sub", "transcribe"),
+                          ("translate", "translate"), ("burn", "burn"), ("publish", "bilibili_upload"),
+                          ("muxed", "transcribe"), ("broken", "burn"))
+    ]
+
+    def probe(value, *_args):
+        name = value.rsplit("/", 1)[-1]
+        if name == "broken":
+            raise desktop_sources.SourceError("no_stream", "媒体不可用")
+        return {"title": name, "media_type": "audio" if name == "audio" else "video",
+                "platform": "fixture", "has_audio": True, "audio_direct": name != "muxed"}
+
+    calls = []
+
+    def runner(stage):
+        def run(job_id):
+            request = media.load_state(job_id).request
+            batch, item = desktop_jobs.batch_item(request["operator_batch_id"], request["operator_item_id"])
+            calls.append((item.client_row_id, stage))
+            filename = "english.srt" if stage == "transcribe" else "artifact"
+            result = {"bvid": "mock"} if stage == "bilibili_upload" else {
+                desktop_jobs.OUTPUTS[stage]: media.public_file_url(job_id, filename),
+            }
+            media.artifact_path(job_id, filename).write_bytes(b"1\n00:00:00,100 --> 00:00:02,000\nWords.\n")
+            if stage == "download":
+                result["asset_type"] = "audio" if request["audio_only"] else "video"
+            if stage == "bilibili_upload":
+                assert request["upload_settings"]["enabled"]
+            media.report_stage_progress(job_id, stage, 100, "done", status="succeeded", force=True, result=result)
+        return run
+
+    monkeypatch.setattr(desktop_sources, "probe", probe)
+    monkeypatch.setattr(media, "whisper_model_status", lambda _: {"available": True})
+    monkeypatch.setattr(media, "TRANSLATE_API_KEY", "mock")
+    monkeypatch.setattr(media, "bilibili_configured", lambda: True)
+    for stage in desktop_jobs.RUNNERS:
+        monkeypatch.setitem(desktop_jobs.RUNNERS, stage, runner(stage))
+
+    payload = {"rights_confirmed": True, "sources": sources, "subtitle_output_mode": "en_only",
+               "bilibili_upload": {"tid": 201, "copyright": 1}}
+    check = client.post("/desktop/batches/preflight", json=payload).json()
+    assert check["download"]["planned_stages"] == ["download"]
+    assert check["audio"]["planned_stages"] == check["sub"]["planned_stages"] == ["download", "transcribe"]
+    assert check["translate"]["planned_stages"] == ["download", "transcribe", "translate"]
+    assert check["burn"]["planned_stages"] == ["download", "transcribe", "burn"]
+    assert check["publish"]["planned_stages"][-1] == "bilibili_upload"
+    assert check["muxed"]["code"] == "muxed_audio" and check["broken"]["code"] == "no_stream"
+    assert client.post("/ui/batches", json=payload).status_code == 409
+    payload["sources"] = [row for row in sources if check[row["client_row_id"]]["ready"]]
+    assert client.post("/ui/batches", json={**payload, "publish_confirmed": ["audio", "publish"]}).status_code == 409
+    response = client.post("/ui/batches", json={**payload, "publish_confirmed": ["publish"]})
+    assert response.is_success, response.text
+    batch = wait_batch(client, response.json()["batch_id"])
+    assert batch["status"] == "succeeded", batch
+    assert [row for row, stage in calls if stage == "bilibili_upload"] == ["publish"]
+    original = next(item for item in batch["items"] if item["client_row_id"] == "sub")
+    followup = client.post("/ui/batches", json={**payload, "sources": [{
+        **sources[2], "stop_after": "burn", "continue_from": [batch["batch_id"], original["item_id"]],
+    }]})
+    assert followup.is_success, followup.text
+    continued = wait_batch(client, followup.json()["batch_id"])["items"][0]
+    assert continued["result"]["transcript_id"] == original["result"]["transcript_id"]
+    assert calls.count(("sub", "transcribe")) == 1 and calls.count(("sub", "download")) == 2
+
+
+def test_source_cookie_scope_and_public_addresses(monkeypatch):
+    from app import desktop_sources, source_network
+
+    monkeypatch.setattr(desktop_sources, "public_target", lambda *_: None)
+    content = ("# Netscape HTTP Cookie File\n.douyin.com\tTRUE\t/\tTRUE\t0\tname\tsite-value\n"
+               ".youtube.com\tTRUE\t/\tTRUE\t0\tname\tother-value\n").encode()
+    link = "https://v.douyin.com/demo"
+    session = desktop_sources.register_session(link, content)
+    assert "site-value" in desktop_sources.session_for(link, session)
+    assert "other-value" not in desktop_sources.session_for(link, session)
+    with pytest.raises(desktop_sources.SourceError):
+        desktop_sources.session_for("https://www.youtube.com/watch?v=demo", session)
+    assert "session_id" not in media.SourceInput(source_kind="url", source_value=link, session_id=session).model_dump()
+    desktop_sources.forget_session(session)
+    with pytest.raises(desktop_sources.SourceError):
+        desktop_sources.session_for(link, session)
+    for url in ("http://127.0.0.1", "http://169.254.169.254", "http://10.0.0.1", "http://[::1]", "file:///demo"):
+        with pytest.raises(ValueError):
+            source_network.public_target(url)
+
+
+def test_social_share_cookie_scope_and_diagnostics(monkeypatch):
+    from app import desktop_sources as sources
+
+    monkeypatch.setattr(sources, "public_target", lambda *_: None)
+    xhs = "https://xhslink.cn/o/test-share"
+    douyin = "https://v.douyin.com/test-share/"
+    content = ("# Netscape HTTP Cookie File\n.xiaohongshu.com\tTRUE\t/\tTRUE\t0\tname\txhs-value\n"
+               ".douyin.com\tTRUE\t/\tTRUE\t0\tname\tother-value\n").encode()
+    assert sources.site(xhs)[0] == "小红书"
+    session = sources.register_session(xhs, content)
+    try:
+        scoped = sources.session_for("https://www.xiaohongshu.com/explore/test", session)
+        assert "xhs-value" in scoped and "other-value" not in scoped
+        with pytest.raises(sources.SourceError, match="站点会话已失效"):
+            sources.session_for(douyin, session)
+    finally:
+        sources.forget_session(session)
+    assert session not in sources.SESSIONS
+
+    login = sources.extract_error(xhs, "ERROR: Unsupported URL: https://www.xiaohongshu.com/login?redirectPath=%2Fexplore")
+    assert login.code == "session_required" and "跳转到了登录页" in str(login)
+    missing = sources.extract_error(xhs, "ERROR: [XiaoHongShu] No video formats found!")
+    assert missing.code == "no_stream" and "未找到可用的视频流" in str(missing)
+    detail = "WARNING: [Douyin] Failed to download web detail JSON: HTTP Error 403: Forbidden\nERROR: Fresh cookies are needed"
+    assert sources.extract_error(douyin, detail).code == "session_required"
+    blocked = sources.extract_error(douyin, detail, has_session=True)
+    assert blocked.code == "site_blocked" and "已使用本站 Cookie" in str(blocked)
+
+
 def test_video_defaults_are_saved_independently(desktop_app, monkeypatch, tmp_path):
     client, _ = desktop_app
     config = desktop_routes.config
@@ -248,7 +406,7 @@ def test_missing_model_blocks_before_download(desktop_app, monkeypatch):
     item = wait_batch(client, submitted.json()["batch_id"])["items"][0]
     assert item["status"] == "failed" and item["stage"] == "transcribe"
     assert item["stage_jobs"] == {}
-    assert "设置 → 本地资源与环境" in item["error"]["message"]
+    assert "设置 → 转录与本地资源" in item["error"]["message"]
 
 
 def test_strict_gpu_does_not_fall_back(desktop_app, monkeypatch):
@@ -396,7 +554,8 @@ def test_batch_posting_uses_per_video_covers_and_deepseek_fields(desktop_app, mo
             f"1\n00:00:00,000 --> 00:00:03,000\nSubtitle {index}\n", encoding="utf-8",
         )
         (folder / "source-metadata.jsonl").write_text(json.dumps({
-            "title": f"Video {index}", "thumbnail": f"https://images.example.test/{index}.jpg",
+            "title": f"Video {index}", "description": f"Original description {index}",
+            "thumbnail": f"https://images.example.test/{index}.jpg",
         }), encoding="utf-8")
         media.update_batch_item(batch.batch_id, item.item_id, status="succeeded", stage="done", result={
             "final_video_url": media.public_file_url(folder.name, "video.mp4"),
@@ -415,10 +574,14 @@ def test_batch_posting_uses_per_video_covers_and_deepseek_fields(desktop_app, mo
         assert body["response_format"] == {"type": "json_object"}
         if "tid" in data["fields_to_fill"]:
             assert set(data["fields_to_fill"]) == {"tid", "title", "tags"}
-            assert set(data) == {"source_title", "subtitle_excerpt", "fields_to_fill", "allowed_zones"}
+            assert set(data) == {"source_title", "source_description", "description_available", "subtitle_excerpt", "fields_to_fill", "allowed_zones"}
         else:
             assert data["fields_to_fill"] == ["desc"] and "allowed_zones" not in data
         number = int(data["source_title"][-1])
+        assert data["source_description"] == f"Original description {number}"
+        assert data["description_available"] is True
+        assert "先忠实翻译" in body["messages"][0]["content"]
+        assert "3–6条" in body["messages"][0]["content"]
         assert data["subtitle_excerpt"] == f"Subtitle {number}"
         model_calls.append(number)
         output = {"tid": 201 if number == 1 else 999999, "title": f"自动标题 {number}",
@@ -624,3 +787,106 @@ def test_obsidian_keeps_newer_draft_revision(desktop_app, monkeypatch):
     assert result["status"] == "published" and not result["cleared"]
     assert knowledge.read_transcript(transcript)["cards"][0]["claim"] == "并发的新草稿"
 
+
+
+def test_quote_modes_validation_and_translated_publication(desktop_app, monkeypatch):
+    from app import obsidian
+    client, root = desktop_app
+    subtitle = root / "quote-modes.srt"
+    subtitle.write_text("1\n00:00:01,000 --> 00:00:03,000\nTest a prediction before you explain it.\n\n"
+                        "2\n00:00:03,000 --> 00:00:05,000\nA wrong answer tells you what to revisit.\n\n"
+                        "3\n00:00:06,000 --> 00:00:08,000\nThen try again.\n", encoding="utf-8")
+    ident = knowledge.register(subtitle, source_kind="subtitle", source=str(subtitle), title="Recall")
+    refs = [1, 2]
+    real_client = httpx.Client
+    calls = []
+
+    def fake(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        assert "不是写简介" in body["messages"][0]["content"]
+        assert "较完整" in body["messages"][0]["content"]
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
+            "cards": [{"claim": "先做预测再解释", "refs": refs,
+                       "quote_translation": "解释之前，先检验预测。错误的答案会告诉你需要回顾什么。"}],
+        })}}]})
+
+    monkeypatch.setattr(knowledge, "httpx", SimpleNamespace(Client=lambda **kw: real_client(transport=httpx.MockTransport(fake), **kw)))
+    monkeypatch.setattr(media, "TRANSLATE_API_KEY", "test")
+    route = f"/desktop/knowledge/{ident}"
+    assert client.post(route + "/generate", json={"send_subtitles": True, "mode": "invalid"}).status_code == 422
+    assert client.post(route + "/generate", json={"send_subtitles": True, "mode": "comprehensive"}).json() == {"added": 1}
+    doc = knowledge.read_transcript(ident)
+    card = doc["cards"][0]
+    assert card["quote_translation"].startswith("解释之前")
+    assert any(row["id"] == ident for row in knowledge.list_transcripts("检验预测"))
+    assert "中文译句" in knowledge.markdown(ident)
+    assert "Test a prediction" in knowledge.markdown(ident)
+    assert client.put(route + f"/cards/{card['id']}", json={"claim": "我修改的主题"}).is_success
+    assert knowledge.read_transcript(ident)["cards"][0]["quote_translation"] == card["quote_translation"]
+    assert client.post(route + "/generate", json={"send_subtitles": True, "mode": "comprehensive"}).json() == {"added": 0}
+    for refs in ([1, 3], [999], [0]):
+        assert client.post(route + "/generate", json={"send_subtitles": True, "mode": "comprehensive"}).status_code == 502
+    assert knowledge.read_transcript(ident)["cards"][0]["claim"] == "我修改的主题"
+    vault = root / "译句知识库"
+    (vault / ".obsidian").mkdir(parents=True)
+    original_create = obsidian._create
+
+    def create_and_edit(*args):
+        result = original_create(*args)
+        if "观点" in str(args[1]):
+            knowledge.update_card(ident, card["id"], knowledge.CardText(claim="我修改的主题", quote_translation="发布期间的新译句"))
+        return result
+
+    monkeypatch.setattr(obsidian, "_create", create_and_edit)
+    result = obsidian.publish(vault, ident, [card["id"]])[0]
+    assert result["status"] == "published" and result["cleared"] is False
+    note = next((vault / "Media Operator" / "观点").glob("*.md"))
+    assert "解释之前" in note.read_text(encoding="utf-8")
+    assert knowledge.read_transcript(ident)["cards"][0]["quote_translation"] == "发布期间的新译句"
+    monkeypatch.setattr(obsidian, "_create", original_create)
+    assert obsidian.publish(vault, ident, [card["id"]])[0]["status"] == "already_published"
+    new = obsidian.publish(vault, ident, [card["id"]], new_version=True)[0]
+    assert new["cleared"] and not knowledge.read_transcript(ident)["cards"]
+
+
+def test_long_transcript_global_selection_is_grounded(desktop_app, monkeypatch):
+    _, root = desktop_app
+    subtitle = root / "long-quotes.srt"
+    subtitle.write_text("\n\n".join(f"{n}\n00:{n // 60:02d}:{n % 60:02d},000 --> 00:{(n+1) // 60:02d}:{(n+1) % 60:02d},000\n"
+                                   + "A concrete example shows which assumption can be tested. " * 3 for n in range(1,180)), encoding="utf-8")
+    ident = knowledge.register(subtitle, source_kind="subtitle", source=str(subtitle), title="Long")
+    real_client = httpx.Client
+    ranking = []
+    bad = False
+
+    def fake(request):
+        payload = json.loads(request.content)
+        data = json.loads(payload["messages"][1]["content"])
+        if "quote" in data[0]:
+            ranking.append(data)
+            result = {"ids": [99999] if bad else [len(data)-1, 0]}
+        else:
+            result = {"cards": [{"claim": "可验证的假设", "refs": [data[0]["id"]], "quote_translation": "具体例子揭示了可检验的假设。"}]}
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(result)}}]})
+
+    monkeypatch.setattr(knowledge, "httpx", SimpleNamespace(Client=lambda **kw: real_client(transport=httpx.MockTransport(fake), **kw)))
+    assert knowledge.generate_cards(ident, "test", "mock", "comprehensive") == 2
+    cards = knowledge.read_transcript(ident)["cards"]
+    assert cards[0]["refs"][0] < cards[1]["refs"][0] and ranking
+    bad = True
+    with pytest.raises(ValueError):
+        knowledge.generate_cards(ident, "test", "mock", "comprehensive")
+    assert knowledge.read_transcript(ident)["cards"] == cards
+
+
+def test_legacy_source_metadata_retained_when_refresh_fails(desktop_app, monkeypatch):
+    _, root = desktop_app
+    folder = media.job_dir("legacy-description")
+    folder.mkdir()
+    source = folder / "source.mp4"
+    source.write_bytes(b"source")
+    metadata = {"title": "Original", "thumbnail": "https://images.example.test/cover.jpg"}
+    (folder / "source-metadata.jsonl").write_text(json.dumps(metadata), encoding="utf-8")
+    monkeypatch.setattr(media, "load_youtube_preview_metadata", lambda _: (_ for _ in ()).throw(RuntimeError("offline")))
+    assert media.bilibili_source_metadata("https://youtu.be/FirstVideo1", media.public_file_url(folder.name, source.name)) == metadata

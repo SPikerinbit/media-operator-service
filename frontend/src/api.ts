@@ -1,5 +1,25 @@
-export type SourceKind = 'local' | 'youtube' | 'bilibili'
-export const sourceNames = { local: '本地媒体', youtube: 'YouTube', bilibili: 'B 站', subtitle: '字幕文件' }
+export type SourceKind = 'local' | 'youtube' | 'bilibili' | 'url'
+export const sourceNames = { local: '本地媒体', youtube: 'YouTube', bilibili: 'B 站', url: '在线素材', subtitle: '字幕文件' }
+export const workflow = [['download','导入'],['transcribe','字幕'],['translate','翻译'],['burn','成片'],['bilibili_upload','投稿']] as const
+export type WorkflowStage = typeof workflow[number][0]
+export type MediaType = 'audio' | 'video' | 'unknown'
+export type SourceProbe = { ready: true; title?: string; platform: string; media_type: MediaType;
+  duration: number | null; has_audio: boolean; audio_direct: boolean; description?: string } |
+  { ready: false; code: string; message: string }
+export type Preflight = Record<string, { ready: true; title: string; planned_stages: WorkflowStage[] } |
+  { ready: false; title: string; message: string; code: string }>
+
+export function linksIn(text: string) {
+  return [...new Set((text.match(/https?:\/\/[^\s<>"'，。；！？、）】》]+/gi) || [])
+    .map((url) => url.replace(/[)\]}.,;]+$/, '')))]
+}
+
+export async function siteSession(source: string, file: File) {
+  const body = new FormData()
+  body.set('source', source)
+  body.set('file', file)
+  return (await request<{session_id: string}>('/desktop/sources/session', 'POST', body)).session_id
+}
 
 export function videoLinkKind(value: string): Exclude<SourceKind, 'local'> {
   try {
@@ -7,8 +27,9 @@ export function videoLinkKind(value: string): Exclude<SourceKind, 'local'> {
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port) throw new Error()
     if (['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'].includes(url.hostname)) return 'youtube'
     if (['bilibili.com', 'www.bilibili.com', 'm.bilibili.com', 'b23.tv'].includes(url.hostname)) return 'bilibili'
+    return 'url'
   } catch { /* invalid link */ }
-  throw new Error('请输入有效的 YouTube 或 B 站链接')
+  throw new Error('请输入有效的 HTTP 或 HTTPS 链接')
 }
 export type Status = 'queued' | 'running' | 'succeeded' | 'failed'
 export type PostingMetadata = {
@@ -22,6 +43,11 @@ export type Item = {
   source_value: string
   source_title?: string
   output_name?: string
+  media_type?: MediaType
+  stop_after?: WorkflowStage
+  planned_stages?: WorkflowStage[]
+  platform?: string
+  duration?: number
   status: Status
   stage: string
   progress: number
@@ -32,9 +58,12 @@ export type Item = {
   stage_details?: Record<string, { status: Status; progress: number; message: string }>
   result?: { title?: string; bvid?: string; aid?: number; final_video_url?: string; english_srt_url?: string; translated_srt_url?: string;
     bilingual_srt_url?: string; transcript_id?: number; bilibili_url?: string; bilibili_metadata?: PostingMetadata;
-    cover_asset_url?: string; cover_source?: string; cover_mode?: string; burn_encoder?: 'cpu' | 'nvenc' }
+    cover_asset_url?: string; cover_source?: string; cover_mode?: string; burn_encoder?: 'cpu' | 'nvenc';
+    source_media_url?: string; source_video_url?: string; asset_type?: 'audio' | 'video'; original_description?: string }
 }
-export type Batch = { batch_id: string; status: Status; queued: number; running: number; items: Item[] }
+type LegacyWorkflow = { subtitle_output_mode?: string; bilibili_upload?: {enabled?: boolean} }
+export type Batch = { batch_id: string; status: Status; queued: number; running: number; items: Item[];
+  request?: LegacyWorkflow & {knowledge_only?: boolean; item_overrides?: Record<string,LegacyWorkflow>} }
 export type History = { batch_id: string; status: Status; total: number; created_at: string }
 export type UploadCandidate = {state: 'retry' | 'ready' | 'posted' | 'missing' | 'busy'; message: string}
 export type Settings = {
@@ -56,8 +85,9 @@ export type LocalResources = {
 }
 export type TranscriptSummary = { id: number; title: string; source_kind: SourceKind | 'subtitle'; source: string; created_at: string }
 export type Cue = { number: number; start_ms: number; end_ms: number; text: string }
-export type Draft = { id: number; claim: string; evidence: string; example: string; refs: number[] }
-export type Transcript = TranscriptSummary & { source: string; playable: boolean; cues: Cue[]; cards: Draft[] }
+export type Draft = { id: number; claim: string; evidence: string; example: string; quote_translation: string; refs: number[] }
+export type Transcript = TranscriptSummary & { source: string; playable: boolean; media_type?: MediaType;
+  asset_type?: 'audio' | 'video'; cues: Cue[]; cards: Draft[] }
 export type Publication = {
   card_id: number; title?: string; status: 'published' | 'already_published' | 'failed';
   publication_id?: string; cleared?: boolean; message?: string;

@@ -1,19 +1,34 @@
-import { BookOpen, Cpu, Download, FolderOpen, KeyRound, Save } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { BookOpen, Cpu, Download, FolderOpen, KeyRound, Save, SlidersHorizontal, Send, ChevronRight } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { native, request, saveAs, type LocalResources, type Settings as Preferences } from './api'
 import { Button, Busy, Disclosure, Feedback, Field, useActions } from './ui'
+import { Inspector, outputDefaults, savedVideoOptions, type VideoDefaults, type VideoOptions, type DefaultGroup, type InspectorSection } from './videoOptions'
 
 const secretsList = [['BILI_SESSDATA','SESSDATA'],['BILI_JCT','bili_jct'],['BILI_BUVID3','buvid3'],
   ['BILI_DEDEUSERID','DedeUserID'],['BILI_AC_TIME_VALUE','ac_time_value']] as const
 
+const categories = [
+  ['general','常规与目录',FolderOpen],['defaults','输出与字幕默认值',SlidersHorizontal],
+  ['resources','转录与本地资源',Cpu],['deepseek','DeepSeek',KeyRound],
+  ['bilibili','B 站投稿',Send],['obsidian','Obsidian',BookOpen],
+] as const
+type Category = typeof categories[number][0]
+type SaveSection = 'directory'|'deepseek'|'gpu'|'bilibili'|'obsidian'
+
 export function Settings({ current, update }: { current: Preferences | null; update: (settings: Preferences) => void }) {
+  const [category,setCategory] = useState<Category>('general')
+  const [defaults,setDefaults] = useState<VideoDefaults|null>(null)
+  const lastDefaults = useRef<VideoDefaults|null>(null)
+  const [options,setOptions] = useState<VideoOptions>(() => savedVideoOptions(null))
+  const [defaultSection,setDefaultSection] = useState<InspectorSection>('output')
+  const [savingDefault,setSavingDefault] = useState<DefaultGroup|null>(null)
   const [vault, setVault] = useState('')
   const [dataDir, setDataDir] = useState('')
   const [model, setModel] = useState('')
   const [gpu, setGpu] = useState(false)
   const [secrets, setSecrets] = useState<Record<string,string>>({})
   const [clearKey, setClearKey] = useState(false)
-  const [saving, setSaving] = useState<'general' | 'deepseek' | null>(null)
+  const [saving, setSaving] = useState<SaveSection | null>(null)
   const [gpuDirectory, setGpuDirectory] = useState('')
   const [resources, setResources] = useState<LocalResources | null>(null)
   const [checking, setChecking] = useState(false)
@@ -21,7 +36,18 @@ export function Settings({ current, update }: { current: Preferences | null; upd
   const downloading = resources?.models.some((item) => item.download.running) ?? false
 
   useEffect(() => {
+    let active = true
+    const reload = () => {void request<VideoDefaults>('/desktop/video-defaults').then((next) => {
+      if (!active) return
+      const old = savedVideoOptions(lastDefaults.current), fresh = savedVideoOptions(next)
+      lastDefaults.current = next;setDefaults(next)
+      setOptions((current) => ({...current,
+        ...(JSON.stringify(outputDefaults(current)) === JSON.stringify(outputDefaults(old)) ? outputDefaults(fresh) : {}),
+        subtitle_style:JSON.stringify(current.subtitle_style) === JSON.stringify(old.subtitle_style) ? fresh.subtitle_style : current.subtitle_style}))
+    }).catch(() => {})}
+    reload();window.addEventListener('video-defaults-changed',reload)
     void request<LocalResources>('/desktop/resources').then(setResources).catch(() => {})
+    return () => {active=false;window.removeEventListener('video-defaults-changed',reload)}
   }, [])
 
   useEffect(() => {
@@ -53,59 +79,82 @@ export function Settings({ current, update }: { current: Preferences | null; upd
       placeholder={placeholder} autoComplete="new-password" disabled={disabled} />
   </Field>
 
-  function save(section: 'general' | 'deepseek') {
+  function save(section: SaveSection) {
     perform(async () => {
       setSaving(section)
       try {
         const key = secrets.TRANSLATE_API_KEY?.trim()
         const fields = section === 'deepseek' ? clearKey ? {TRANSLATE_API_KEY:''} : key ? {TRANSLATE_API_KEY:key} : {} :
-          Object.fromEntries(secretsList.map(([name]) => [name,secrets[name]?.trim()]).filter(([,value]) => value))
+          section === 'bilibili' ? Object.fromEntries(secretsList.map(([name]) => [name,secrets[name]?.trim()]).filter(([,value]) => value)) : {}
         const next = await request<Preferences>('/desktop/settings','PUT',section === 'deepseek' ?
-          {ai_model:model.trim(),secrets:fields} : {
-            obsidian_vault:vault,data_dir:dataDir,gpu_enabled:current?.gpu.running ? undefined : gpu,secrets:fields,
-          })
+          {ai_model:model.trim(),secrets:fields} : section === 'directory' ? {data_dir:dataDir} :
+            section === 'obsidian' ? {obsidian_vault:vault} : section === 'gpu' ? {gpu_enabled:gpu} : {secrets:fields})
         if (section === 'deepseek') {
           setSecrets((values) => ({...values,TRANSLATE_API_KEY:''}));setClearKey(false)
-        } else {
+        } else if (section === 'bilibili') {
           setSecrets((values) => ({TRANSLATE_API_KEY:values.TRANSLATE_API_KEY || ''}))
         }
         update(next)
         setNotice({text:section === 'deepseek' ? next.has_ai_key ? 'DeepSeek 密钥和模型已保存' : 'DeepSeek 设置已保存' :
-          next.active_data_dir !== next.data_dir ? '已保存。新资料目录会在重启后生效。' : '设置已保存'})
+          section === 'directory' && next.active_data_dir !== next.data_dir ? '目录已保存，重启后生效。' : '当前分类设置已保存'})
       } finally {setSaving(null)}
     })
   }
 
+  function saveDefault(group:DefaultGroup) {
+    perform(async () => {
+      setSavingDefault(group)
+      try {
+        const next = await request<VideoDefaults>('/desktop/video-defaults','PUT',
+          group === 'output' ? {output:outputDefaults(options)} : {subtitle_style:options.subtitle_style})
+        setDefaults(next)
+        window.dispatchEvent(new Event('video-defaults-changed'))
+        setNotice({text:group === 'output' ? '默认输出已保存' : '默认字幕样式已保存'})
+      } finally {setSavingDefault(null)}
+    })
+  }
+  const saveButton = (section:SaveSection) => <Button variant="secondary" leadingIcon={Save} disabled={Boolean(saving) || !current}
+    onClick={() => save(section)}>{saving === section ? '保存中' : '保存设置'}</Button>
   return <>
-    <div className="workspace-heading">
-      <div><div className="eyebrow">PREFERENCES</div><h1>应用设置</h1><p>配置本地工作目录、知识库和可选服务。</p></div>
-      <Button leadingIcon={Save} disabled={Boolean(saving) || !current} onClick={() => save('general')}>{saving === 'general' ? '保存中' : '保存常规设置'}</Button>
-    </div>
-    <Feedback notice={notice}/>
-    <div className="settings-grid">
-      <section className="surface settings-panel">
+    <div className="workspace-heading"><div><h1>设置</h1></div></div>
+    <div className="settings-layout">
+      <nav className="settings-nav thin-scroll" aria-label="设置分类">
+        {categories.map(([key,label,Icon]) => <button key={key} aria-current={category === key ? 'page' : undefined}
+          onClick={() => {setCategory(key);setNotice(null)}}><Icon size={17}/><span>{label}</span><ChevronRight size={14}/></button>)}
+      </nav>
+      <div className="settings-body thin-scroll">
+      <Feedback notice={notice}/>
+      <section className="surface settings-panel defaults-settings" hidden={category !== 'defaults'}>
+        <h2>输出与字幕默认值</h2><p className="muted">新批次使用这里的默认值。工作台的「重置」会回到已保存的默认值。</p>
+        <Inspector defaultsOnly options={options} change={setOptions} settings={current} perItem={false} onScope={() => {}} reset={() => {}}
+          section={defaultSection} onSection={setDefaultSection} defaultsReady={Boolean(defaults)} savingDefault={savingDefault}
+          onSaveDefault={saveDefault} onResetDefault={(group) => setOptions((value) => ({...value,
+            ...(group === 'output' ? outputDefaults(savedVideoOptions(defaults)) : {subtitle_style:savedVideoOptions(defaults).subtitle_style})}))}/>
+      </section>
+      <section className="surface settings-panel" hidden={category !== 'obsidian'}>
         <div className="section-heading"><div className="section-icon"><BookOpen size={18}/></div><h2>Obsidian 知识库</h2></div>
         <p className="muted">选择已经打开过的 Vault。发布的观点和来源笔记会写入其中的 Media Operator 文件夹。</p>
         <div className="path-row"><Field label="Vault 根目录"><input value={vault} readOnly placeholder="尚未选择" /></Field>
           <Button variant="secondary" size="small" leadingIcon={FolderOpen} onClick={() => perform(async () => {
             const path = await (await native()).choose_folder(); if (path) setVault(path)
           })}>选择 Vault</Button></div>
-        {vault && <Button variant="ghost" size="small" onClick={() => setVault('')}>解除连接</Button>}
+        <div className="toolbar">{saveButton('obsidian')}{vault && <Button variant="ghost" size="small" onClick={() => setVault('')}>解除连接</Button>}</div>
       </section>
-      <section className="surface settings-panel">
+      <section className="surface settings-panel" hidden={category !== 'general'}>
         <div className="section-heading"><div className="section-icon"><FolderOpen size={18}/></div><h2>本地资料</h2></div>
         <p className="muted">任务、媒体和待发布草稿保存在此目录。切换目录需要重启应用。</p>
         <div className="path-row"><Field label="资料目录"><input value={dataDir} readOnly/></Field>
           <Button variant="secondary" size="small" leadingIcon={FolderOpen} onClick={() => perform(async () => {
             const path = await (await native()).choose_folder(); if (path) setDataDir(path)
           })}>选择目录</Button></div>
+        {saveButton('directory')}
         <Button variant="ghost" size="small" leadingIcon={Download} onClick={() => perform(async () => {
           if (await saveAs('MediaOperator-diagnostics.json',{format:'diagnostics'})) setNotice({text:'已导出脱敏诊断'})
         })}>导出脱敏诊断</Button>
       </section>
-      <section className="surface settings-panel">
+      <section className="surface settings-panel" hidden={category !== 'deepseek'}>
         <div className="section-heading"><div className="section-icon"><KeyRound size={18}/></div><h2>DeepSeek</h2></div>
-        <p className="muted">用于翻译字幕和提取观点。密钥由 Windows 凭据管理器保存。</p>
+        <p className="muted">用于字幕翻译、原话摘录与投稿信息生成。密钥由 Windows 凭据管理器保存。</p>
         <form className="form-stack" onSubmit={(event) => {event.preventDefault();save('deepseek')}}>
           <Field label="模型"><input value={model} onChange={(e) => setModel(e.target.value)} maxLength={120} disabled={saving === 'deepseek'}/></Field>
           {fieldSecret('TRANSLATE_API_KEY','API Key',current?.has_ai_key ? '已保存 · 留空保留原密钥' : '尚未配置',clearKey || saving === 'deepseek')}
@@ -114,7 +163,7 @@ export function Settings({ current, update }: { current: Preferences | null; upd
             {saving === 'deepseek' ? '保存中' : '保存 DeepSeek 设置'}</Button></div>
         </form>
       </section>
-      <section className="surface settings-panel">
+      <section className="surface settings-panel" hidden={category !== 'resources'}>
         <div className="section-heading"><div className="section-icon"><Download size={18}/></div><h2>本地资源与环境</h2></div>
         <p className="muted">准备模型后可离线转录。检测会实际启动媒体工具并核验 NVIDIA 推理环境。</p>
         <Button variant="secondary" size="small" disabled={checking} onClick={() => perform(async () => {
@@ -138,7 +187,7 @@ export function Settings({ current, update }: { current: Preferences | null; upd
           </li>)}
         </ul>
       </section>
-      <section className="surface settings-panel">
+      <section className="surface settings-panel" hidden={category !== 'resources'}>
         <div className="section-heading"><div className="section-icon"><Cpu size={18}/></div><h2>转录加速</h2></div>
         <p className="muted">启用后，自动模式优先使用 NVIDIA 批量转录。GPU 不可用时会用 CPU 重试。</p>
         {current?.gpu.running ? <Busy>{current.gpu.message || '正在准备 NVIDIA 运行库'}</Busy> : <>
@@ -153,13 +202,16 @@ export function Settings({ current, update }: { current: Preferences | null; upd
               if (window.confirm('将 NVIDIA 运行库安装到以下目录？首次下载约 1.2 GB。\n\n' + gpuDirectory))
                 perform(async () => update(await request<Preferences>('/desktop/gpu','POST',{directory:gpuDirectory})))
             }}>安装并启用 NVIDIA 加速</Button>}
+          {saveButton('gpu')}
         </>}
       </section>
-      <section className="surface settings-panel">
+      <section className="surface settings-panel" hidden={category !== 'bilibili'}>
         <div className="section-heading"><div className="section-icon"><KeyRound size={18}/></div><h2>B 站投稿</h2></div>
         <p className="muted">{current?.has_bilibili_credentials ? '已保存投稿凭据。' : '配置后可在视频制作中启用投稿。'}</p>
         <Disclosure title="投稿凭据"><div className="form-stack">{secretsList.map(([key,name]) => fieldSecret(key,name,'留空保留已保存内容'))}</div></Disclosure>
+        {saveButton('bilibili')}
       </section>
+      </div>
     </div>
   </>
 }

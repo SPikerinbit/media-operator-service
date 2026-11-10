@@ -209,7 +209,9 @@ SubtitleFontSizeMode = Literal["auto", "manual"]
 SubtitleBilingualOrder = Literal["en_top_zh_bottom", "zh_top_en_bottom"]
 WhisperInferenceMode = Literal["standard", "batched", "auto_repair", "auto", "gpu_only"]
 BurnEncoder = Literal["auto", "nvenc", "cpu"]
-SourceKind = Literal["youtube", "bilibili", "local"]
+SourceKind = Literal["youtube", "bilibili", "local", "url"]
+MediaType = Literal["audio", "video", "unknown"]
+WorkflowStage = Literal["download", "transcribe", "translate", "burn", "bilibili_upload"]
 BatchItemStatus = Literal["queued", "running", "succeeded", "failed"]
 BilibiliCopyright = Literal[1, 2]
 BilibiliSourceMode = Literal["original_url", "custom"]
@@ -265,6 +267,11 @@ class SourceInput(BaseModel):
     source_value: str = Field(default="")
     client_row_id: str = Field(default="", max_length=128)
     source_title: str = Field(default="", max_length=500)
+    stop_after: WorkflowStage | None = None
+    allow_muxed_audio: bool = False
+    session_id: str = Field(default="", exclude=True)
+    allow_unknown_audio: bool = False
+    continue_from: tuple[str, str] | None = None
 
     @model_validator(mode="after")
     def normalize(self) -> "SourceInput":
@@ -419,6 +426,9 @@ class JobQueryRequest(BaseModel):
 
 class StageDownloadRequest(BaseModel):
     audio_only: bool = False
+    managed: bool = False
+    allow_muxed_audio: bool = False
+    retain_cover: bool = False
     source_kind: SourceKind = Field(default="youtube")
     source_value: str = Field(default="")
     youtube_url: str = Field(default="")
@@ -538,6 +548,7 @@ class StageBilibiliUploadRequest(BaseModel):
     original_source: str = Field(default="")
     output_name: str = Field(default="")
     original_title: str = Field(default="")
+    original_description: str | None = None
     source_thumbnail: str | None = None
     bilibili_metadata: dict[str, Any] | None = None
     upload_settings: BilibiliUploadSettings = Field(default_factory=BilibiliUploadSettings)
@@ -550,6 +561,7 @@ class BatchCreateRequest(BaseModel):
     knowledge_only: bool = False
     source_language: str = Field(default="auto", pattern=r"^(auto|[a-z]{2,3})$")
     transcript_ids: dict[str, int] = Field(default_factory=dict)
+    publish_confirmed: list[str] = Field(default_factory=list)
     sources: list[SourceInput] | None = None
     youtube_urls: list[str] | None = None
     item_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -729,6 +741,11 @@ class BatchItemState(BaseModel):
     source_kind: SourceKind = "youtube"
     source_value: str = ""
     source_title: str = ""
+    media_type: MediaType | None = None
+    stop_after: WorkflowStage | None = None
+    planned_stages: list[WorkflowStage] | None = None
+    platform: str = ""
+    duration: float | None = None
     status: BatchItemStatus = "queued"
     stage: str = "queued"
     progress: int = 0
@@ -1334,6 +1351,10 @@ def sync_stage_to_batch(
     batch_status: BatchItemStatus = "failed" if status == "failed" else ("succeeded" if is_terminal_upload_success else "running")
     batch_stage = "done" if is_terminal_upload_success else stage
     batch_progress = 100 if is_terminal_upload_success else stage_overall_progress(stage, local_progress)
+    if DESKTOP and current.planned_stages and stage in current.planned_stages:
+        batch_progress = min(99, round(100 * (
+            current.planned_stages.index(stage) + local_progress / 100
+        ) / len(current.planned_stages)))
     batch_message = "completed" if is_terminal_upload_success else message
     batch_result = state.result if is_terminal_upload_success else None
     update_batch_item(
@@ -1438,7 +1459,7 @@ def create_stage_job(stage: str, request_payload: dict[str, Any]) -> JobState:
     return state
 
 
-def create_batch(request: BatchCreateRequest) -> BatchState:
+def create_batch(request: BatchCreateRequest, plans: dict | None = None) -> BatchState:
     ensure_dirs()
     sources = list(request.sources or [])
     if not sources and request.youtube_urls:
@@ -1468,6 +1489,7 @@ def create_batch(request: BatchCreateRequest) -> BatchState:
             source_kind=source.source_kind,
             source_value=source.source_value,
             source_title=source_display_title(source.source_kind, source.source_value, source.source_title),
+            **((plans or {}).get(source.client_row_id) or {}),
             output_name=build_output_name(
                 request.output_name_mode,
                 request.output_name_prefix,
@@ -1880,7 +1902,7 @@ def download_youtube(
         metadata_file = source_dir / "source-metadata.jsonl"
         metadata_file.unlink(missing_ok=True)
         cmd[1:1] = [
-            "--no-simulate", "--print-to-file", "after_move:%(.{title,thumbnail})j",
+            "--no-simulate", "--print-to-file", "after_move:%(.{title,description,thumbnail})j",
             to_windows_path(metadata_file) if YT_DLP_BIN.lower().endswith(".exe") else str(metadata_file),
         ]
     ffmpeg_location = yt_dlp_ffmpeg_location()
@@ -3594,6 +3616,30 @@ def run_stage_download(job_id: str) -> None:
         if not request.rights_confirmed:
             raise PermissionError("rights_confirmed must be true")
         source_value = request.source_value or request.youtube_url
+        if DESKTOP and request.managed:
+            from app import desktop_jobs, desktop_sources
+
+            info, cookies = desktop_jobs.download_context(request)
+            def progress(percent, message):
+                report_stage_progress(job_id, "download", percent, message, status="running")
+
+            progress(1, "正在导入素材")
+            path, info, actual = desktop_sources.download(job_id, request, info, cookies, progress)
+            metadata = {key: info.get(key) for key in ("title", "description")}
+            if request.retain_cover and info.get("thumbnail"):
+                try:
+                    cover = desktop_sources.download_thumbnail(info["thumbnail"], path.with_name("source-cover.img"))
+                    metadata["thumbnail"] = public_file_url(job_id, cover.name)
+                except desktop_sources.SourceError:
+                    pass
+            path.with_name("source-metadata.jsonl").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+            url = public_file_url(job_id, path.name)
+            report_stage_progress(job_id, "download", 100, "素材已导入", status="succeeded", force=True, result={
+                "source_video_url": url, "source_media_url": url, "result_url": url,
+                "title": metadata["title"] or path.stem, "original_description": metadata["description"],
+                "asset_type": actual["media_type"], "duration": actual["duration"], "has_audio": actual["has_audio"],
+            })
+            return
         completion_message = "download completed"
 
         if request.source_kind == "local" or is_local_source_url(source_value):
@@ -3636,6 +3682,7 @@ def run_stage_download(job_id: str) -> None:
             "result_url": public_file_url(job_id, source_path.name),
             "source_video_url": public_file_url(job_id, source_path.name),
             "title": metadata.get("title") or request.title or source_path.stem,
+            "original_description": metadata.get("description"),
             "artifact_name": source_path.name,
             "resolution": request.resolution,
             "fps": request.fps,
@@ -3738,8 +3785,10 @@ def run_stage_translate(job_id: str) -> None:
                 job_id, "translate", progress, message, status="running", raw=raw
             ),
         )
+        translated = write_subtitle_mode_srt(job_id, bilingual_path, output_mode="zh_only", bilingual_order="en_top_zh_bottom")
         result = {
             "result_url": public_file_url(job_id, bilingual_path.name),
+            "translated_srt_url": public_file_url(job_id, translated.name),
             "bilingual_srt_url": public_file_url(job_id, bilingual_path.name),
             "artifact_name": bilingual_path.name,
             "translate_model": request.translate_model,
@@ -3773,28 +3822,31 @@ def build_bilibili_credential() -> Any:
 def read_source_download_metadata(source_path: Path) -> dict[str, Any]:
     try:
         with source_path.with_name("source-metadata.jsonl").open(encoding="utf-8") as stream:
-            data = json.loads(stream.readline(65536))
+            data = json.loads(stream.readline(1048576))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
 def bilibili_source_metadata(source_value: str, source_video_url: str) -> dict[str, Any]:
-    if not video_url_kind(source_value):
-        return {}
+    cached = {}
     if source_video_url:
         try:
             _, path = resolve_local_artifact_from_url(source_video_url)
             data = read_source_download_metadata(path)
-            if data.get("thumbnail"):
+            cached = data
+            if data.get("thumbnail") and "description" in data:
                 return data
         except (OSError, ValueError):
             pass
+    if not video_url_kind(source_value):
+        return cached
     try:
         data = load_youtube_preview_metadata(source_value)
-        return {"title": data.get("title"), "thumbnail": data.get("thumbnail") or best_thumbnail_url(data)}
+        return {"title": data.get("title") or cached.get("title"), "description": data.get("description"),
+                "thumbnail": data.get("thumbnail") or best_thumbnail_url(data) or cached.get("thumbnail")}
     except (OSError, RuntimeError, ValueError):
-        return {}
+        return cached
 
 
 def create_bilibili_cover(
@@ -3840,15 +3892,18 @@ def create_bilibili_cover(
     if mode == "source_cover":
         if source_thumbnail is None:
             source_thumbnail = str(bilibili_source_metadata(source_value, source_video_url).get("thumbnail") or "")
-        if is_http_url(source_thumbnail):
+        if (source_thumbnail or "").startswith("/files/") or is_http_url(source_thumbnail):
             try:
-                image = download_thumbnail_for_preview(job_id, source_thumbnail)
+                if source_thumbnail.startswith("/files/"):
+                    _, image = resolve_local_artifact_from_url(source_thumbnail)
+                else:
+                    image = download_thumbnail_for_preview(job_id, source_thumbnail)
                 cover_path = normalize_bilibili_cover_image(job_id, image)
                 return cover_path, {
                     "cover_selection": cover_selection, "cover_mode": mode, "cover_source": "source_thumbnail",
                     "cover_asset_url": public_file_url(job_id, cover_path.name),
                 }
-            except (OSError, RuntimeError, httpx.HTTPError):
+            except (OSError, ValueError, RuntimeError, httpx.HTTPError):
                 pass
         original = None
         try:
@@ -4153,16 +4208,20 @@ def run_stage_bilibili_upload(job_id: str) -> None:
 
             report_stage_progress(job_id, "bilibili_upload", 2, "准备来源封面和投稿信息", status="running", force=True)
             if request.upload_settings.cover_mode == "source_cover" or (
-                request.upload_settings.auto_metadata and is_http_url(request.original_title)
+                request.upload_settings.auto_metadata and (
+                    is_http_url(request.original_title) or request.original_description is None)
                 and request.bilibili_metadata is None
             ):
                 source = bilibili_source_metadata(request.original_source, request.source_video_url)
                 request.source_thumbnail = str(source.get("thumbnail") or "")
                 request.original_title = str(source.get("title") or request.original_title)
+                if "description" in source:
+                    request.original_description = source.get("description")
             request.upload_settings, request.bilibili_metadata = desktop_bilibili.prepare_metadata(request)
             state = load_state(job_id)
             state.request.update({
                 "original_title": request.original_title, "upload_settings": request.upload_settings.model_dump(),
+                "original_description": request.original_description,
                 "bilibili_metadata": request.bilibili_metadata,
             })
             state.result = {"bilibili_metadata": request.bilibili_metadata}
@@ -5091,6 +5150,16 @@ def generate_bilibili_cover_from_source(request: BilibiliCoverPreviewRequest, jo
             "render_height": 717,
         }
 
+    if DESKTOP and request.source_kind == "url":
+        from app import desktop_sources
+
+        info = desktop_sources.probe(request.source_value, "url")
+        if not info.get("thumbnail"):
+            raise ValueError("该来源没有公开封面，可上传封面或使用成片画面")
+        image = desktop_sources.download_thumbnail(info["thumbnail"], artifact_path(job_id, "source-cover.img"))
+        cover = normalize_bilibili_cover_image(job_id, image)
+        return {"cover_asset_url": public_file_url(job_id, cover.name),
+                "cover_image_url": public_file_url(job_id, cover.name), "preview_source": "source_thumbnail"}
     if video_url_kind(request.source_value) != request.source_kind:
         raise ValueError("请输入有效的 YouTube 或 B 站链接")
     data = load_youtube_preview_metadata(request.source_value)
@@ -5224,6 +5293,21 @@ def preview_frame(request: PreviewFrameRequest) -> dict[str, Any]:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    if DESKTOP and request.source_kind == "url":
+        from app import desktop_sources
+
+        try:
+            info = desktop_sources.probe(request.source_value, "url")
+            if not info.get("thumbnail"):
+                raise ValueError("该来源没有公开封面，导入视频后可抓取画面")
+            job_id = f"preview_{uuid.uuid4().hex[:12]}"
+            job_dir(job_id).mkdir(parents=True, exist_ok=True)
+            image = desktop_sources.download_thumbnail(info["thumbnail"], artifact_path(job_id, "source-cover.img"))
+            width, height = compute_render_canvas(1280, 720, request.aspect_ratio)
+            rendered = render_preview_with_subtitle(job_id, image, request, width, height)
+            return {"preview_image_url": public_file_url(job_id, rendered.name), "preview_source": "thumbnail_fallback"}
+        except (ValueError, OSError, RuntimeError) as error:
+            raise HTTPException(400, str(error)) from error
     if video_url_kind(request.source_value) != request.source_kind:
         raise HTTPException(status_code=400, detail="请输入有效的 YouTube 或 B 站链接")
     try:

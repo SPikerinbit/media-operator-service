@@ -37,3 +37,4 @@ Thumbs.db
 # Generated desktop frontend
 frontend/node_modules/
 app/static/desktop-ui/
+.taste-skill/
