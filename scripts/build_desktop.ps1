@@ -25,6 +25,7 @@ function Get-VerifiedAsset($Name, $Url, $Hash) {
 
 New-Item -ItemType Directory -Force $assets, $OutputDir | Out-Null
 $ffmpegArchive = Get-VerifiedAsset "ffmpeg.zip" "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/autobuild-2026-11-08-18-52/ffmpeg-N-128713-g0f89d936b3-win64-gpl.zip" "7f29103f8b234207bd7e7b35a8d59367760cc031753da69e546c29a03083f1df"
+$nvencArchive = Get-VerifiedAsset "ffmpeg-8.0.1-essentials_build.zip" "https://github.com/GyanD/codexffmpeg/releases/download/8.0.1/ffmpeg-8.0.1-essentials_build.zip" "e2aaeaa0fdbc397d4794828086424d4aaa2102cef1fb6874f6ffd29c0b88b673"
 $denoArchive = Get-VerifiedAsset "deno.zip" "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip" "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf"
 $yt = Get-VerifiedAsset "yt-dlp.exe" "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp.exe" "f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d"
 $sans = Get-VerifiedAsset "source-han-sans-cn.zip" "https://github.com/adobe-fonts/source-han-sans/releases/download/2.005R/19_SourceHanSansCN.zip" "3a769d1b082ebd813cdb4c06ea57d29b340bce548edcc8e61976b78ca28e6236"
@@ -44,6 +45,13 @@ New-Item -ItemType Directory -Force $ffmpegDir | Out-Null
 if (-not (Get-ChildItem -LiteralPath $ffmpegDir -Recurse -Filter "ffmpeg.exe")) {
     tar.exe -xf $ffmpegArchive -C $ffmpegDir
     if ($LASTEXITCODE -ne 0) { throw "Could not extract FFmpeg" }
+}
+$nvencDir = Join-Path $assets "ffmpeg-nvenc-8.0.1"
+$nvencExe = Join-Path $nvencDir "ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe"
+if (-not (Test-Path -LiteralPath $nvencExe)) {
+    New-Item -ItemType Directory -Force $nvencDir | Out-Null
+    tar.exe -xf $nvencArchive -C $nvencDir
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $nvencExe)) { throw "Could not extract NVENC-compatible FFmpeg" }
 }
 if (-not (Test-Path -LiteralPath (Join-Path $assets "deno.exe"))) {
     tar.exe -xf $denoArchive -C $assets
@@ -84,6 +92,7 @@ foreach ($name in "ffmpeg.exe", "ffprobe.exe") {
     if (-not $binary) { throw "Missing $name" }
     Copy-Item -LiteralPath $binary.FullName -Destination $tools
 }
+Copy-Item -LiteralPath $nvencExe -Destination (Join-Path $tools "ffmpeg-burn.exe")
 Copy-Item -LiteralPath $yt, (Join-Path $assets "deno.exe") -Destination $tools
 $licenses = Join-Path $application "licenses"
 $fonts = Join-Path $application "fonts"

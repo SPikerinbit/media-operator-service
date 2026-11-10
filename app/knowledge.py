@@ -131,7 +131,7 @@ def list_transcripts(query=""):
     term = query.strip()
     with database() as db:
         if not term:
-            rows = db.execute("SELECT id, title, source_kind, created_at FROM transcript ORDER BY id DESC")
+            rows = db.execute("SELECT id, title, source_kind, source, created_at FROM transcript ORDER BY id DESC")
         else:
             # Trigram supports both Chinese and English substrings. instr handles one- and two-character terms.
             if len(term) >= 3:
@@ -141,7 +141,7 @@ def list_transcripts(query=""):
                 indexed = "SELECT transcript_id FROM transcript_search WHERE instr(lower(text), lower(?)) > 0"
                 search = term
             rows = db.execute(f"""
-                SELECT id, title, source_kind, created_at FROM transcript
+                SELECT id, title, source_kind, source, created_at FROM transcript
                 WHERE id IN ({indexed})
                    OR id IN (
                        SELECT transcript_id FROM card

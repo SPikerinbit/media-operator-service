@@ -1,9 +1,10 @@
 import { BookOpen, CircleHelp, Clock3, Download, ExternalLink, FileText, FolderOpen, Link2, Plus, Search, Sparkles } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { errorMessage, labels, native, request, saveAs, sourceNames, timestamp, watchBatch,
+import { errorMessage, historyLabel, native, request, saveAs, sourceNames, timestamp, watchBatch,
   type Draft, type History, type Publication, type Settings, type SourceKind, type Transcript, type TranscriptSummary } from './api'
 import { Button, Busy, Feedback, Field, Modal, Select, StateChip, useActions } from './ui'
 import { sourceLanguages } from './videoOptions'
+import { batchSource, transcriptSource, useSourceTitles } from './sourceTitles'
 import type { VideoTransfer } from './Video'
 
 function DraftEditor({ card, value, checked, disabled, toggle, edit, save, jump, cues }: {
@@ -46,6 +47,8 @@ function TranscriptView({ id, settings, onVideo, onSettings }: {
   const cueNodes = useRef(new Map<number, HTMLButtonElement>())
   const { notice, setNotice, perform } = useActions()
   const path = '/desktop/knowledge/' + id
+  const identity = doc && transcriptSource(doc)
+  const titles = useSourceTitles(identity ? [identity] : [])
 
   useEffect(() => {
     let active = true
@@ -116,7 +119,7 @@ function TranscriptView({ id, settings, onVideo, onSettings }: {
     (doc.source_kind === 'local' && /\.(mp4|mkv|mov|webm|avi|m4v|wmv|mpeg|mpg|ts)$/i.test(doc.source))
   return <div className="transcript-view">
     <section className="surface transcript-header">
-      <div><div className="eyebrow">SOURCE MATERIAL</div><h2>{doc.title}</h2><p className="muted">{doc.cues.length} 段原文 · {doc.cards.length} 张草稿</p></div>
+      <div><div className="eyebrow">SOURCE MATERIAL</div><h2>{identity && titles.label(identity)}</h2><p className="muted">{doc.cues.length} 段原文 · {doc.cards.length} 张草稿</p></div>
       <div className="toolbar compact">
         <Button variant="secondary" size="small" leadingIcon={Download} onClick={() => perform(async () => {
           await saveAs(doc.title + '.srt',{format:'srt',transcript_id:id})
@@ -125,7 +128,8 @@ function TranscriptView({ id, settings, onVideo, onSettings }: {
           await saveAs(doc.title + '.md',{format:'markdown',transcript_id:id})
         })}>导出 Markdown</Button>
         {canMakeVideo && <Button variant="ghost" size="small" onClick={() =>
-          onVideo({id,source:doc.source,kind:doc.source_kind as SourceKind})}>用此字幕制作视频</Button>}
+          onVideo({id,source:doc.source,kind:doc.source_kind as SourceKind,
+            title:identity ? titles.title(identity) : undefined})}>用此字幕制作视频</Button>}
       </div>
     </section>
     <Feedback notice={notice}/>
@@ -207,6 +211,9 @@ export function Knowledge({ settings, transcriptId, onVideo, onSettings }: {
   const [taskId,setTaskId] = useState('')
   const [task,setTask] = useState<import('./api').Batch|null>(null)
   const {notice,setNotice,perform} = useActions()
+  const imported = task?.items[0]
+  const importSource = imported && batchSource(imported)
+  const titles = useSourceTitles([...rows.map(transcriptSource),...(importSource ? [importSource] : [])])
 
   useEffect(() => {if(transcriptId) setCurrent(transcriptId)},[transcriptId])
   useEffect(() => {
@@ -244,7 +251,6 @@ export function Knowledge({ settings, transcriptId, onVideo, onSettings }: {
       } finally {setImporting(false)}
     })
   }
-  const imported = task?.items[0]
   return <>
     <div className="workspace-heading">
       <div><div className="eyebrow">KNOWLEDGE WORKBENCH</div><h1>字幕分析</h1><p>对照原话整理观点，把有价值的内容发布到长期知识库。</p></div>
@@ -257,14 +263,15 @@ export function Knowledge({ settings, transcriptId, onVideo, onSettings }: {
         <label className="search"><Search size={16}/><input type="search" aria-label="搜索标题、字幕或观点" placeholder="搜索标题、字幕或观点"
           value={query} onChange={(e) => setQuery(e.target.value)}/></label>
         <ul className="library-list">{rows.map((entry) => <li key={entry.id}><button type="button" aria-pressed={current === entry.id}
-          onClick={() => setCurrent(entry.id)} title={entry.title}><FileText size={17}/><span><strong>{entry.title}</strong>
+          onClick={() => setCurrent(entry.id)} title={titles.label(transcriptSource(entry))}><FileText size={17}/><span><strong>{titles.label(transcriptSource(entry))}</strong>
             <small>{sourceNames[entry.source_kind]}</small></span>
         </button></li>)}</ul>
         {!rows.length && <div className="empty-state compact"><FileText size={22}/><p>{query ? '没有匹配的素材' : '导入媒体或现成字幕后，在这里查看原文。'}</p></div>}
         {history.length > 0 && <div className="library-jobs">
           <Field label="导入任务"><Select value={taskId} onChange={(id) => {setTask(null);setTaskId(id)}}
-            options={[[ '', '查看导入记录' ],...history.map((entry) => [entry.batch_id,entry.title + ' · ' + labels[entry.status]] as const)]}/></Field>
-          {imported && <div className="import-task"><StateChip status={imported.status}/><progress aria-label="导入进度" max={100} value={imported.progress}/>
+            options={[[ '', '查看导入记录' ],...history.map((entry) => [entry.batch_id,historyLabel(entry)] as const)]}/></Field>
+          {imported && importSource && <div className="import-task"><strong>{titles.label(importSource)}</strong>
+            <StateChip status={imported.status}/><progress aria-label="导入进度" max={100} value={imported.progress}/>
             <p className="muted">{imported.error?.message || imported.progress_detail || imported.message}</p>
             {imported.status === 'failed' && <Button variant="secondary" size="small" onClick={() => perform(async () => {
               const result = await request<import('./api').Batch>('/desktop/batches/' + taskId + '/' + imported.item_id + '/retry','POST',{})

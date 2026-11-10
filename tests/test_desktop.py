@@ -200,6 +200,39 @@ def test_turbo_resource_can_be_selected_and_downloaded(desktop_app, monkeypatch)
     assert resource["size"] == 1617884929
 
 
+def test_source_titles_and_batch_history_count(desktop_app, monkeypatch):
+    client, root = desktop_app
+    links = {"https://youtu.be/FirstVideo1": "A YouTube title", "https://www.bilibili.com/video/BV1pJ411X7mA/": "B 站标题"}
+    monkeypatch.setattr(media, "load_youtube_preview_metadata", lambda source: {"title": links[source]})
+    local = root / "本地 文件.mp4"
+    youtube, bilibili = links
+    cases = [("local", str(local), local.name), ("youtube", youtube, links[youtube]), ("bilibili", bilibili, links[bilibili])]
+    sources = []
+    for kind, value, title in cases:
+        source = {"source_kind": kind, "source_value": value}
+        response = client.post("/desktop/source-title", json=source)
+        assert response.is_success and response.json()["title"] == title
+        sources.append({**source, "source_title": title})
+    assert client.post("/desktop/source-title", json={"source_kind": "youtube", "source_value": bilibili}).status_code == 400
+    batch = media.create_batch(media.BatchCreateRequest(sources=sources, rights_confirmed=True))
+    item_data = client.get(f"/ui/batches/{batch.batch_id}").json()["items"]
+    assert [item["source_title"] for item in item_data] == [title for _, _, title in cases]
+    history = next(entry for entry in client.get("/desktop/batches").json() if entry["batch_id"] == batch.batch_id)
+    assert history["created_at"] == batch.created_at and history["total"] == 3 and "title" not in history
+    for item in batch.items:
+        media.update_batch_item(batch.batch_id, item.item_id, status="succeeded")
+
+
+def test_burn_encoder_checks_real_runtime_and_respects_cpu(monkeypatch):
+    monkeypatch.setattr(media, "nvenc_runtime_error", lambda _binary: "driver incompatible")
+    assert media.selected_burn_encoder("auto") == "cpu"
+    with pytest.raises(RuntimeError, match="NVENC 无法启动"):
+        media.burn_subtitle("strict", Path("video.mp4"), Path("captions.srt"), burn_encoder="nvenc")
+    monkeypatch.setattr(media, "nvenc_runtime_error", lambda _binary: "")
+    assert media.selected_burn_encoder("auto") == "nvenc"
+    assert media.selected_burn_encoder("cpu") == "cpu"
+
+
 def test_missing_model_blocks_before_download(desktop_app, monkeypatch):
     client, root = desktop_app
     model = root / "models" / "faster-whisper-large-v3"

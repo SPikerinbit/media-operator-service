@@ -31,6 +31,7 @@ def prepare():
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
     desktop_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else root
     tools = Path(os.getenv("MEDIA_DESKTOP_TOOLS", desktop_dir / "tools"))
+    burn_tool = tools / "ffmpeg-burn.exe"
     bundled_fonts = Path(os.getenv("MEDIA_DESKTOP_FONTS", desktop_dir / "fonts"))
     data = Path(os.getenv("MEDIA_DESKTOP_DATA", config.data_dir()))
     os.environ.update({
@@ -39,6 +40,7 @@ def prepare():
         "MEDIA_DATA_DIR": str(data),
         "HF_HOME": str(data / "models" / "huggingface"),
         "FFMPEG_BIN": str(tools / "ffmpeg.exe"),
+        "FFMPEG_BURN_BIN": str(burn_tool if burn_tool.is_file() else tools / "ffmpeg.exe"),
         "FFPROBE_BIN": str(tools / "ffprobe.exe"),
         "YT_DLP_BIN": str(tools / "yt-dlp.exe"),
         "WHISPER_MODEL": "small",

@@ -76,6 +76,7 @@ class OutputDefaults(BaseModel):
     whisper_model: str = "small"
     whisper_inference_mode: media.WhisperInferenceMode = "auto"
     subtitle_output_mode: media.SubtitleOutputMode = "en_only"
+    burn_encoder: media.BurnEncoder = "auto"
     aspect_ratio: media.AspectRatio = "source"
     resolution: media.Resolution = "best"
     fps: media.Fps = "source"
@@ -170,6 +171,7 @@ def check_resources():
 
     tools = [
         {"label": "FFmpeg / 字幕压制", "ready": check([media.FFMPEG_BIN, "-hide_banner", "-filters"], b" ass ")},
+        {"label": "NVIDIA NVENC / GPU 视频编码", "ready": media.ffmpeg_nvenc_available()},
         {"label": "ffprobe / 媒体检测", "ready": check([media.FFPROBE_BIN, "-version"])},
         {"label": "yt-dlp / 在线素材", "ready": check([media.YT_DLP_BIN, "--ignore-config", "--version"])},
         {"label": "Deno / YouTube 脚本", "ready": check([str(Path(media.YT_DLP_BIN).with_name("deno.exe")), "--version"])},
@@ -198,9 +200,23 @@ def check_resources():
 def history(knowledge_only: bool = False):
     return [
         {"batch_id": batch.batch_id, "created_at": batch.created_at, "status": batch.status,
-         "title": Path(batch.items[0].source_value).name if batch.items else ""}
+         "total": batch.total}
         for batch in jobs.stored_batches() if bool(batch.request.get("knowledge_only")) == knowledge_only
     ]
+
+
+@router.post("/source-title")
+def get_source_title(request: media.SourceInput):
+    source = request.source_value
+    if request.source_kind == "local":
+        return {"title": media.source_display_title("local", source)}
+    if media.video_url_kind(source) != request.source_kind:
+        raise HTTPException(400, "请输入有效的 YouTube 或 B 站链接")
+    try:
+        metadata = media.load_youtube_preview_metadata(source)
+        return {"title": media.source_display_title(request.source_kind, source, str(metadata.get("title") or ""))}
+    except (OSError, RuntimeError, ValueError):
+        return {"title": ""}
 
 
 class Retry(BaseModel):
@@ -263,7 +279,7 @@ def import_source(request: ImportRequest):
             source = str(path)
             if path.suffix.lower() in {".srt", ".vtt"}:
                 return {"transcript_id": knowledge.register(
-                    path, source_kind="subtitle", source=source, title=path.stem,
+                    path, source_kind="subtitle", source=source, title=path.name,
                 )}
         batch = jobs.submit_desktop_batch(media.BatchCreateRequest(
             sources=[media.SourceInput(source_kind=request.kind, source_value=source)],

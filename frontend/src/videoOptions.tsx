@@ -1,9 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { Captions, Globe2, ImagePlus, RotateCcw, Save, Send, SlidersHorizontal } from 'lucide-react'
-import { leaf, request, type Settings, type SourceKind } from './api'
+import { request, type Settings, type SourceKind } from './api'
 import { Button, Feedback, Field, Modal, Select, useActions } from './ui'
 
-export type Row = { id: string; source: string; kind: SourceKind; transcriptId?: number; submitted?: boolean }
+export type Row = { id: string; source: string; kind: SourceKind; title?: string; transcriptId?: number; submitted?: boolean }
 export const sourceLanguages = [['auto','自动识别'],['zh','中文'],['en','英语'],['ja','日语'],['ko','韩语'],['fr','法语'],['de','德语'],['es','西班牙语']] as const
 export const defaultStyle = {
   font_family: 'Microsoft YaHei', font_size: 44, font_size_mode: 'manual', font_weight: 700,
@@ -19,7 +19,7 @@ export const defaultBili = {
 }
 const defaultOutput = {
   source_language: 'auto', target_lang: 'zh-CN', whisper_model: 'small', whisper_inference_mode: 'auto',
-  subtitle_output_mode: 'en_only', aspect_ratio: 'source', resolution: 'best', fps: 'source',
+  subtitle_output_mode: 'en_only', aspect_ratio: 'source', resolution: 'best', fps: 'source', burn_encoder: 'auto',
   output_name_mode: 'sequence', output_name_prefix: '',
 }
 const defaultOptions = {
@@ -228,9 +228,9 @@ const inspectorSections = [
 ] as const
 export type InspectorSection = typeof inspectorSections[number]['id']
 
-export function Inspector({ options, change, settings, row, perItem, onScope, reset, section, onSection,
+export function Inspector({ options, change, settings, row, rowLabel, perItem, onScope, reset, section, onSection,
   defaultsReady, savingDefault, onSaveDefault, onResetDefault }: {
-  options: VideoOptions; change: (options: VideoOptions) => void; settings: Settings | null; row?: Row;
+  options: VideoOptions; change: (options: VideoOptions) => void; settings: Settings | null; row?: Row; rowLabel?: string
   perItem: boolean; onScope: (perItem: boolean) => void; reset: () => void
   section: InspectorSection; onSection: (section: InspectorSection) => void
   defaultsReady: boolean; savingDefault: DefaultGroup | null
@@ -262,7 +262,7 @@ export function Inspector({ options, change, settings, row, perItem, onScope, re
       <button type="button" aria-pressed={!perItem} onClick={() => onScope(false)}>批次默认</button>
       <button type="button" aria-pressed={perItem} disabled={!row} onClick={() => onScope(true)}>当前素材</button>
     </div>
-    {perItem && row && <div className="scope-note"><span>{leaf(row.source)}</span>
+    {perItem && row && <div className="scope-note"><span title={rowLabel}>{rowLabel}</span>
       <Button size="xs" variant="ghost" onClick={reset}>恢复继承</Button></div>}
     <div className="inspector-tabs" role="tablist" aria-label="参数分类">
       {inspectorSections.map(({id: key,label,heading,icon: Icon},index) => <button
@@ -291,6 +291,8 @@ export function Inspector({ options, change, settings, row, perItem, onScope, re
       <Field label="素材语言"><Select value={options.source_language} onChange={(v) => set('source_language',v)} options={sourceLanguages}/></Field>
       <Field label="输出画幅"><Select value={options.aspect_ratio} onChange={(v) => set('aspect_ratio',v)}
         options={[[ 'source','保留原比例' ],['16:9','16:9 横屏'],['9:16','9:16 竖屏'],['1:1','1:1 方形']]}/></Field>
+      <Field label="烧录编码"><Select value={options.burn_encoder} onChange={(v) => set('burn_encoder',v)}
+        options={[[ 'auto','自动 · NVIDIA 优先' ],['nvenc','NVIDIA NVENC · 仅 GPU 编码'],['cpu','CPU · libx264']]}/></Field>
       {options.subtitle_output_mode !== 'en_only' && <Field label="译文目标语言"><input value={options.target_lang} onChange={(e) => set('target_lang',e.target.value)} /></Field>}
         <div className="inspector-divider">高级参数</div>
         <Field label="Whisper 模型"><Select value={options.whisper_model} onChange={(v) => set('whisper_model',v)}

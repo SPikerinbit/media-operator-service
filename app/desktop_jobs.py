@@ -84,6 +84,7 @@ def run_item(batch_id, item_id):
         settings = media.batch_item_settings(batch.request, item)
         knowledge_only = bool(batch.request.get("knowledge_only"))
         output_name = item.output_name or f"source{item.index}"
+        source_title = item.source_title
         language = settings.get("source_language") or "auto"
         model = settings.get("whisper_model") or media.WHISPER_MODEL
         inference = settings.get("whisper_inference_mode") or media.WHISPER_INFERENCE_MODE
@@ -103,10 +104,13 @@ def run_item(batch_id, item_id):
                 raise ValueError("严格 GPU 模式需要启用 NVIDIA 转录加速，请先在设置中检测和启用。")
 
         def run(name, payload, transcript_id=None):
-            nonlocal stage
+            nonlocal stage, source_title
             stage = name
             result.update(stage_result(batch_id, item_id, name, payload, transcript_id))
-            media.update_batch_item(batch_id, item_id, result={**result, "output_name": output_name})
+            if name == "download":
+                source_title = media.source_display_title(item.source_kind, item.source_value, result.get("title") or "") or source_title
+            media.update_batch_item(batch_id, item_id, result={**result, "output_name": output_name},
+                                    source_title=source_title if name == "download" else None)
 
         run("download", {
             "source_kind": item.source_kind, "source_value": item.source_value, "rights_confirmed": True,
@@ -130,7 +134,8 @@ def run_item(batch_id, item_id):
             if not transcript_id:
                 transcript_id = knowledge.register(
                     srt_path, source_kind=item.source_kind, source=item.source_value,
-                    title=str(result.get("title") or output_name), playable=source_path, cache_key=cache_key,
+                    title=source_title or {"youtube": "YouTube 视频", "bilibili": "B 站视频"}.get(item.source_kind, "本地媒体"),
+                    playable=source_path, cache_key=cache_key,
                 )
         except ValueError:
             if knowledge_only:
@@ -153,7 +158,7 @@ def run_item(batch_id, item_id):
                 "output_name": output_name,
                 **{key: settings[key] for key in (
                     "aspect_ratio", "subtitle_font_size", "subtitle_color", "subtitle_outline_color",
-                    "subtitle_position", "subtitle_margin", "subtitle_output_mode", "subtitle_style",
+                    "subtitle_position", "subtitle_margin", "subtitle_output_mode", "subtitle_style", "burn_encoder",
                 ) if key in settings},
             })
             upload = media.BilibiliUploadSettings.model_validate(settings.get("bilibili_upload") or {})

@@ -1,29 +1,24 @@
 import { ArrowDown, ArrowRight, ArrowUp, Clapperboard, Download, Film, FolderOpen, GripVertical, HistoryIcon, Link2, ListVideo, Play, Send, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { motion, Reorder, useDragControls } from 'motion/react'
 import { useEffect, useState } from 'react'
-import { errorMessage, leaf, native, request, saveAs, sourceNames, videoLinkKind, watchBatch, labels, type Batch, type History, type Item, type Settings, type SourceKind, type UploadCandidate } from './api'
+import { errorMessage, historyLabel, native, request, saveAs, videoLinkKind, watchBatch, labels, type Batch, type History, type Item, type Settings, type SourceKind, type UploadCandidate } from './api'
 import { Button, Busy, Feedback, Field, Modal, Select, StateChip, useActions } from './ui'
+import { batchSource, useSourceTitles } from './sourceTitles'
 import { getOverride, Inspector, outputDefaults, resolveOptions, savedVideoOptions, videoPayload,
   type DefaultGroup, type InspectorSection, type Override, type Row, type VideoDefaults, type VideoOptions } from './videoOptions'
 
 const steps = [['download','导入'],['transcribe','转录'],['translate','翻译'],['burn','压制'],['bilibili_upload','投稿']]
-export type VideoTransfer = { id: number; source: string; kind: SourceKind }
+export type VideoTransfer = { id: number; source: string; kind: SourceKind; title?: string }
 
-function sourceLabel(source: string, kind: SourceKind) {
-  if (kind === 'local') return leaf(source)
-  try { const url = new URL(source); return sourceNames[kind] + ' · ' + (url.searchParams.get('v') || leaf(url.pathname) || url.hostname) }
-  catch { return source }
-}
-
-function QueueRow({ row, selected, index, count, onSelect, move, remove, onDragStart, onDragEnd, onDragCancel }: {
+function QueueRow({ row, label, selected, index, count, onSelect, move, remove, onDragStart, onDragEnd, onDragCancel }: {
   row: Row; selected: boolean; index: number; count: number; onSelect: () => void; move: (delta: number) => void;
-  remove: () => void; onDragStart: () => void; onDragEnd: () => void; onDragCancel: () => void
+  label: string; remove: () => void; onDragStart: () => void; onDragEnd: () => void; onDragCancel: () => void
 }) {
   const controls = useDragControls()
   return <Reorder.Item value={row.id} dragListener={false} dragControls={controls} dragMomentum={false}
     onDragStart={onDragStart} onDragEnd={onDragEnd} className={'queue-row' + (selected ? ' selected' : '')}>
     <Button variant="ghost" size="small" iconOnly leadingIcon={GripVertical} className="drag-handle"
-      aria-label={'拖动排序：' + sourceLabel(row.source, row.kind)}
+      aria-label={'拖动排序：' + label}
       title="拖动排序，也可用 Alt + 方向键"
       onPointerDown={(event) => {event.currentTarget.focus({preventScroll:true}); controls.start(event)}}
       onKeyDown={(event) => {
@@ -32,8 +27,8 @@ function QueueRow({ row, selected, index, count, onSelect, move, remove, onDragS
           event.preventDefault(); move(event.key === 'ArrowUp' ? -1 : 1)
         }
       }}/>
-    <button className="queue-main" type="button" onClick={onSelect} aria-pressed={selected} title={row.source}>
-      <strong>{sourceLabel(row.source,row.kind)}</strong>
+    <button className="queue-main" type="button" onClick={onSelect} aria-pressed={selected} title={label}>
+      <strong>{label}</strong>
       <small>{row.submitted ? '已提交' : row.transcriptId ? '复用原文字幕' : row.kind === 'local' ? '本地视频' : '在线视频'}</small>
     </button>
     <div className="row-actions">
@@ -83,6 +78,8 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
   const row = rows.find((entry) => entry.id === selectedId)
   const options = resolveOptions(base, perItem && row ? overrides[row.id] : undefined)
   const item = batch?.items.find((entry) => entry.item_id === selectedTask) || batch?.items[0]
+  const titles = useSourceTitles([...rows,...(batch?.items.map(batchSource) || [])])
+  const taskTitle = (entry: Item) => titles.label(batchSource(entry))
 
   useEffect(() => {
     let active = true
@@ -102,7 +99,7 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
   useEffect(() => {
     if (!transfer) return
     const id = crypto.randomUUID()
-    setRows((current) => [...current, { id, source: transfer.source, kind: transfer.kind, transcriptId: transfer.id }])
+    setRows((current) => [...current, { id, source: transfer.source, kind: transfer.kind, title: transfer.title, transcriptId: transfer.id }])
     setSelectedId(id)
     onTransferUsed()
   }, [transfer, onTransferUsed])
@@ -157,7 +154,8 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
         const model = settings?.ai_model || 'deepseek-flash'
         const data = await request<Batch>('/ui/batches', 'POST', {
           ...videoPayload(base,model), batch_concurrency: concurrency, rights_confirmed: true,
-          sources: candidates.map((entry) => ({source_kind:entry.kind, source_value:entry.source, client_row_id:entry.id})),
+          sources: candidates.map((entry) => ({source_kind:entry.kind, source_value:entry.source,
+            source_title:titles.title(entry), client_row_id:entry.id})),
           item_overrides: Object.fromEntries(candidates.filter((entry) => overrides[entry.id] && Object.keys(overrides[entry.id]).length)
             .map((entry) => [entry.id,videoPayload(resolveOptions(base,overrides[entry.id]),model,true)])),
           transcript_ids: Object.fromEntries(candidates.filter((entry) => entry.transcriptId).map((entry) => [entry.id,entry.transcriptId])),
@@ -259,7 +257,7 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
   function showHistory(id: string) {
     setBatchId(id); setBatch(null); setSelectedTask(''); setUploadPlan(null)
   }
-  const inspectorContent = <Inspector options={options} change={updateOptions} settings={settings} row={row} perItem={perItem}
+  const inspectorContent = <Inspector options={options} change={updateOptions} settings={settings} row={row} rowLabel={row && titles.label(row)} perItem={perItem}
     section={inspectorSection} onSection={setInspectorSection} onScope={setPerItem}
     defaultsReady={defaults !== null} savingDefault={savingDefault} onSaveDefault={saveDefault} onResetDefault={resetDefault}
     reset={() => row && setOverrides((current) => ({...current,[row.id]:{}}))}/>
@@ -285,7 +283,7 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
           <Button variant="ghost" size="small" leadingIcon={Link2} onClick={() => setPaste(true)}>添加链接</Button>
         </div>
         {rows.length ? <Reorder.Group axis="y" values={rows.map((entry) => entry.id)} onReorder={reorder} className="queue-list">
-          {rows.map((entry,index) => <QueueRow key={entry.id} row={entry} selected={entry.id === selectedId}
+          {rows.map((entry,index) => <QueueRow key={entry.id} row={entry} label={titles.label(entry)} selected={entry.id === selectedId}
             index={index} count={rows.length} onSelect={() => setSelectedId(entry.id)}
             move={(delta) => move(index,delta)} remove={() => {
               const remaining = rows.filter((candidate) => candidate.id !== entry.id)
@@ -301,12 +299,12 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
         </div>
         <div className="section-heading task-heading"><HistoryIcon size={17}/><h2>任务记录</h2></div>
         <Field label="批次"><Select value={batchId} onChange={showHistory}
-          options={[[ '', '选择历史批次' ],...history.map((record) => [record.batch_id,record.title + ' · ' + labels[record.status]] as const)]}/></Field>
+          options={[[ '', '选择历史批次' ],...history.map((record) => [record.batch_id,historyLabel(record)] as const)]}/></Field>
         {batch && <div className="history-actions"><Button variant="secondary" size="small" leadingIcon={Send}
           onClick={() => openHistoryUpload()}>批量投稿到 B 站</Button></div>}
         {batch?.items.length ? <div className="task-list">{batch.items.map((entry) => <button type="button" className="task-row"
           key={entry.item_id} aria-pressed={item?.item_id === entry.item_id} onClick={() => setSelectedTask(entry.item_id)}>
-          <span>{entry.output_name || sourceLabel(entry.source_value,entry.source_kind)}</span><StateChip status={entry.status}/>
+          <span title={taskTitle(entry)}>{taskTitle(entry)}</span><StateChip status={entry.status}/>
           <progress aria-label="任务进度" max={100} value={entry.progress}/>
         </button>)}</div> : <p className="muted task-placeholder">提交后可在这里跟踪进度。</p>}
       </section>
@@ -347,7 +345,8 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
         <section className="surface task-detail" aria-label="任务详情">
           <div className="section-heading"><h2>任务详情</h2>{item && <StateChip status={item.status}/>}</div>
           {!item ? <p className="muted">选择一项任务查看阶段、错误和导出结果。</p> : <>
-            <p className="item-title">{item.output_name || sourceLabel(item.source_value,item.source_kind)}</p>
+            <p className="item-title">{taskTitle(item)}</p>
+            {item.result?.burn_encoder && <p className="muted">烧录编码 · {item.result.burn_encoder === 'nvenc' ? 'NVIDIA NVENC' : 'CPU · libx264'}</p>}
             <ol className="stage-strip">{steps.map(([key, label]) => {
               const stage = item.stage_details?.[key]
               return <li key={key} data-state={stage?.status || 'idle'} title={stage?.message}>
@@ -406,7 +405,7 @@ export function Video({ settings, transfer, onTransferUsed, onTranscript }: {
               <input type="checkbox" disabled={!available || uploadPending} checked={uploadSelection.includes(entry.item_id)}
                 onChange={(event) => setUploadSelection((current) => event.target.checked ?
                   [...current,entry.item_id] : current.filter((id) => id !== entry.item_id))}/>
-              <span><strong>{entry.output_name || sourceLabel(entry.source_value,entry.source_kind)}</strong>
+              <span><strong>{taskTitle(entry)}</strong>
                 <small>{candidate?.message}</small></span>
             </label></li>
           })}

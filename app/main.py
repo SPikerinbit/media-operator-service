@@ -15,6 +15,7 @@ import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from datetime import timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import urlparse
@@ -95,6 +96,7 @@ def resolve_yt_dlp_bin() -> str:
 
 YT_DLP_BIN = resolve_yt_dlp_bin()
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
+FFMPEG_BURN_BIN = os.getenv("FFMPEG_BURN_BIN") or FFMPEG_BIN
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
 FFMPEG_BURN_ENCODER = os.getenv("FFMPEG_BURN_ENCODER", "auto").strip().lower()
 if FFMPEG_BURN_ENCODER not in {"auto", "cpu", "nvenc"}:
@@ -206,6 +208,7 @@ SubtitleOutputMode = Literal["bilingual", "zh_only", "en_only"]
 SubtitleFontSizeMode = Literal["auto", "manual"]
 SubtitleBilingualOrder = Literal["en_top_zh_bottom", "zh_top_en_bottom"]
 WhisperInferenceMode = Literal["standard", "batched", "auto_repair", "auto", "gpu_only"]
+BurnEncoder = Literal["auto", "nvenc", "cpu"]
 SourceKind = Literal["youtube", "bilibili", "local"]
 BatchItemStatus = Literal["queued", "running", "succeeded", "failed"]
 BilibiliCopyright = Literal[1, 2]
@@ -261,6 +264,7 @@ class SourceInput(BaseModel):
     source_kind: SourceKind = Field(default="youtube")
     source_value: str = Field(default="")
     client_row_id: str = Field(default="", max_length=128)
+    source_title: str = Field(default="", max_length=500)
 
     @model_validator(mode="after")
     def normalize(self) -> "SourceInput":
@@ -486,6 +490,7 @@ class StageBurnRequest(BaseModel):
     subtitle_margin: SubtitleMargin = Field(default="auto")
     subtitle_output_mode: SubtitleOutputMode = Field(default="bilingual")
     subtitle_style: SubtitleStyle | None = None
+    burn_encoder: BurnEncoder | None = None
     output_name: str | None = None
     operator_batch_id: str = Field(default="")
     operator_item_id: str = Field(default="")
@@ -569,6 +574,7 @@ class BatchCreateRequest(BaseModel):
     subtitle_margin: SubtitleMargin = Field(default="auto")
     subtitle_output_mode: SubtitleOutputMode = Field(default="bilingual")
     subtitle_style: SubtitleStyle | None = None
+    burn_encoder: BurnEncoder | None = None
     bilibili_upload: BilibiliUploadSettings = Field(default_factory=BilibiliUploadSettings)
 
     @field_validator(
@@ -722,6 +728,7 @@ class BatchItemState(BaseModel):
     youtube_url: str
     source_kind: SourceKind = "youtube"
     source_value: str = ""
+    source_title: str = ""
     status: BatchItemStatus = "queued"
     stage: str = "queued"
     progress: int = 0
@@ -931,6 +938,12 @@ def is_local_source_url(value: str) -> bool:
     return parsed.path.startswith("/files/")
 
 
+def source_display_title(kind: str, source: str, title: str = "") -> str:
+    if kind in {"local", "subtitle"}:
+        return Path(source).name
+    return " ".join(title.split())[:500] if title and not is_http_url(title.strip()) else ""
+
+
 def normalize_local_source_path(value: str) -> Path:
     raw = value.strip()
     if not raw:
@@ -1104,6 +1117,7 @@ def update_batch_item(
     progress: int | None = None,
     message: str | None = None,
     output_name: str | None = None,
+    source_title: str | None = None,
     stage_jobs: dict[str, str] | None = None,
     stage_details: dict[str, dict[str, Any]] | None = None,
     active_stage_job_id: str | None = None,
@@ -1132,6 +1146,8 @@ def update_batch_item(
                 item["message"] = message
             if output_name is not None:
                 item["output_name"] = output_name
+            if source_title is not None:
+                item["source_title"] = source_title
             if stage_jobs is not None:
                 item["stage_jobs"] = stage_jobs
             if stage_details is not None:
@@ -1451,6 +1467,7 @@ def create_batch(request: BatchCreateRequest) -> BatchState:
             youtube_url=source.source_value,
             source_kind=source.source_kind,
             source_value=source.source_value,
+            source_title=source_display_title(source.source_kind, source.source_value, source.source_title),
             output_name=build_output_name(
                 request.output_name_mode,
                 request.output_name_prefix,
@@ -1688,7 +1705,22 @@ def ffmpeg_hwaccels() -> set[str]:
     return _ffmpeg_hwaccels_cache
 
 
+@lru_cache(maxsize=4)
+def nvenc_runtime_error(binary: str) -> str:
+    try:
+        completed = subprocess.run(
+            [binary, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=s=320x240:d=0.1",
+             "-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-"],
+            capture_output=True, text=True, errors="replace", timeout=12, creationflags=WINDOW_FLAGS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return str(error)
+    return "" if completed.returncode == 0 else completed.stderr.strip() or "NVENC 编码检测失败"
+
+
 def ffmpeg_nvenc_available() -> bool:
+    if DESKTOP:
+        return not nvenc_runtime_error(FFMPEG_BURN_BIN)
     return "h264_nvenc" in ffmpeg_encoders()
 
 
@@ -1696,12 +1728,8 @@ def ffmpeg_cuda_hwaccel_available() -> bool:
     return "cuda" in ffmpeg_hwaccels()
 
 
-def selected_burn_encoder() -> str:
-    if FFMPEG_BURN_ENCODER == "nvenc":
-        return "nvenc" if ffmpeg_nvenc_available() else "cpu"
-    if FFMPEG_BURN_ENCODER == "auto":
-        return "nvenc" if ffmpeg_nvenc_available() else "cpu"
-    return "cpu"
+def selected_burn_encoder(mode: str | None = None) -> str:
+    return "nvenc" if (mode or FFMPEG_BURN_ENCODER) != "cpu" and ffmpeg_nvenc_available() else "cpu"
 
 
 def ffmpeg_video_encoder_args(encoder: str) -> list[str]:
@@ -1848,7 +1876,7 @@ def download_youtube(
         youtube_url,
     ]
     cmd[1:1] = yt_dlp_network_flags(youtube_url)
-    if DESKTOP and not audio_only:
+    if DESKTOP:
         metadata_file = source_dir / "source-metadata.jsonl"
         metadata_file.unlink(missing_ok=True)
         cmd[1:1] = [
@@ -3319,9 +3347,13 @@ def burn_subtitle(
     subtitle_margin: SubtitleMargin = "auto",
     subtitle_output_mode: SubtitleOutputMode = "bilingual",
     subtitle_style: SubtitleStyle | None = None,
+    burn_encoder: BurnEncoder | None = None,
     output_name: str | None = None,
     progress_callback: Callable[[int, str, str | None], None] | None = None,
 ) -> Path:
+    selected_encoder = selected_burn_encoder(burn_encoder)
+    if burn_encoder == "nvenc" and selected_encoder != "nvenc":
+        raise RuntimeError("NVIDIA NVENC 无法启动。请在「设置 → 检测本地环境」检查驱动，或选择自动/CPU。")
     output_path = artifact_path(job_id, "final.mp4")
     width = 1920
     height = 1080
@@ -3374,18 +3406,17 @@ def burn_subtitle(
     )
     subtitle_filter = f"ass='{ass_path.name if DESKTOP else ffmpeg_escape_path(ass_path)}'"
     fonts_dir = subtitle_fonts_dir(style.font_family)
-    if fonts_dir.exists():
+    system_fonts = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+    if fonts_dir.exists() and (not DESKTOP or fonts_dir != system_fonts):
         subtitle_filter += f":fontsdir='{ffmpeg_escape_path(fonts_dir)}'"
     video_filters = []
     ratio_filter = aspect_ratio_filter(aspect_ratio)
     if ratio_filter:
         video_filters.append(ratio_filter)
     video_filters.append(subtitle_filter)
-    selected_encoder = selected_burn_encoder()
-
     def build_ffmpeg_burn_cmd(encoder: str) -> list[str]:
         return [
-            FFMPEG_BIN,
+            FFMPEG_BURN_BIN if encoder == "nvenc" else FFMPEG_BIN,
             "-y",
             "-i",
             str(source_path),
@@ -3417,7 +3448,7 @@ def burn_subtitle(
     actual_encoder = selected_encoder
     fallback_error = ""
     if progress_callback:
-        progress_callback(10, f"rendering with {actual_encoder} encoder", None)
+        progress_callback(10, "NVIDIA NVENC 编码" if actual_encoder == "nvenc" else "CPU 编码", None)
     try:
         run_command_streaming(
             build_ffmpeg_burn_cmd(actual_encoder),
@@ -3429,10 +3460,12 @@ def burn_subtitle(
     except Exception as exc:
         if actual_encoder != "nvenc":
             raise
+        if burn_encoder == "nvenc":
+            raise RuntimeError(f"NVIDIA NVENC 编码失败：{exc}") from exc
         fallback_error = str(exc)
         actual_encoder = "cpu"
         if progress_callback:
-            progress_callback(12, "nvenc failed, falling back to libx264", fallback_error[:500])
+            progress_callback(12, "NVIDIA 编码失败，改用 CPU", fallback_error[:500])
         run_command_streaming(
             build_ffmpeg_burn_cmd(actual_encoder),
             cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
@@ -3443,7 +3476,7 @@ def burn_subtitle(
     artifact_path(job_id, "burn_runtime.json").write_text(
         json.dumps(
             {
-                "configured_encoder": FFMPEG_BURN_ENCODER,
+                "configured_encoder": burn_encoder or FFMPEG_BURN_ENCODER,
                 "selected_encoder": selected_encoder,
                 "actual_encoder": actual_encoder,
                 "nvenc_available": ffmpeg_nvenc_available(),
@@ -4178,6 +4211,7 @@ def run_stage_burn(job_id: str) -> None:
                 subtitle_margin=request.subtitle_margin,
                 subtitle_output_mode=request.subtitle_output_mode,
                 subtitle_style=request.subtitle_style,
+                burn_encoder=request.burn_encoder,
                 output_name=request.output_name,
                 progress_callback=lambda progress, message, raw=None: report_stage_progress(
                     job_id, "burn", progress, message, status="running", raw=raw
@@ -4205,6 +4239,9 @@ def run_stage_burn(job_id: str) -> None:
             "aspect_ratio": request.aspect_ratio,
             "subtitle_output_mode": request.subtitle_output_mode,
         }
+        runtime_path = artifact_path(job_id, "burn_runtime.json")
+        if runtime_path.is_file():
+            result["burn_encoder"] = read_json(runtime_path).get("actual_encoder")
         if DESKTOP and request.subtitle_output_mode == "zh_only" and artifact_path(job_id, "zh_only.srt").is_file():
             result["translated_srt_url"] = public_file_url(job_id, "zh_only.srt")
         report_stage_progress(job_id, "burn", 100, "subtitle burn completed", status="succeeded", result=result, force=True)

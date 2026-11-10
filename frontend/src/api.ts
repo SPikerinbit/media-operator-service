@@ -20,6 +20,7 @@ export type Item = {
   index: number
   source_kind: SourceKind
   source_value: string
+  source_title?: string
   output_name?: string
   status: Status
   stage: string
@@ -29,12 +30,12 @@ export type Item = {
   log_tail?: string[]
   error?: { message: string }
   stage_details?: Record<string, { status: Status; progress: number; message: string }>
-  result?: { final_video_url?: string; english_srt_url?: string; translated_srt_url?: string;
+  result?: { title?: string; bvid?: string; aid?: number; final_video_url?: string; english_srt_url?: string; translated_srt_url?: string;
     bilingual_srt_url?: string; transcript_id?: number; bilibili_url?: string; bilibili_metadata?: PostingMetadata;
-    cover_asset_url?: string; cover_source?: string; cover_mode?: string }
+    cover_asset_url?: string; cover_source?: string; cover_mode?: string; burn_encoder?: 'cpu' | 'nvenc' }
 }
 export type Batch = { batch_id: string; status: Status; queued: number; running: number; items: Item[] }
-export type History = { batch_id: string; status: Status; title: string; created_at: string }
+export type History = { batch_id: string; status: Status; total: number; created_at: string }
 export type UploadCandidate = {state: 'retry' | 'ready' | 'posted' | 'missing' | 'busy'; message: string}
 export type Settings = {
   data_dir: string
@@ -53,7 +54,7 @@ export type LocalResources = {
   checks?: {label:string; ready:boolean}[]
   free_bytes?: number
 }
-export type TranscriptSummary = { id: number; title: string; source_kind: SourceKind | 'subtitle'; created_at: string }
+export type TranscriptSummary = { id: number; title: string; source_kind: SourceKind | 'subtitle'; source: string; created_at: string }
 export type Cue = { number: number; start_ms: number; end_ms: number; text: string }
 export type Draft = { id: number; claim: string; evidence: string; example: string; refs: number[] }
 export type Transcript = TranscriptSummary & { source: string; playable: boolean; cues: Cue[]; cards: Draft[] }
@@ -142,6 +143,13 @@ export function watchBatch(id: string, update: (batch: Batch) => void, onError: 
 export const labels: Record<Status, string> = { queued: '排队中', running: '处理中', succeeded: '已完成', failed: '失败' }
 export function errorMessage(error: unknown) { return error instanceof Error ? error.message : '操作失败' }
 export function leaf(path: string) { return path.split(/[\\/]/).filter(Boolean).at(-1) || path }
+const batchDate = new Intl.DateTimeFormat('sv-SE', {
+  year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23',
+})
+export function historyLabel(entry: History) {
+  const date = new Date(entry.created_at)
+  return (Number.isNaN(date.getTime()) ? '—' : batchDate.format(date)) + ' · ' + entry.total
+}
 export function timestamp(ms: number) {
   const s = Math.floor(ms / 1000)
   return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map((part) => String(part).padStart(2, '0')).join(':')
