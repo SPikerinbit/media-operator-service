@@ -55,17 +55,19 @@ frontend/                      React 工作台
 
 桌面程序的构建和安装只在 Windows 上完成。步骤、环境变量和安装核对写在 [docs/DESKTOP_QUICKSTART.md](docs/DESKTOP_QUICKSTART.md)。打包脚本是 `scripts/build_desktop.ps1`，路径通过参数传入。
 
-无界面服务：
+无界面服务默认只听本机。`python -m app.main` 和 `scripts/serve_api.sh` 在 `MEDIA_BIND_HOST` 不是回环地址、又没有 `MEDIA_API_TOKEN` 时会直接退出。令牌配上之后，请求要带 `Authorization: Bearer <token>` 或 `X-Media-Token`。桌面窗口不走这条路：它自己绑定 `127.0.0.1`，用一次性 Cookie，不读取这个令牌。
 
 ```bash
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
-# 编辑 .env 后再启动。默认请只监听本机。
-.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8090
+# 编辑 .env 后再启动。
+.venv/bin/python -m app.main
 ```
 
-Docker Compose 的示例在 `docker-compose.yml`。把密钥留在环境变量或桌面设置里，不要提交 `.env`。
+开发依赖在 `requirements-dev.txt`。检查是 `ruff check app tests desktop_entry.py` 和 `python -m pytest -q`。GitHub Actions 会在 Ubuntu 上跑这两项和前端构建，并在 Windows 上再跑一遍 pytest，好让桌面测试也被收集。
+
+Docker Compose 的示例在 `docker-compose.yml`，端口只发布到 `127.0.0.1`。要把容器暴露到别的网卡，先设置 `MEDIA_API_TOKEN`，再把 `MEDIA_BIND_HOST` 改成 `0.0.0.0`。把密钥留在环境变量或桌面设置里，不要提交 `.env`。
 
 前端：
 

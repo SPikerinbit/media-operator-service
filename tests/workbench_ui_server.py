@@ -3,7 +3,8 @@ import os
 import sys
 from pathlib import Path
 root=Path(sys.argv[1]).resolve();root.mkdir(parents=True,exist_ok=True)
-os.environ.update(MEDIA_DESKTOP_HOME=str(root/'profile'),MEDIA_DESKTOP_DATA=str(root/'data'),MEDIA_DESKTOP_TOOLS='D:/Media Operator/tools',MEDIA_DESKTOP_FONTS='D:/Media Operator/fonts')
+os.environ['MEDIA_DESKTOP_HOME']=str(root/'profile')
+os.environ['MEDIA_DESKTOP_DATA']=str(root/'data')
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from app import desktop
 desktop.prepare()
@@ -11,7 +12,6 @@ from app import main as media,desktop_config as config,desktop_sources,desktop_j
 from fastapi import Request
 import uvicorn
 import time
-import shutil
 
 class Credentials:
     def get_password(self,service,name):return 'fixture' if name in {'TRANSLATE_API_KEY','BILI_SESSDATA','BILI_JCT','BILI_BUVID3'} else None

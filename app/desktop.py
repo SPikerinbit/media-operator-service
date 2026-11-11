@@ -15,6 +15,7 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse, Response
 import uvicorn
 
+from app.defaults import DEFAULT_TRANSLATE_MODEL
 from app import desktop_config as config
 
 # Paper and ink. The title bar stays on this light pair unless forced-colors is active.
@@ -49,7 +50,7 @@ def prepare():
         "ALLOW_PLACEHOLDER_ARTIFACTS": "false",
         "TRANSLATE_PROVIDER": "deepseek",
         "TRANSLATE_API_BASE": "https://api.deepseek.com",
-        "TRANSLATE_MODEL": config.settings().get("ai_model", "deepseek-flash"),
+        "TRANSLATE_MODEL": config.settings().get("ai_model", DEFAULT_TRANSLATE_MODEL),
     })
 
 

@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["app", "tests", "desktop_entry.py"]
+
+[tool.ruff.lint]
+# Real defects only. Style rules are left off so a pass does not rewrite the tree.
+select = ["E9", "F", "B023"]
+ignore = ["E501"]

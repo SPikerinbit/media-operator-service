@@ -5,11 +5,35 @@ import os
 from pathlib import Path
 import threading
 
-from keyring.backends.Windows import WinVaultKeyring
 
-HOME = Path(os.getenv("MEDIA_DESKTOP_HOME") or Path(os.environ["LOCALAPPDATA"]) / "MediaOperator")
+def _profile_home() -> Path:
+    chosen = os.getenv("MEDIA_DESKTOP_HOME")
+    if chosen:
+        return Path(chosen)
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        return Path(local) / "MediaOperator"
+    return Path.home() / ".media-operator"
+
+
+class _LazyVault:
+    """Open Windows Credential Manager on first use.
+
+    Importing this module must work on other systems. Tests and non-Windows
+    checks never touch the vault unless a caller asks for a credential.
+    """
+
+    def __getattr__(self, name):
+        from keyring.backends.Windows import WinVaultKeyring
+
+        vault = WinVaultKeyring()
+        globals()["VAULT"] = vault
+        return getattr(vault, name)
+
+
+HOME = _profile_home()
 SETTINGS = HOME / "settings.json"
-VAULT = WinVaultKeyring()
+VAULT = _LazyVault()
 SERVICE = "Media Operator Desktop"
 CREDENTIALS = (
     "TRANSLATE_API_KEY", "BILI_SESSDATA", "BILI_JCT", "BILI_BUVID3", "BILI_DEDEUSERID", "BILI_AC_TIME_VALUE",
