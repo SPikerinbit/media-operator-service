@@ -519,7 +519,7 @@ export function glideWood(el: HTMLElement, from: WoodRect, to: WoodRect, _ms = 4
   const promise = new Promise<void>(resolve => {
     const tick = (now: number) => {
       const p = springAt(now - started, SPRING.soft)
-      const arc = p > 0 && p < 1 ? Math.sin(Math.PI * p) * 28 : 0
+      const arc = p > 0 && p < 1 ? Math.sin(Math.PI * p) * 92 : 0
       const x = lerp(from.x, to.x, p)
       const y = lerp(from.y, to.y, p) - arc
       const scale = lerp(1, to.width / Math.max(1, from.width), p)

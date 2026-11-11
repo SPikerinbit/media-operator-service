@@ -7,7 +7,7 @@ import { Presence, usePresented } from './presence'
 import { NoteThreads, type ThreadEnd } from './noteThreads'
 import { TranscriptView } from './TranscriptView'
 import { CoverArt, DeskTV, PaperProcess, Prop, asset } from './WorkbenchEffects'
-import { anchorPixels, currentManifest, useWorkbenchManifest, woodLanding } from './workbenchAnchors'
+import { anchorPixels, currentManifest, useWorkbenchManifest } from './workbenchAnchors'
 import { flyTaskPaper, flyTrashSheets, glideWood, mouthOf } from './workbenchMotion'
 import { entryLabel, optionsOf, reuseMark, sections, stageLabels, type InboxState, type Lane, type LetterEntry, type LetterGroup } from './workbenchState'
 
@@ -144,54 +144,32 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     const added=next.filter(id=>!prev.includes(id))
     const removed=prev.filter(id=>!next.includes(id))
     preparedRef.current=next
-    if(removed.length)setSettled(list=>list.filter(id=>next.includes(id)))
     if(!added.length&&!removed.length)return
+    if(removed.length)setSettled(list=>list.filter(id=>next.includes(id)))
     const host=brazierRef.current
     const box=host?.getBoundingClientRect()||brazierBox?.image||null
-    const stagger=added.length>1?(1000-450)/(added.length-1):0
+    const slots=[{x:.36,y:.54,rot:-8},{x:.46,y:.56,rot:6},{x:.56,y:.54,rot:-4},{x:.66,y:.56,rot:9}]
+    const stagger=added.length>1?560:0
     ;[...added,...removed].forEach((id,index)=>{
       const order=Math.max(0,sections.findIndex(item=>item.id===id))
-      const img=woodImg.current[id]
-      const hole=woodRefs.current[id]?.getBoundingClientRect()
-      if(!img||!hole)return
-      if(!box){img.style.position='';img.style.left='';img.style.top='';img.style.transform='';if(added.includes(id))setSettled(list=>[...new Set([...list,id])]);return}
-      const land=woodLanding(box,currentManifest(),order)
-      const bowlX=box.left+box.width*0.5+(order-1.5)*16
-      const bowlY=box.top+box.height*0.62
-      const from={x:img.getBoundingClientRect().left+img.getBoundingClientRect().width/2,y:img.getBoundingClientRect().top+img.getBoundingClientRect().height/2,width:img.getBoundingClientRect().width||120,height:img.getBoundingClientRect().height||80,rot:0}
-      const to=added.includes(id)?{x:bowlX,y:bowlY,width:86,height:54,rot:land.rot}:{x:hole.left+hole.width/2,y:hole.top+40,width:86,height:54,rot:0}
-      const delay=added.includes(id)?index*stagger:0
-      window.setTimeout(()=>void glideWood(img,from,to).then(()=>{
-        if(added.includes(id)){
-          const front=host?.querySelector('.foreground')
-          if(host&&front&&img.parentElement!==host)host.insertBefore(img,front)
-          img.style.position='absolute'
-          img.style.left=(42+(order*8))+'%'
-          img.style.top='58%'
-          img.style.width='86px'
-          img.style.height='54px'
-          img.style.transform=`translate(-50%,-50%) rotate(${land.rot}deg)`
-          img.style.zIndex='2'
-          setSettled(list=>[...new Set([...list,id])])
-        }
-        else{img.dataset.parked='';img.style.position='';img.style.left='';img.style.top='';img.style.width='';img.style.height='';img.style.transform='';img.style.filter='';img.style.zIndex=''}
-      }),delay)
+      const source=woodImg.current[id]
+      const slot=slots[order]||slots[0]
+      if(!source||!box){if(added.includes(id))setSettled(list=>[...new Set([...list,id])]);return}
+      const home=source.getBoundingClientRect()
+      const land={x:box.left+box.width*slot.x,y:box.top+box.height*slot.y,width:128,height:78,rot:slot.rot}
+      const button={x:home.left+home.width/2,y:home.top+home.height/2,width:home.width||120,height:home.height||78,rot:0}
+      const from=added.includes(id)?button:land
+      const to=added.includes(id)?land:button
+      const flyer=source.cloneNode(true) as HTMLImageElement
+      flyer.className='wood-piece wood-flight'
+      flyer.style.visibility='visible'
+      document.body.append(flyer)
+      window.setTimeout(()=>void glideWood(flyer,from,to).then(()=>{
+        if(added.includes(id))setSettled(list=>[...new Set([...list,id])])
+        requestAnimationFrame(()=>flyer.remove())
+      }),added.includes(id)?index*stagger:0)
     })
   },[group,reduced,brazierBox])
-  useLayoutEffect(()=>{
-    const image=brazierRef.current?.querySelector('.prop:not(.foreground)')
-    const box=image instanceof HTMLElement?image.getBoundingClientRect():brazierBox?.image
-    if(!box)return
-    settled.forEach(id=>{
-      const img=woodImg.current[id]
-      if(!img||img.style.position==='fixed'||img.style.position==='absolute')return
-      const order=Math.max(0,sections.findIndex(item=>item.id===id))
-      const land=woodLanding(box,currentManifest(),order)
-      img.style.position='fixed';img.style.width='120px';img.style.height='80px'
-      img.style.left=(land.x-60)+'px';img.style.top=(land.y-40)+'px'
-      img.style.transform=`rotate(${land.rot}deg)`;img.style.zIndex='2'
-    })
-  },[settled,brazierBox])
   async function ignite(){
     if(!confirm||!entry||!rights||entering)return
     const slip=slipRef.current
@@ -340,7 +318,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
             <img className="wood-shadow" src={asset('wood-'+i+'-shadow')} alt="" /><img ref={el=>{woodImg.current[s.id]=el}} data-id={s.id} className="wood-piece" src={asset('wood-'+i+'-light-beauty')} alt="" /><strong>{s.label}</strong><small>{prepared.includes(s.id)?'已备齐，可重新编辑':s.summary}</small>
           </button>)}</div>
           <div className="hearth">
-            <div className="preparation-scene"><Presence open={Boolean(confirm)}>{confirm&&<form ref={slipRef} className={'ignition-slip'+(entering?' is-entering':'')} onSubmit={event=>{event.preventDefault();void ignite()}}><h3>确认开始处理</h3><p>将处理{perItem?'当前稿件':`本次投递中 ${ready.length} 条稿件`}，完成字幕与成片后提交 B 站。</p><p>本次使用已备齐的输出、字幕样式、投稿信息和翻译上下文；单条设置优先。</p><label className="check"><input type="checkbox" checked={rights} disabled={entering} onChange={e=>setRights(e.target.checked)}/>我已确认素材使用权限及本次投稿信息</label><div className="toolbar"><Button type="button" variant="secondary" onClick={()=>setConfirm(null)} disabled={entering}>返回检查</Button><Button type="submit" disabled={!rights||entering}>确认并点火</Button></div></form>}</Presence><div className="fuel-brazier" ref={brazierRef}><Prop name="brazier"/><Prop name="brazier" layer="front" className="foreground"/></div><p>{prepared.length===4?'四类设置已备齐，可以开始处理。':'选择木块修改设置，或直接使用当前设置。'}</p></div>
+            <div className="preparation-scene"><Presence open={Boolean(confirm)}>{confirm&&<form ref={slipRef} className={'ignition-slip'+(entering?' is-entering':'')} onSubmit={event=>{event.preventDefault();void ignite()}}><h3>确认开始处理</h3><p>将处理{perItem?'当前稿件':`本次投递中 ${ready.length} 条稿件`}，完成字幕与成片后提交 B 站。</p><p>本次使用已备齐的输出、字幕样式、投稿信息和翻译上下文；单条设置优先。</p><label className="check"><input type="checkbox" checked={rights} disabled={entering} onChange={e=>setRights(e.target.checked)}/>我已确认素材使用权限及本次投稿信息</label><div className="toolbar"><Button type="button" variant="secondary" onClick={()=>setConfirm(null)} disabled={entering}>返回检查</Button><Button type="submit" disabled={!rights||entering}>确认并点火</Button></div></form>}</Presence><div className="fuel-brazier" ref={brazierRef}><Prop name="brazier"/><div className="bowl-logs" aria-hidden="true">{sections.map((s,i)=>settled.includes(s.id)&&<img key={s.id} className="bowl-log" alt="" src={asset('wood-'+i+'-light-beauty')} style={{left:['20%','30%','40%','50%'][i],transform:`rotate(${[-8,6,-4,9][i]}deg)`}}/>)}</div><Prop name="brazier" layer="front" className="foreground"/></div><p>{prepared.length===4?'四类设置已备齐，可以开始处理。':'选择木块修改设置，或直接使用当前设置。'}</p></div>
             <Presence open={Boolean(section)}>{section&&<div className="setting-letter"><div className="setting-letter-head"><h3>{sections.find(s=>s.id===section)?.label}</h3><button type="button" className="text-action" disabled={pending} onClick={()=>void action(async()=>{await save(group,[...new Set([...prepared,section])]);setSection(null)})}>保存并放入火盆</button></div>
             <div className="settings-and-preview"><Inspector options={effective} change={change} settings={settings} row={row} rowLabel={entryLabel(entry)} perItem={perItem} onScope={setPerItem} reset={restoreInheritance} section={section} onSection={setSection} only={section}
               defaultsReady={Boolean(defaults)} savingDefault={savingDefault} onSaveDefault={kind=>void saveDefault(kind)} onResetDefault={kind=>change(kind==='output'?{...effective,...outputDefaults(savedVideoOptions(defaults))}:{...effective,subtitle_style:savedVideoOptions(defaults).subtitle_style})}/>
