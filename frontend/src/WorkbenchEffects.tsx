@@ -14,6 +14,10 @@ export function Prop({ name, layer = 'body', className = '', style }: { name: st
   </picture>
 }
 
+export function ContactShadow({ name }: { name: string }) {
+  return <img className="contact-shadow" src={asset(name + '-shadow')} alt="" draggable={false} />
+}
+
 export type StripLink = { id: number; refs: number[] }
 type Mark = 'clean' | 'cut' | 'charred'
 
@@ -367,10 +371,14 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
 
   const showStrips = lane === 'notes' && arrived && (status === 'succeeded' || progress >= 92) && links.length > 0
   return <div ref={root} className={'paper-process ' + lane} data-mark={mark}>
+    <ContactShadow name={lane === 'publish' ? 'brazier' : 'shredder'} />
     <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} className="process-machine" />
     {lane === 'publish' && box && [0, 1, 2, 3].map(index => {
       const land = woodLanding(box, manifest, index)
-      return <img key={index} className="task-log" alt="" src={asset(`wood-${index}-light-beauty`)} style={{ left: land.x, top: land.y, transform: `translate(-50%,-50%) rotate(${land.rot}deg)` }} />
+      return <span key={index} className="task-log" style={{ left: land.x, top: land.y, transform: `translate(-50%,-50%) rotate(${land.rot}deg)` }}>
+        <img className="wood-shadow" alt="" src={asset(`wood-${index}-shadow`)} />
+        <img alt="" src={asset(`wood-${index}-light-beauty`)} />
+      </span>
     })}
     <canvas ref={canvas} className="process-paper" aria-hidden="true" />
     {lane === 'publish' && <canvas ref={fireNode} className="flame-layer" aria-hidden="true" />}
@@ -424,6 +432,7 @@ export function DeskProjector({ url }: { url?: string }) {
       <img src={asset('projector-light-body')} alt="" />
     </button>
     <div className="projector-screen">
+      <img className="screen-plate" src={asset('projector-light-screen-open')} alt="" />
       {url && <video ref={video} src={url} controls playsInline preload="metadata" />}
     </div>
   </div>

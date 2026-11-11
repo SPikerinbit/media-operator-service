@@ -224,10 +224,13 @@ export function CollapsibleContent({
       id={context.contentId}
       role="region"
       aria-labelledby={context.triggerId}
-      hidden={!context.open}
+      aria-hidden={context.open ? undefined : true}
+      {...(context.open ? {} : { inert: true as const })}
       data-slot="collapsible-content"
       data-state={context.open ? "open" : "closed"}
-    />
+    >
+      <div>{props.children}</div>
+    </div>
   );
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useReducedMotion } from 'motion/react'
 import { errorMessage, request } from './api'
-import { Prop, asset } from './WorkbenchEffects'
+import { ContactShadow, Prop, asset } from './WorkbenchEffects'
 import { currentManifest, flapOrigin, useWorkbenchManifest } from './workbenchAnchors'
 import { launchTear, playDelivery, playPageTurn, resetDelivery, type DeliveryPhase } from './workbenchMotion'
 import { useMediaQuery } from './ui'
@@ -43,6 +43,8 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const [snapshot, setSnapshot] = useState<string[]>([])
   const [press, setPress] = useState(false)
   const [turning, setTurning] = useState(false)
+  const [arrived, setArrived] = useState(false)
+  const [leavingId, setLeavingId] = useState('')
   const short = useMediaQuery('(max-height: 780px)')
   const pageSize = short ? 5 : 7
   const manifest = useWorkbenchManifest()
@@ -226,7 +228,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     })
     if (!frozen.length) return
     setPress(true)
-    window.setTimeout(() => setPress(false), 90)
+    window.setTimeout(() => setPress(false), 160)
     const ids = new Set(frozen.map(line => line.id))
     frozen.forEach(line => { const rect = inputs.current[line.id]?.getBoundingClientRect(); if (rect) lineRects.current[line.id] = rect })
     setSnapshot(frozen.map(line => line.text))
@@ -251,13 +253,26 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   function restore(item: Returned) {
     const line = { id: crypto.randomUUID(), text: item.text }
     focusId.current = line.id
-    setDraft(current => ({ ...current, lines: [...trimLines(current.lines, line.id), line], caretId: line.id, returned: current.returned.filter(entry => entry.id !== item.id) }))
+    setLeavingId(item.id)
+    window.setTimeout(() => {
+      setDraft(current => ({ ...current, lines: [...trimLines(current.lines, line.id), line], caretId: line.id, returned: current.returned.filter(entry => entry.id !== item.id) }))
+      setLeavingId('')
+    }, reduced ? 0 : 240)
     setPage(Math.floor(trimLines(draft.lines).length / pageSize))
   }
+  const returnedCount = useRef(draft.returned.length)
+  useEffect(() => {
+    if (draft.returned.length <= returnedCount.current) { returnedCount.current = draft.returned.length; return }
+    returnedCount.current = draft.returned.length
+    setArrived(true)
+    const timer = window.setTimeout(() => setArrived(false), 640)
+    return () => window.clearTimeout(timer)
+  }, [draft.returned.length])
 
     return <section ref={root} className={'letter-station ' + lane + (short ? ' is-short' : '')} data-phase={phase === 'identifying' ? 'identify' : phase} aria-label={title + '信箱'} style={{ '--hinge-x': origin[0], '--hinge-y': origin[1], '--plaque-x': manifest.mailbox.anchors.plaque[0], '--plaque-y': manifest.mailbox.anchors.plaque[1], '--seal-x': seal[0], '--seal-y': seal[1], '--lines': pageSize, '--mail-box': mailSize + 'px', '--env-box': envSize + 'px', '--paper-w': '400px', '--paper-tuck': paperTuck + 'px', '--env-tuck': envTuck + 'px' } as React.CSSProperties}>
     <div className="delivery-apparatus">
       <div className="desk-mailbox" ref={mailRef}>
+        <ContactShadow name="mailbox" />
         <Prop name="mailbox" layer="body" className="mailbox-body" />
         <Prop name="mailbox" layer="slot-back" className="mailbox-slot" />
         <Prop name="mailbox" layer="slot-front" className="mailbox-slot mailbox-slot-front" />
@@ -316,8 +331,8 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     </div>
     <p className="sr-only" role="status">{phase === 'identifying' ? '正在识别来源' : phase !== 'idle' ? '信件正在送达' : ''}</p>
     {error && <p className="notice error" role="alert">{error}</p>}
-    {draft.returned.length > 0 && <div className="returned-letters" ref={pile}><details open><summary>退回 {draft.returned.length} 张纸条</summary>
-      {draft.returned.slice(-3).map(item => <div className="returned-strip" key={item.id}><span title={item.text}>{item.text}</span><small>{item.reason}</small><button type="button" onClick={() => restore(item)}>恢复编辑</button></div>)}
+    {draft.returned.length > 0 && <div className={'returned-letters' + (arrived ? ' tear-in' : '')} ref={pile}><details open><summary>退回 {draft.returned.length} 张纸条</summary>
+      {draft.returned.slice(-3).map(item => <div className={'returned-strip' + (leavingId === item.id ? ' is-leaving' : '')} key={item.id}><span title={item.text}>{item.text}</span><small>{item.reason}</small><button type="button" onClick={() => restore(item)}>恢复编辑</button></div>)}
       {draft.returned.length > 3 && <p className="returned-more">另有 {draft.returned.length - 3} 张叠在下面</p>}
     </details></div>}
   </section>
