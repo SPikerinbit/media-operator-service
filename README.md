@@ -26,7 +26,8 @@ Media Operator is a Windows desktop app. It turns local files and links from You
 ```text
 desktop_entry.py
     └─ app/desktop.py          pywebview 窗口，仅绑定 127.0.0.1，Cookie 会话
-           ├─ app/main.py      媒体流水线与无界面 HTTP API
+           ├─ app/main.py      配置、请求模型和对外名字
+           │    └─ app/stages/ 下载、转录、翻译、烧录、B 站投稿、HTTP API
            ├─ app/desktop_routes.py
            ├─ app/workbench_inbox.py    双信箱队列
            ├─ app/desktop_jobs.py       阶段调度与断点
@@ -36,7 +37,7 @@ frontend/                      React 工作台
     └─ 构建到 app/static/desktop-ui/，由桌面包进安装目录
 ```
 
-桌面模式和无界面模式共用 `app/main.py` 里的下载、转录、翻译、烧录和投稿。桌面另有一套只接受本机来源的会话，见 `app/desktop.py`。无界面服务可以由 Docker Compose 启动，它没有这套会话。
+`app/stages/` 里的文件在导入时执行进 `app.main`。桌面程序、转录进程和测试继续 `import app.main`，并在这个模块上替换路径或函数。桌面另有一套只接受本机来源的会话，见 `app/desktop.py`。无界面服务可以由 Docker Compose 启动，它没有这套会话。
 
 支持的站点解析在 `app/sites/` 和 `app/desktop_sources.py`。Obsidian 写入在 `app/obsidian.py`。
 
