@@ -9,15 +9,20 @@ const secretsList = [['BILI_SESSDATA','SESSDATA'],['BILI_JCT','bili_jct'],['BILI
   ['BILI_DEDEUSERID','DedeUserID'],['BILI_AC_TIME_VALUE','ac_time_value']] as const
 
 const categories = [
-  ['general','常规与目录',FolderOpen],['sites','站点登录',LogIn],['defaults','输出与字幕默认值',SlidersHorizontal],
+  ['general','常规与目录',FolderOpen],['sites','账号与凭据',LogIn],['defaults','输出与字幕默认值',SlidersHorizontal],
   ['resources','转录与本地资源',Cpu],['deepseek','DeepSeek',KeyRound],
   ['bilibili','B 站投稿',Send],['obsidian','Obsidian',BookOpen],
 ] as const
 export type SettingsSection = typeof categories[number][0]
+function whisperGigabytes(bytes: number) {
+  const gb = bytes / 1e9
+  const rounded = gb >= 10 ? String(Math.round(gb)) : String(Math.round(gb * 10) / 10)
+  return rounded + ' GB'
+}
 type Category = SettingsSection
 type SaveSection = 'directory'|'deepseek'|'gpu'|'bilibili'|'obsidian'
 
-export function Settings({ current, update, focus }: { current: Preferences | null; update: (settings: Preferences) => void; focus?: Category }) {
+export function Settings({ current, update, focus, onOpenGuide }: { current: Preferences | null; update: (settings: Preferences) => void; focus?: Category; onOpenGuide?: () => void }) {
   const [category,setCategory] = useState<Category>(focus || 'general')
   const loginInput = useRef<HTMLInputElement>(null)
   const loginSite = useRef<LoginSite>('抖音')
@@ -174,22 +179,23 @@ export function Settings({ current, update, focus }: { current: Preferences | nu
       <div className="settings-body thin-scroll">
       <Feedback notice={notice}/>
       <section className="settings-panel" hidden={category !== 'sites'}>
-        <h2>站点登录</h2>
-        <p className="muted">在桌面窗口登录抖音或小红书。登录后，投稿和笔记会读取该站点。</p>
-        <ul className="form-stack resource-list" aria-label="站点登录状态">
-          {sites.map((status) => <li key={status.site}><span>{status.platform}</span>
-            <span>{status.logging_in ? '正在登录' : status.logged_in ? '已登录' : '未登录'}</span></li>)}
+        <h2>账号与凭据</h2>
+        <p className="muted">在桌面窗口登录。登录完成后会记下该站点的凭据。</p>
+        <ul className="account-rows" aria-label="站点登录状态">
+          {sites.map((status) => <li key={status.site}>
+            <span className={'account-mark ' + status.site} aria-hidden="true" />
+            <span className="account-name">{status.platform}</span>
+            <span className={'account-lamp' + (status.logged_in ? ' is-on' : '')}>{status.logging_in ? '正在登录' : status.logged_in ? '已登录' : '未登录'}</span>
+            {status.logged_in && !status.logging_in
+              ? <button type="button" onClick={() => signOut(status.site)}>退出</button>
+              : <button type="button" disabled={status.logging_in} onClick={() => signIn(status.site)}>登录</button>}
+          </li>)}
         </ul>
-        <div className="toolbar">
-          {sites.map((status) => status.logged_in && !status.logging_in
-            ? <Button key={status.site} variant="secondary" onClick={() => signOut(status.site)}>退出{status.platform}</Button>
-            : <Button key={status.site} variant="secondary" disabled={status.logging_in} onClick={() => signIn(status.site)}>登录{status.platform}</Button>)}
-        </div>
-        <p className="muted">也可以导入 Netscape Cookie。一小时内，这份登录供对应站点的链接使用。</p>
+        <Disclosure title="高级 / 导入 Cookie"><p className="muted">也可以导入 Netscape Cookie。一小时内，这份登录供对应站点的链接使用。</p>
         <div className="toolbar">
           <Button variant="ghost" size="small" onClick={() => { loginSite.current = '抖音'; loginInput.current?.click() }}>导入抖音 Cookie</Button>
           <Button variant="ghost" size="small" onClick={() => { loginSite.current = '小红书'; loginInput.current?.click() }}>导入小红书 Cookie</Button>
-        </div>
+        </div></Disclosure>
         <input ref={loginInput} hidden type="file" accept=".txt,text/plain" aria-label="选择本站 Cookie 文件" onChange={(event) => {
           const file = event.target.files?.[0]
           const site = loginSite.current
@@ -220,6 +226,7 @@ export function Settings({ current, update, focus }: { current: Preferences | nu
       </section>
       <section className="settings-panel" hidden={category !== 'general'}>
         <div className="section-heading"><div className="section-icon"><FolderOpen size={18}/></div><h2>本地资料</h2></div>
+        <Button variant="secondary" onClick={() => onOpenGuide?.()}>重新打开安装清单</Button>
         <p className="muted">任务、媒体和待发布草稿保存在此目录。切换目录需要重启应用。</p>
         <div className="path-row"><Field label="资料目录"><input value={dataDir} readOnly/></Field>
           <Button variant="secondary" size="small" leadingIcon={FolderOpen} onClick={() => perform(async () => {
@@ -256,7 +263,7 @@ export function Settings({ current, update, focus }: { current: Preferences | nu
         </ul>}
         <ul className="form-stack resource-list" aria-label="本地 Whisper 模型">
           {resources?.models.map((item) => <li key={item.name}><div><strong>{item.name}</strong>
-            <small>{item.available ? '本地已就绪' : item.download.message || '未下载'} · {(item.size / 1e9).toFixed(2)} GB</small></div>
+            <small>{item.available ? '本地已就绪' : item.download.message || '未下载'} · {whisperGigabytes(item.size)}</small></div>
             {!item.available && <Button variant="secondary" size="small" disabled={downloading}
               onClick={() => perform(async () => {
                 const next = await request<LocalResources>('/desktop/resources/models/' + item.name,'POST')
@@ -285,8 +292,8 @@ export function Settings({ current, update, focus }: { current: Preferences | nu
       </section>
       <section className="settings-panel" hidden={category !== 'bilibili'}>
         <div className="section-heading"><div className="section-icon"><KeyRound size={18}/></div><h2>B 站投稿</h2></div>
-        <p className="muted">{current?.has_bilibili_credentials ? '已保存投稿凭据。' : '配置后可在视频制作中启用投稿。'}</p>
-        <Disclosure title="投稿凭据"><div className="form-stack">{secretsList.map(([key,name]) => fieldSecret(key,name,'留空保留已保存内容'))}</div></Disclosure>
+        <p className="muted">{current?.has_bilibili_credentials ? 'B 站已登录，投稿可以使用这次凭据。' : '请到「账号与凭据」登录 B 站。下面只在需要时手动填写。'}</p>
+        <Disclosure title="高级 / 手动填写"><div className="form-stack">{secretsList.map(([key,name]) => fieldSecret(key,name,'留空则保留已保存的值'))}</div></Disclosure>
         {saveButton('bilibili')}
       </section>
       </div>

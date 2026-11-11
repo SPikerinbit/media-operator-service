@@ -58,22 +58,42 @@ function paintFlame(ctx: CanvasRenderingContext2D, width: number, height: number
   ctx.clearRect(0, 0, width, height)
   if (alpha <= 0.02) return
   ctx.save()
-  ctx.translate(width / 2, height - 2)
-  ctx.globalAlpha = Math.min(1, 0.45 + alpha * 0.55)
-  const scale = 0.28 + 0.72 * alpha
+  ctx.translate(width / 2, height * 0.78)
+  ctx.globalCompositeOperation = 'lighter'
+  const sway = Math.sin(time * 3.1) * 6
+  const glow = ctx.createRadialGradient(sway * 0.3, 8, 6, sway, -height * 0.08, height * 0.62)
+  glow.addColorStop(0, `rgba(255, 186, 64, ${0.55 * alpha})`)
+  glow.addColorStop(0.45, `rgba(255, 120, 24, ${0.22 * alpha})`)
+  glow.addColorStop(1, 'rgba(255, 80, 10, 0)')
+  ctx.fillStyle = glow
+  ctx.beginPath()
+  ctx.ellipse(sway * 0.4, 6, width * 0.42, height * 0.28, 0, 0, Math.PI * 2)
+  ctx.fill()
+  const spill = ctx.createRadialGradient(8, 18, 4, 18, 28, width * 0.46)
+  spill.addColorStop(0, `rgba(255, 170, 60, ${0.28 * alpha})`)
+  spill.addColorStop(1, 'rgba(255, 140, 40, 0)')
+  ctx.fillStyle = spill
+  ctx.beginPath()
+  ctx.ellipse(16, 22, width * 0.48, height * 0.16, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.globalAlpha = Math.min(1, 0.35 + alpha * 0.65)
+  const scale = 0.34 + 0.66 * alpha
+  ctx.save()
+  ctx.translate(0, 4)
   ctx.scale(scale, scale)
-  const h = height * 0.96
-  const w = width * 0.42
-  tongue(ctx, time, 2.4, h * 0.58, w * 0.72, -1, [DEEP, ORANGE, AMBER])
-  tongue(ctx, time, 0.8, h * 0.64, w * 0.66, 1.05, [ORANGE, AMBER, GOLD])
-  tongue(ctx, time, 0, h, w * 0.62, 0.42, [ORANGE, GOLD, AMBER])
-  tongue(ctx, time + 0.15, 1.1, h * 0.34, w * 0.16, 0.08, [AMBER, GOLD, CORE])
-  const spark = Math.sin(time * 2.2) * Math.sin(time * 0.31)
-  if (spark > 0.82) {
-    const life = (spark - 0.82) / 0.18
-    ctx.fillStyle = css(GOLD, life * 0.85)
+  const h = height * 0.7
+  const w = width * 0.28
+  tongue(ctx, time, 2.4, h * 0.5, w * 0.9, -1, [DEEP, ORANGE, AMBER])
+  tongue(ctx, time, 0.8, h * 0.62, w * 0.8, 1.05, [ORANGE, AMBER, GOLD])
+  tongue(ctx, time + Math.sin(time * 2) * 0.04, 0, h, w * 0.7, 0.35, [ORANGE, GOLD, AMBER])
+  tongue(ctx, time + 0.15, 1.1, h * 0.42, w * 0.22, 0.05, [AMBER, GOLD, CORE])
+  ctx.restore()
+  for (let i = 0; i < 5; i++) {
+    const life = (time * 0.7 + i * 0.37) % 1
+    const rise = life * h * 0.85
+    ctx.fillStyle = css(life < 0.5 ? GOLD : ORANGE, (1 - life) * 0.8 * alpha)
     ctx.beginPath()
-    ctx.arc(Math.sin(time * 3.4) * w * 1.4, -h * (0.62 + life * 0.28), 1.5, 0, Math.PI * 2)
+    ctx.arc(Math.sin(time * 2 + i) * w * 0.8, -rise, 1.3 + (1 - life), 0, Math.PI * 2)
     ctx.fill()
   }
   ctx.restore()

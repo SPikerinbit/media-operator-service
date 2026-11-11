@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useReducedMotion } from 'motion/react'
-import { advanceProgress, anchorPixels, burnPaper, currentManifest, shredderPaper, useWorkbenchManifest, woodLanding } from './workbenchAnchors'
+import { advanceProgress, anchorPixels, bowlMouth, burnPaper, currentManifest, shredderPaper, useWorkbenchManifest } from './workbenchAnchors'
 import type { Box } from './workbenchAnchors'
 import type { Lane } from './workbenchState'
 import { bindFrame } from './workbenchScheduler'
@@ -12,6 +12,10 @@ export function Prop({ name, layer = 'body', className = '', style }: { name: st
   return <picture className={'prop ' + className} style={style} aria-hidden="true">
     <img src={asset(`${name}-light-${layer}`)} alt="" draggable={false} />
   </picture>
+}
+
+export function ContactShadow({ name }: { name: string }) {
+  return <img className="contact-shadow" src={asset(name + '-shadow')} alt="" draggable={false} />
 }
 
 export type StripLink = { id: number; refs: number[] }
@@ -161,6 +165,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
   const parkedRef = useRef(parked)
   const activeRef = useRef(active)
   const arrivedRef = useRef(arrived)
+  const landedAt = useRef(0)
   const markRef = useRef(mark)
   const reducedRef = useRef(false)
   const paint = useRef<(now: number) => boolean>(() => false)
@@ -175,6 +180,8 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
   parkedRef.current = parked
   activeRef.current = Boolean(active)
   arrivedRef.current = arrived
+  if (arrived && status === 'running' && landedAt.current === 0) landedAt.current = performance.now()
+  if (!arrived) landedAt.current = 0
   markRef.current = mark
   const reduced = useReducedMotion()
   reducedRef.current = Boolean(reduced)
@@ -254,32 +261,69 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
       if (!running && !decorative) shown = goal.current
       if (goal.current < displayed.current && !running) shown = goal.current
       displayed.current = shown
-      const visual = !arrivedRef.current ? 0 : shown
+      const since = landedAt.current ? now - landedAt.current : 0
+      const intro = landedAt.current ? Math.min(1, since / 700) : (arrivedRef.current ? 1 : 0)
+      const ash = landedAt.current && statusRef.current === 'running' ? Math.max(0, Math.min(1, (since - 760) / 1500)) : 0
+      const visual = !arrivedRef.current ? 0 : statusRef.current === 'running' ? Math.min(1, shown * intro + (1 - shown) * ash) : shown
+      const sheet = canvas.current
+      if (lane === 'publish' && sheet) sheet.style.opacity = ''
       const layoutKey = host.clientWidth + 'x' + host.clientHeight
       const paperChanged = Math.abs(visual - painted.current) > 0.001 || host.dataset.layout !== layoutKey
       const local = layoutOf(machine, host)
       let edgeViewport = 0
       if (lane === 'publish') {
         const pose = burnPaper(local, spec, arrivedRef.current ? 1 - visual : 1)
+        const mouth = bowlMouth(local, spec)
         const hostBox = host.getBoundingClientRect()
         const rim = anchorPixels(local, spec.brazier.anchors.rim, spec.brazier.size)
         edgeViewport = hostBox.top + rim.y * (hostBox.height / Math.max(1, host.clientHeight))
         if (paperChanged || smoking) {
           context.clearRect(0, 0, host.clientWidth, host.clientHeight)
-          if (arrivedRef.current && pose.height > 1 && pose.edgeY - pose.y > 1) paintBurn(context, paper, pose)
-          if (visual > 0.01 && (running || smoking)) warmEdge(context, pose.x, pose.edgeY, pose.width)
-          if (smoking) drawSmoke(context, pose.edgeX, pose.y + pose.height * (1 - visual), 1 - (smokeUntil.current - now) / 1000)
+          context.save()
+          context.beginPath()
+          context.ellipse(mouth.cx, mouth.cy, mouth.rx, mouth.ry, 0, 0, Math.PI * 2)
+          context.clip()
+          if ((arrivedRef.current || statusRef.current === 'running') && pose.height > 1) {
+            context.save()
+            context.translate(mouth.cx, mouth.cy + mouth.ry * 0.28)
+            context.rotate(-0.08)
+            const width = mouth.rx * 0.92
+            const height = mouth.ry * 1.7
+            context.beginPath()
+            context.moveTo(-width * 0.48, height * 0.05)
+            context.quadraticCurveTo(-width * 0.1, -height * 0.72, width * 0.46, -height * 0.02)
+            context.quadraticCurveTo(width * 0.18, height * 0.42, -width * 0.42, height * 0.28)
+            context.closePath()
+            context.clip()
+            const curled = { x: -width / 2, y: -height * 0.55, width, height, edgeY: -height * 0.55 + height * Math.max(0.5, pose.remaining) }
+            paintBurn(context, paper, curled)
+            const char = context.createLinearGradient(0, -height * 0.2, 0, height * 0.35)
+            char.addColorStop(0, 'rgba(90, 50, 24, 0)')
+            char.addColorStop(0.55, 'rgba(90, 42, 18, 0.35)')
+            char.addColorStop(1, 'rgba(40, 18, 8, 0.85)')
+            context.fillStyle = char
+            context.fillRect(-width / 2, -height / 2, width, height)
+            context.restore()
+          }
+          if (smoking) drawSmoke(context, mouth.cx, mouth.cy, 1 - (smokeUntil.current - now) / 1000)
+          context.restore()
           painted.current = visual
           host.dataset.layout = layoutKey
         }
         const fire = fireNode.current
         if (fire && flame.current) {
-          const width = Math.min(145, Math.max(110, local.width * 0.32))
-          const height = Math.min(160, Math.max(120, width * 1.12))
-          fire.style.left = (rim.x - width / 2) + 'px'
-          fire.style.top = (rim.y - height * 0.92) + 'px'
-          fire.style.width = width + 'px'
-          fire.style.height = height + 'px'
+          const width = Math.min(150, Math.max(110, mouth.rx * 1.3))
+          const height = Math.min(160, Math.max(120, width * 1.05))
+          if (fire.dataset.size !== width + 'x' + height) {
+            fire.dataset.size = width + 'x' + height
+            fire.style.left = '0'
+            fire.style.top = '0'
+            fire.style.width = width + 'px'
+            fire.style.height = height + 'px'
+            flame.current.resize(width, height)
+          }
+          fire.style.zIndex = '4'
+          fire.style.transform = `translate3d(${mouth.cx - width / 2}px, ${mouth.cy - height * 0.8}px, 0)`
           const lit = running && arrivedRef.current
           if (lit && !litAt.current) litAt.current = now
           if (!lit) litAt.current = 0
@@ -326,7 +370,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
         const nextKey = `${Math.round(pose.x)}:${Math.round(pose.tray.y)}:${Math.round(pose.width)}`
         if (nextKey !== trayKey.current) {
           trayKey.current = nextKey
-          setTray({ left: pose.x, top: pose.tray.y, width: pose.width })
+          setTray({ left: pose.tray.x, top: pose.tray.y, width: pose.width })
         }
         if (paperChanged) { painted.current = visual; host.dataset.layout = layoutKey }
       }
@@ -336,7 +380,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
       host.dataset.draws = String(draws.current)
       host.dataset.live = decorative && arrivedRef.current ? '1' : '0'
       const flameLive = lane === 'publish' && running && arrivedRef.current && !away && !reducedRef.current
-      return Boolean(decorative || flameLive || smoking)
+      return Boolean(decorative || flameLive || smoking || (ash > 0 && ash < 1))
     }
     paint.current = draw
     const job = 'paper:' + (frameKey || lane + ':' + title) + ':burn'
@@ -366,15 +410,30 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
   }, [active, progress, status, arrived, parked, replaySmoke, lane, title, frameKey])
 
   const showStrips = lane === 'notes' && arrived && (status === 'succeeded' || progress >= 92) && links.length > 0
-  return <div ref={root} className={'paper-process ' + lane} data-mark={mark}>
+  const mouth = lane === 'publish' && box ? bowlMouth(box, manifest) : null
+  const scraps = showStrips ? [
+    ...links.slice(0, 6).map((link, index) => ({ key: 'card-' + link.id, link, index })),
+    ...[0, 1, 2, 3, 4].map(index => ({ key: 'scrap-' + index, link: null, index: index + 6 })),
+  ] : []
+  return <div ref={root} className={'paper-process ' + lane} data-mark={mark} data-arrived={arrived ? '1' : '0'}>
     <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} className="process-machine" />
-    {lane === 'publish' && box && [0, 1, 2, 3].map(index => {
-      const land = woodLanding(box, manifest, index)
-      return <img key={index} className="task-log" alt="" src={asset(`wood-${index}-light-beauty`)} style={{ left: land.x, top: land.y, transform: `translate(-50%,-50%) rotate(${land.rot}deg)` }} />
-    })}
+    {mouth && <div className="bowl-well" data-bowl-well style={{ left: mouth.cx - mouth.rx, top: mouth.cy - mouth.ry, width: mouth.rx * 2, height: mouth.ry * 2 }}>
+      {[0, 1, 2, 3].map(index => {
+        const spot = [{ x: '30%', y: '46%', rot: -12 }, { x: '52%', y: '58%', rot: 8 }, { x: '44%', y: '36%', rot: -4 }, { x: '68%', y: '50%', rot: 11 }][index]
+        return <span key={index} className="task-log" style={{ left: spot.x, top: spot.y, transform: `translate(-50%,-50%) rotate(${spot.rot}deg)` }}>
+          <img alt="" src={asset(`wood-${index}-light-beauty`)} />
+        </span>
+      })}
+    </div>}
+    {lane === 'notes' && <><i className="shred-feed" /><i className="shred-out" /></>}
     <canvas ref={canvas} className="process-paper" aria-hidden="true" />
     {lane === 'publish' && <canvas ref={fireNode} className="flame-layer" aria-hidden="true" />}
-    {showStrips && <div className="shred-strips" style={tray ? { left: tray.left, top: tray.top + 8, width: tray.width, right: 'auto', bottom: 'auto' } : undefined}>{links.slice(0, 8).map(link => <button type="button" key={link.id} className="shred-strip" data-card-id={link.id} data-refs={link.refs.join(' ')} style={{ backgroundImage: textures[link.id] ? `url(${textures[link.id]})` : undefined, height: 28 + (link.id % 5) * 6 }} onClick={() => onStrip?.(link)} aria-label={'碎纸 ' + link.id} />)}</div>}
+    {showStrips && <div className="strip-tray">{scraps.map(scrap => {
+      const style = { transform: `rotate(${[-18, 11, -7, 16, -13, 8, 14, -9, 5, -16, 10][scrap.index]}deg)`, width: [16, 11, 18, 12, 15, 13, 17, 11, 14, 12, 16][scrap.index], height: [10, 14, 9, 13, 11, 12, 9, 15, 10, 13, 9][scrap.index] }
+      return scrap.link
+        ? <button type="button" key={scrap.key} className="shred-strip" data-card-id={scrap.link.id} data-refs={scrap.link.refs.join(' ')} style={style} onClick={() => onStrip?.(scrap.link!)} aria-label={'碎纸 ' + scrap.link.id} />
+        : <i key={scrap.key} className="shred-strip" style={style} />
+    })}</div>}
     <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} layer="front" className="process-machine foreground" />
   </div>
 }
@@ -402,6 +461,17 @@ export function CoverArt({ cover, video }: { cover?: string; video?: string }) {
   return frame ? <img src={frame} alt="" /> : null
 }
 
+export function DeskTV({ url }: { url?: string }) {
+  return <div className="desk-tv" aria-label={url ? '成片' : '成片预留'}>
+    <div className="tv-bezel">
+      <div className="tv-screen">
+        {url ? <video src={url} controls playsInline preload="metadata" /> : <span>成片将在这里放映</span>}
+      </div>
+      <i className="tv-foot" />
+    </div>
+  </div>
+}
+
 export function DeskProjector({ url }: { url?: string }) {
   const [open, setOpen] = useState(false)
   const video = useRef<HTMLVideoElement>(null)
@@ -424,6 +494,7 @@ export function DeskProjector({ url }: { url?: string }) {
       <img src={asset('projector-light-body')} alt="" />
     </button>
     <div className="projector-screen">
+      <img className="screen-plate" src={asset('projector-light-screen-open')} alt="" />
       {url && <video ref={video} src={url} controls playsInline preload="metadata" />}
     </div>
   </div>

@@ -76,8 +76,8 @@ export function Modal({ open, title, onClose, children, drawer = false }: {
       node.showModal()
     }
     if (open) {
-      if (!reduced) animation = node.animate([{opacity:0,transform:offset},{opacity:1,transform:'none'}],
-        {duration:200,easing:'cubic-bezier(.2,.8,.2,1)'})
+      if (!reduced) animation = node.animate([{opacity:0,transform:offset},{opacity:1,transform:'translateY(-2px)'},{opacity:1,transform:'none'}],
+        {duration:420,easing:'cubic-bezier(.18,1.15,.32,1)'})
     } else if (node.open) {
       const finish = () => {
         if (cancelled) return

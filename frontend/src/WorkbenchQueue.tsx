@@ -3,11 +3,14 @@ import { useReducedMotion } from 'motion/react'
 import { errorMessage, request, type EntryLog, type RemovalRow, type Settings } from './api'
 import { Inspector, getOverride, outputDefaults, resolveOptions, savedVideoOptions, type DefaultGroup, type InspectorSection, type Override, type Row, type VideoDefaults, type VideoOptions } from './videoOptions'
 import { Modal, Button } from './ui'
+import { Presence, usePresented } from './presence'
+import { NoteThreads, type ThreadEnd } from './noteThreads'
 import { TranscriptView } from './TranscriptView'
-import { CoverArt, DeskProjector, PaperProcess, Prop, asset } from './WorkbenchEffects'
-import { anchorPixels, currentManifest, useWorkbenchManifest, woodLanding } from './workbenchAnchors'
+import { CoverArt, DeskTV, PaperProcess, Prop, asset } from './WorkbenchEffects'
+import { anchorPixels, currentManifest, useWorkbenchManifest } from './workbenchAnchors'
 import { flyTaskPaper, flyTrashSheets, glideWood, mouthOf } from './workbenchMotion'
 import { entryLabel, optionsOf, reuseMark, sections, stageLabels, type InboxState, type Lane, type LetterEntry, type LetterGroup } from './workbenchState'
+import { ShredLever, type NotesMode } from './ShredLever'
 
 const stateLabels:Record<string,string>={identifying:'识别中',rejected:'已退回',blocked:'待解决',duplicate:'已在队列',ready:'待设置',starting:'准备中',queued:'排队中',running:'处理中',succeeded:'已完成',failed:'处理暂停',removed:'已移除',cancelled:'已取消'}
 function manuscriptLink(entry?:LetterEntry){const url=entry?.result?.bilibili_url||'';return /^https?:\/\//.test(url)?url:''}
@@ -50,6 +53,9 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   const [brazierBox,setBrazierBox]=useState<{host:DOMRect,image:DOMRect}|null>(null)
   const [entering,setEntering]=useState(false)
   const [settled,setSettled]=useState<string[]>([])
+  const [fresh,setFresh]=useState<string|null>(null)
+  const [notesMode,setNotesMode]=useState<NotesMode>(()=>(localStorage.getItem('workbench-notes-mode') as NotesMode)||'curated')
+  function chooseMode(mode:NotesMode){setNotesMode(mode);localStorage.setItem('workbench-notes-mode',mode)}
   const [defaults,setDefaults]=useState<VideoDefaults|null>(null);const [savingDefault,setSavingDefault]=useState<DefaultGroup|null>(null)
   const [readOriginal,setReadOriginal]=useState(false)
   const [picked,setPicked]=useState<string[]>([])
@@ -68,10 +74,15 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   const woodImg=useRef<Record<string,HTMLImageElement|null>>({})
   const locateRef=useRef<(cue:number)=>void>(()=>{})
   const deskRef=useRef<HTMLDivElement>(null)
-  const [curves,setCurves]=useState<string[]>([])
+  const [threads,setThreads]=useState<ThreadEnd[]>([])
   const entries=data.entries.filter(e=>e.lane===lane&&e.status!=='removed')
   const visible=entries.filter(e=>(filter==='all'||(filter==='waiting'?['ready','blocked','rejected','failed','duplicate'].includes(e.status):filter==='processing'?['identifying','starting','queued','running'].includes(e.status):e.status==='succeeded'))&&entryLabel(e).toLowerCase().includes(query.toLowerCase()))
-  const entry=entries.find(e=>e.id===selected)||visible.find(e=>['ready','running','starting','queued'].includes(e.status))||visible[0]
+  const pickedEntry=entries.find(e=>e.id===selected)||visible.find(e=>['ready','running','starting','queued'].includes(e.status))||visible[0]
+  const manifest=useWorkbenchManifest()
+  const reduced=useReducedMotion()
+  const entry=usePresented(pickedEntry, Boolean(reduced))
+  const [swap,setSwap]=useState<'in'|'out'|''>('')
+  useEffect(()=>{setSwap(pickedEntry&&entry&&pickedEntry.id!==entry.id?'out':'in')},[pickedEntry?.id,entry?.id])
   const remote=data.groups.find(g=>g.id===entry?.group_id)
   const group=remote&&(drafts[remote.id]||remote)
   const base=group?optionsOf(group):savedVideoOptions(defaults)
@@ -86,8 +97,6 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   const brazierRef=useRef<HTMLDivElement>(null)
   const slipRef=useRef<HTMLFormElement>(null)
   const preparedRef=useRef<string[]>([])
-  const manifest=useWorkbenchManifest()
-  const reduced=useReducedMotion()
   const groupId=group?.id
   useEffect(()=>{if(!selected&&entry)setSelected(entry.id)},[entry?.id,selected])
   useEffect(()=>{localStorage.setItem('workbench-config-drafts',JSON.stringify(drafts))},[drafts])
@@ -139,42 +148,42 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     const added=next.filter(id=>!prev.includes(id))
     const removed=prev.filter(id=>!next.includes(id))
     preparedRef.current=next
-    if(removed.length)setSettled(list=>list.filter(id=>next.includes(id)))
     if(!added.length&&!removed.length)return
+    if(removed.length)setSettled(list=>list.filter(id=>next.includes(id)))
     const host=brazierRef.current
-    const image=host?.querySelector('.prop:not(.foreground)')
-    const box=image instanceof HTMLElement?image.getBoundingClientRect():brazierBox?.image||null
-    const stagger=added.length>1?(1000-450)/(added.length-1):0
+    const box=host?.getBoundingClientRect()||brazierBox?.image||null
+    const slots=[{x:.36,y:.34,rot:-14},{x:.46,y:.40,rot:8},{x:.42,y:.30,rot:-6},{x:.52,y:.38,rot:12}]
+    const stagger=added.length>1?560:0
     ;[...added,...removed].forEach((id,index)=>{
       const order=Math.max(0,sections.findIndex(item=>item.id===id))
-      const img=woodImg.current[id]
-      const hole=woodRefs.current[id]?.getBoundingClientRect()
-      if(!img||!hole)return
-      if(!box){img.style.position='';img.style.left='';img.style.top='';img.style.transform='';if(added.includes(id))setSettled(list=>[...new Set([...list,id])]);return}
-      const land=woodLanding(box,currentManifest(),order)
-      const from={x:img.getBoundingClientRect().left+img.getBoundingClientRect().width/2,y:img.getBoundingClientRect().top+img.getBoundingClientRect().height/2,width:img.getBoundingClientRect().width||120,height:img.getBoundingClientRect().height||80,rot:0}
-      const to=added.includes(id)?{x:land.x,y:land.y,width:120,height:80,rot:land.rot}:{x:hole.left+hole.width/2,y:hole.top+40,width:120,height:80,rot:0}
-      const delay=added.includes(id)?index*stagger:0
-      window.setTimeout(()=>void glideWood(img,from,to).then(()=>{
-        if(added.includes(id))setSettled(list=>[...new Set([...list,id])])
-        else{img.dataset.parked='';img.style.position='';img.style.left='';img.style.top='';img.style.width='';img.style.height='';img.style.transform='';img.style.filter='';img.style.zIndex=''}
-      }),delay)
+      const source=woodImg.current[id]
+      const slot=slots[order]||slots[0]
+      if(!source||!box){if(added.includes(id))setSettled(list=>[...new Set([...list,id])]);return}
+      const home=source.getBoundingClientRect()
+      const land={x:box.left+box.width*slot.x,y:box.top+box.height*slot.y,width:210,height:148,rot:slot.rot}
+      const button={x:home.left+home.width/2,y:home.top+home.height/2,width:home.width||120,height:home.height||78,rot:0}
+      const from=added.includes(id)?button:land
+      const to=added.includes(id)?land:button
+      const flyer=source.cloneNode(true) as HTMLImageElement
+      flyer.className='wood-piece wood-flight'
+      flyer.style.visibility='visible'
+      document.body.append(flyer)
+      window.setTimeout(()=>void glideWood(flyer,from,to).then(()=>{
+        if(added.includes(id)){
+          setSettled(list=>[...new Set([...list,id])])
+          setFresh(id)
+          const puff=document.createElement('i')
+          puff.className='ash-puff'
+          puff.style.left=land.x+'px'
+          puff.style.top=land.y+'px'
+          document.body.append(puff)
+          window.setTimeout(()=>puff.remove(),680)
+          window.setTimeout(()=>setFresh(current=>current===id?null:current),520)
+        }
+        requestAnimationFrame(()=>flyer.remove())
+      }),added.includes(id)?index*stagger:0)
     })
   },[group,reduced,brazierBox])
-  useLayoutEffect(()=>{
-    const image=brazierRef.current?.querySelector('.prop:not(.foreground)')
-    const box=image instanceof HTMLElement?image.getBoundingClientRect():brazierBox?.image
-    if(!box)return
-    settled.forEach(id=>{
-      const img=woodImg.current[id]
-      if(!img||img.style.position==='fixed')return
-      const order=Math.max(0,sections.findIndex(item=>item.id===id))
-      const land=woodLanding(box,currentManifest(),order)
-      img.style.position='fixed';img.style.width='120px';img.style.height='80px'
-      img.style.left=(land.x-60)+'px';img.style.top=(land.y-40)+'px'
-      img.style.transform=`rotate(${land.rot}deg)`;img.style.zIndex='2'
-    })
-  },[settled,brazierBox])
   async function ignite(){
     if(!confirm||!entry||!rights||entering)return
     const slip=slipRef.current
@@ -212,7 +221,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     const scroller=root?.querySelector('.incoming-scroll')
     const before=new Map([...(scroller?.querySelectorAll<HTMLElement>('[data-entry-id]')||[])].map(node=>[node.dataset.entryId||'',node.getBoundingClientRect().top]))
     setHolding([])
-    requestAnimationFrame(()=>{requestAnimationFrame(()=>{scroller?.querySelectorAll<HTMLElement>('[data-entry-id]').forEach(node=>{const prev=before.get(node.dataset.entryId||'');if(prev==null)return;const dy=prev-node.getBoundingClientRect().top;if(Math.abs(dy)<1)return;node.style.transition='none';node.style.transform=`translateY(${dy}px)`;requestAnimationFrame(()=>{node.style.transition='transform .32s ease';node.style.transform=''})})})})
+    requestAnimationFrame(()=>{requestAnimationFrame(()=>{scroller?.querySelectorAll<HTMLElement>('[data-entry-id]').forEach(node=>{const prev=before.get(node.dataset.entryId||'');if(prev==null)return;const dy=prev-node.getBoundingClientRect().top;if(Math.abs(dy)<1)return;node.style.transition='none';node.style.transform=`translateY(${dy}px)`;requestAnimationFrame(()=>{node.style.transition='transform .52s cubic-bezier(.18,1.28,.32,1)';node.style.transform=''})})})})
   }
   useEffect(()=>()=>{flightRef.current?.();flightRef.current=null},[entry?.id,active])
   useEffect(()=>{
@@ -254,21 +263,45 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     const host=deskRef.current
     if(!host)return
     const draw=()=>{
-      const box=host.getBoundingClientRect()
-      const paths=links.flatMap(link=>{
-        const strip=host.querySelector(`[data-card-id="${link.id}"]`)?.getBoundingClientRect()
-        const slip=host.querySelector(`[data-slip-id="${link.id}"]`)?.getBoundingClientRect()
+        const box=host.getBoundingClientRect()
+        const origin=host.querySelector('.notes-links')?.getBoundingClientRect()||box
+        const paths=links.flatMap(link=>{
+        const stripEl=host.querySelector(`[data-card-id="${link.id}"]`)
+        const slipEl=host.querySelector(`[data-slip-id="${link.id}"]`)
+        const strip=stripEl?.getBoundingClientRect()
+        const slip=slipEl?.getBoundingClientRect()
         if(!strip||!slip||strip.width<2||slip.width<2)return []
         if(strip.bottom<box.top||strip.top>box.bottom||slip.bottom<box.top||slip.top>box.bottom)return []
-        const x1=strip.right-box.left,y1=strip.top+strip.height/2-box.top,x2=slip.left-box.left,y2=slip.top+slip.height/2-box.top,gap=Math.min(x1+28,x2-16)
-        return [`${link.id}|M ${x1} ${y1} C ${gap} ${y1}, ${gap} ${y2}, ${x2} ${y2}`]
+        const claim=slipEl?.querySelector('.slip-body')?.getBoundingClientRect()
+        const machine=host.querySelector('.paper-process.notes')?.getBoundingClientRect()
+        const x1=strip.right-origin.left-1
+        const y1=strip.top+strip.height*0.5-origin.top
+        const x2=slip.left-origin.left+2
+        const y2=(claim&&claim.height>2?claim.top+claim.height*0.5:slip.top+14)-origin.top
+        const clear=machine?machine.right-origin.left+16:x1+40
+        return [{ id: link.id, x1, y1, x2, y2, hot: link.id === activeCard, clear }]
       })
-      setCurves(paths)
+      setThreads(paths)
     }
     draw()
+    const tray=host.querySelector('.strip-tray')
+    const watch=new MutationObserver(draw)
+    if(tray)watch.observe(tray,{attributes:true,attributeFilter:['style']})
+    let frames=0
+    const pump=()=>{draw();if(frames++<40)requestAnimationFrame(pump)}
+    pump()
+    const hover=(event: Event)=>{
+      const target=event.target instanceof Element?event.target:null
+      const node=target?.closest<HTMLElement>('[data-card-id],[data-slip-id]')
+      const raw=node?.dataset.cardId||node?.dataset.slipId
+      if(!raw)return
+      const id=Number(raw)
+      setActiveCard(current=>current===id?current:id)
+    }
     host.addEventListener('scroll',draw,true)
+    host.addEventListener('mouseover',hover)
     window.addEventListener('resize',draw)
-    return()=>{host.removeEventListener('scroll',draw,true);window.removeEventListener('resize',draw)}
+    return()=>{watch.disconnect();host.removeEventListener('scroll',draw,true);host.removeEventListener('mouseover',hover);window.removeEventListener('resize',draw)}
   },[links,entry?.id,activeCard])
   const ready=entries.filter(e=>e.group_id===group?.id&&e.status==='ready')
   const rows=visible.slice()
@@ -278,54 +311,59 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   const overridden=entry&&group&&Object.keys(group.overrides[entry.id]||{}).length>0
   const reuse=entry?.reuse?.filter(r=>r.origin_lane!==lane)||[]
   return <div className={'workbench-queue '+lane} ref={queueRef}>
-    <header className="queue-heading"><div><h1>{lane==='publish'?'投稿工作台':'笔记工作台'}</h1><p>{lane==='publish'?'备齐设置，再点火处理。':'来信自动整理，留下值得记住的内容。'}</p></div>{undo&&Date.now()<undo.until&&<Button variant="secondary" onClick={()=>void action(async()=>{await Promise.all(undo.ids.map(id=>request('/desktop/inbox/entries/'+id+'/undo','POST')));setUndo(null);await refresh()})}>撤销删除</Button>}</header>
+    <header className="queue-heading"><div><h1>{lane==='publish'?'投稿工作台':'笔记工作台'}</h1><p>{lane==='publish'?'备齐设置，再点火处理。':'来信自动整理，留下值得记住的内容。'}</p></div><Presence open={Boolean(undo&&Date.now()<undo.until)}>{undo&&Date.now()<undo.until&&<Button variant="secondary" onClick={()=>void action(async()=>{await Promise.all(undo.ids.map(id=>request('/desktop/inbox/entries/'+id+'/undo','POST')));setUndo(null);await refresh()})}>撤销删除</Button>}</Presence></header>
     <div className="queue-desk">
       <aside className="incoming-list"><div className="incoming-tools"><input type="search" aria-label="搜索来信" placeholder="搜索来信" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="筛选来信状态" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">全部来信</option><option value="waiting">待处理</option><option value="processing">处理中</option><option value="done">已完成</option></select><button type="button" className="batch-delete" disabled={!selectable.length} onClick={()=>setPicked(allOn?picked.filter(id=>!selectable.some(e=>e.id===id)):[...new Set([...picked,...selectable.map(e=>e.id)])])}>{allOn?'取消全选':'全选当前筛选'}</button></div>
         {picked.length>0&&<button type="button" className="batch-delete" onClick={()=>void action(()=>removeIds(picked))}>删除所选 {picked.length} 封</button>}
-        <div className="incoming-scroll thin-scroll">{rows.map(e=>{const detail=['identifying','starting','queued','running','failed','blocked'].includes(e.status)?(e.summary?.[0]||''):'';return <div className={'incoming-letter '+(entry?.id===e.id?'selected':'')} data-entry-id={e.id} key={e.id}>
+        <div className="incoming-scroll thin-scroll">{rows.map(e=>{const detail=['identifying','starting','queued','running','failed','blocked'].includes(e.status)?(e.summary?.[0]||''):'';return <div className={'incoming-letter '+(pickedEntry?.id===e.id?'selected':'')} data-entry-id={e.id} key={e.id}>
           <label className="check"><input type="checkbox" aria-label={'选择 '+entryLabel(e)} checked={picked.includes(e.id)} disabled={!e.deletable||holding.some(item=>item.entry.id===e.id)} onChange={()=>setPicked(list=>list.includes(e.id)?list.filter(id=>id!==e.id):[...list,e.id])}/></label>
-          <button type="button" className="incoming-open" onClick={()=>setSelected(e.id)} aria-pressed={entry?.id===e.id}>
+          <button type="button" className="incoming-open" onClick={()=>setSelected(e.id)} aria-pressed={pickedEntry?.id===e.id}>
             <span className={'mini-paper '+e.status} style={{'--remaining':`${100-(e.progress_known?e.progress:0)}%`} as React.CSSProperties}/><span><strong>{entryLabel(e)}</strong><small>{e.platform||'来信'} <span>{stateLabels[e.status]}</span></small>{detail&&!detail.includes('已完成')&&<small className="row-note">{detail}</small>}</span>
           </button>
           <button type="button" className="row-delete" aria-label={'删除 '+entryLabel(e)} disabled={!e.deletable||pending||holding.some(item=>item.entry.id===e.id)} onClick={()=>void action(()=>removeIds([e.id]))}>删除</button>
         </div>})}{!rows.length&&<div className="queue-empty"><p>{entries.length?'没有匹配的来信':'这里还没有来信'}</p></div>}</div>
         <footer><span>{entries.length} 封来信</span><div className="desk-trash" ref={trashRef}><Prop name="trash" layer="body"/><Prop name="trash" layer="front" className="trash-front"/></div></footer>
       </aside>
-      <section className="selected-letter thin-scroll" aria-label="当前来信">
+      <section className={'selected-letter thin-scroll'+(swap?' is-'+swap:'')} aria-label="当前来信">
       {!entry?<div className="workbench-empty"><Prop name={lane==='publish'?'brazier':'shredder'} layer="beauty"/><h2>{lane==='publish'?'火盆已就位':'碎纸机已就位'}</h2><p>从首页投递第一封信。</p></div>:<>
         <div className="letter-title"><div><h2>{entryLabel(entry)}</h2><p>{entry.platform||'来信'}{entry.author?' / '+entry.author:''}</p></div><span className={'letter-state '+entry.status}>{stateLabels[entry.status]}</span></div>
         {notice&&<div className="notice" role="status">{notice}{notice.includes('设置已')&&<button type="button" onClick={()=>{if(remote)setDrafts(d=>({...d,[remote.id]:remote}));setNotice('已重新载入保存的设置')}}>重新载入设置</button>}</div>}
         {configurable&&group&&<>
           <div className="config-scope"><div role="group" aria-label="设置作用范围"><button aria-pressed={!perItem} onClick={()=>setPerItem(false)}>本次投递 · {ready.length} 条</button><button aria-pressed={perItem} onClick={()=>setPerItem(true)}>当前稿件{overridden?' · 单独设置':''}</button></div>{perItem&&<button className="text-action" onClick={restoreInheritance}>恢复继承</button>}</div>
           <div className="fuel-row">{sections.map((s,i)=><button ref={el=>{woodRefs.current[s.id]=el}} className={'wood-setting '+(prepared.includes(s.id)?'prepared':'')} key={s.id} type="button" aria-label={`设置${s.label}`} aria-pressed={section===s.id} disabled={Boolean(confirm)||entering} onClick={()=>{setSection(s.id);if(prepared.includes(s.id))setDrafts(d=>({...d,[group.id]:{...group,prepared:prepared.filter(p=>p!==s.id),dirty:true}}))}}>
-            <img ref={el=>{woodImg.current[s.id]=el}} data-id={s.id} className="wood-piece" src={asset('wood-'+i+'-light-beauty')} alt="" /><strong>{s.label}</strong><small>{prepared.includes(s.id)?'已备齐，可重新编辑':s.summary}</small>
+            <img className="wood-shadow" src={asset('wood-'+i+'-shadow')} alt="" /><img ref={el=>{woodImg.current[s.id]=el}} data-id={s.id} className="wood-piece" src={asset('wood-'+i+'-light-beauty')} alt="" /><strong>{s.label}</strong><small>{prepared.includes(s.id)?'已备齐，可重新编辑':s.summary}</small>
           </button>)}</div>
           <div className="hearth">
-            <div className="preparation-scene">{confirm&&<form ref={slipRef} className={'ignition-slip'+(entering?' is-entering':'')} onSubmit={event=>{event.preventDefault();void ignite()}}><h3>确认开始处理</h3><p>将处理{perItem?'当前稿件':`本次投递中 ${ready.length} 条稿件`}，完成字幕与成片后提交 B 站。</p><p>本次使用已备齐的输出、字幕样式、投稿信息和翻译上下文；单条设置优先。</p><label className="check"><input type="checkbox" checked={rights} disabled={entering} onChange={e=>setRights(e.target.checked)}/>我已确认素材使用权限及本次投稿信息</label><div className="toolbar"><Button type="button" variant="secondary" onClick={()=>setConfirm(null)} disabled={entering}>返回检查</Button><Button type="submit" disabled={!rights||entering}>确认并点火</Button></div></form>}<div className="fuel-brazier" ref={brazierRef}><Prop name="brazier"/><Prop name="brazier" layer="front" className="foreground"/></div><p>{prepared.length===4?'四类设置已备齐，可以开始处理。':'选择木块修改设置，或直接使用当前设置。'}</p></div>
-            {section&&<div className="setting-letter"><div className="setting-letter-head"><h3>{sections.find(s=>s.id===section)?.label}</h3><button type="button" className="text-action" disabled={pending} onClick={()=>void action(async()=>{await save(group,[...new Set([...prepared,section])]);setSection(null)})}>保存并放入火盆</button></div>
+            <div className="preparation-scene"><Presence open={Boolean(confirm)}>{confirm&&<form ref={slipRef} className={'ignition-slip'+(entering?' is-entering':'')} onSubmit={event=>{event.preventDefault();void ignite()}}><h3>确认开始处理</h3><p>将处理{perItem?'当前稿件':`本次投递中 ${ready.length} 条稿件`}，完成字幕与成片后提交 B 站。</p><p>本次使用已备齐的输出、字幕样式、投稿信息和翻译上下文；单条设置优先。</p><label className="check"><input type="checkbox" checked={rights} disabled={entering} onChange={e=>setRights(e.target.checked)}/>我已确认素材使用权限及本次投稿信息</label><div className="toolbar"><Button type="button" variant="secondary" onClick={()=>setConfirm(null)} disabled={entering}>返回检查</Button><Button type="submit" disabled={!rights||entering}>确认并点火</Button></div></form>}</Presence><div className="fuel-brazier" ref={brazierRef}><Prop name="brazier"/><div className="bowl-logs" aria-hidden="true">{sections.map((s,i)=>settled.includes(s.id)&&<img key={s.id} className={'bowl-log'+(fresh===s.id?' is-fresh':'')} alt="" src={asset('wood-'+i+'-light-beauty')} style={{left:['40%','50%','46%','58%'][i],top:['44%','48%','42%','46%'][i],['--rot' as string]:`${[-12,8,-4,11][i]}deg`,transform:`translate(-50%,-50%) rotate(${[-12,8,-4,11][i]}deg)`}}/>)}</div><i className="hearth-glow"/><Prop name="brazier" layer="front" className="foreground"/></div><p>{prepared.length===4?'四类设置已备齐，可以开始处理。':'选择木块修改设置，或直接使用当前设置。'}</p></div>
+            <Presence open={Boolean(section)}>{section&&<div className="setting-letter"><div className="setting-letter-head"><h3>{sections.find(s=>s.id===section)?.label}</h3><button type="button" className="text-action" disabled={pending} onClick={()=>void action(async()=>{await save(group,[...new Set([...prepared,section])]);setSection(null)})}>保存并放入火盆</button></div>
             <div className="settings-and-preview"><Inspector options={effective} change={change} settings={settings} row={row} rowLabel={entryLabel(entry)} perItem={perItem} onScope={setPerItem} reset={restoreInheritance} section={section} onSection={setSection} only={section}
               defaultsReady={Boolean(defaults)} savingDefault={savingDefault} onSaveDefault={kind=>void saveDefault(kind)} onResetDefault={kind=>change(kind==='output'?{...effective,...outputDefaults(savedVideoOptions(defaults))}:{...effective,subtitle_style:savedVideoOptions(defaults).subtitle_style})}/>
-              <VideoPreview entry={entry} options={effective}/></div></div>}
+              <VideoPreview entry={entry} options={effective}/></div></div>}</Presence>
           </div>
           <div className="prepare-actions"><Button variant="secondary" disabled={pending||entering} onClick={()=>void action(async()=>{await save(group,sections.map(s=>s.id));setSection(null)})}>使用当前设置备齐</Button><Button disabled={pending||entering||prepared.length!==4||Boolean(confirm)} onClick={()=>void action(async()=>{const saved=await save(group);setSection(null);setRights(false);setConfirm(saved)})}>开始处理{!perItem&&ready.length>1?` ${ready.length} 条`:''}</Button></div>
         </>}
         {!configurable&&<>
           {lane==='notes'&&transcript&&entry.status==='succeeded'?<div className="notes-completion" ref={deskRef}>
-            <PaperProcess key={entry.id+':'+(entry.run||1)} frameKey={entry.id+':'+(entry.run||1)} lane={lane} progress={entry.progress_known?entry.progress:0} progressKnown={entry.progress_known!==false} status={entry.status} title={entryLabel(entry)} mark={reuseMark(entry)} active={active} arrived={arrived} links={links} onStrip={link=>{setActiveCard(link.id);if(link.refs[0])locateRef.current(link.refs[0])}} parked={entry.message.includes('等待已有任务完成可共享步骤')}/>
-            <TranscriptView key={transcript} id={transcript} settings={settings} translationUrl={entry.result?.translated_srt_url} onSettings={onSettings} variant="desk" highlightCard={activeCard} onActivateCard={card=>{setActiveCard(card.id);if(card.refs[0])locateRef.current(card.refs[0])}} onVisibleCards={setLinks} onReady={api=>{locateRef.current=api.locate}}/>
-            <svg className="notes-links" aria-hidden="true">{curves.map(item=>{const [id,d]=item.split('|');return <path key={id} d={d} className={Number(id)===activeCard?'is-hot':''}/>})}</svg>
-          </div>:<div className="task-scene">
-            <div className="task-stage">
-              <PaperProcess key={entry.id+':'+(entry.run||1)} frameKey={entry.id+':'+(entry.run||1)} lane={lane} progress={entry.progress_known?entry.progress:0} progressKnown={entry.progress_known!==false} status={entry.status} title={entryLabel(entry)} mark={reuseMark(entry)} active={active} arrived={arrived} replaySmoke={smoke} parked={entry.message.includes('等待已有任务完成可共享步骤')}/>
-              {lane==='publish'&&entry.status==='succeeded'&&manuscriptLink(entry)&&<button type="button" className={'success-card'+(smoke?' is-rising':' is-settled')} onClick={()=>window.open(manuscriptLink(entry),'_blank','noopener')}><CoverArt cover={entry.result?.cover} video={entry.result?.final_video_url}/><strong>{entry.result?.upload_title||entryLabel(entry)}</strong><small>投稿成功，等待审核</small></button>}
+            <div className="shredder-station">
+              <PaperProcess key={entry.id+':'+(entry.run||1)} frameKey={entry.id+':'+(entry.run||1)} lane={lane} progress={entry.progress_known?entry.progress:0} progressKnown={entry.progress_known!==false} status={entry.status} title={entryLabel(entry)} mark={reuseMark(entry)} active={active} arrived={arrived} links={links} onStrip={link=>{setActiveCard(link.id);if(link.refs[0])locateRef.current(link.refs[0])}} parked={entry.message.includes('等待已有任务完成可共享步骤')}/>
+              <ShredLever value={notesMode} locked={running} onChange={chooseMode}/>
             </div>
-            {lane==='publish'&&entry.status==='succeeded'&&entry.result?.final_video_url&&<DeskProjector url={entry.result.final_video_url}/>}
+            <TranscriptView key={transcript} id={transcript} settings={settings} translationUrl={entry.result?.translated_srt_url} onSettings={onSettings} variant="desk" highlightCard={activeCard} onActivateCard={card=>{setActiveCard(card.id);if(card.refs[0])locateRef.current(card.refs[0])}} onVisibleCards={setLinks} onReady={api=>{locateRef.current=api.locate}}/>
+            <NoteThreads threads={threads}/>
+          </div>:<div className="task-scene">
+            <div className="task-column">
+              {lane==='publish'&&<DeskTV url={entry.status==='succeeded'?entry.result?.final_video_url:undefined}/>}
+              <div className="task-stage">
+                <PaperProcess key={entry.id+':'+(entry.run||1)} frameKey={entry.id+':'+(entry.run||1)} lane={lane} progress={entry.progress_known?entry.progress:0} progressKnown={entry.progress_known!==false} status={entry.status} title={entryLabel(entry)} mark={reuseMark(entry)} active={active} arrived={arrived} replaySmoke={smoke} parked={entry.message.includes('等待已有任务完成可共享步骤')}/>
+                <Presence open={Boolean(lane==='publish'&&entry.status==='succeeded'&&manuscriptLink(entry))}>{lane==='publish'&&entry&&entry.status==='succeeded'&&manuscriptLink(entry)&&<button type="button" className="success-card" onClick={()=>window.open(manuscriptLink(entry),'_blank','noopener')}><CoverArt cover={entry.result?.cover} video={entry.result?.final_video_url}/><strong>{entry.result?.upload_title||entryLabel(entry)}</strong><small>投稿成功，等待审核</small></button>}</Presence>
+              </div>
+            </div>
             <div className="process-description" role="status">
-              <strong>{entry.status==='succeeded'&&lane==='publish'&&manuscriptLink(entry)?'投稿成功，等待审核':stageLabels[entry.stage||'']||stateLabels[entry.status]}</strong>
-              <span className="progress-hold">{entry.progress_known?Math.round(entry.progress)+'%':'等待'}</span>
-              <p>{(entry.summary||[]).slice(0,2).join(' ')||stateLabels[entry.status]}</p>
+              <strong className="stage-line">{entry.status==='succeeded'&&lane==='publish'&&manuscriptLink(entry)?'投稿成功，等待审核':stageLabels[entry.stage||'']||stateLabels[entry.status]}</strong>
+              <span className="progress-number">{entry.progress_known?Math.round(entry.progress)+'%':'等待'}</span>
+              <p className="stage-copy">{(entry.summary||[]).slice(0,2).join(' ')||stateLabels[entry.status]}</p>
               <button type="button" className="text-action" onClick={()=>setLogOpen(open=>!open)}>查看详情</button>
-              {logOpen&&<EntryLog id={entry.id}/>}
+              <div className="log-slot">{logOpen&&<EntryLog id={entry.id}/>}</div>
             </div>
           </div>}
           {reuse.length>0&&<div className="reuse-banner"><Prop name={reuseMark(entry)==='cut'?'paper-cut':'paper-charred'} layer="beauty" className="reuse-sheet"/><p className="reuse-note">已复用{[...new Set(reuse.map(r=>({download:'源媒体',transcribe:'字幕',translate:'译文',burn:'成片'}[r.stage]||r.stage)))].join('、')}，继续{lane==='publish'?'成片与投稿':'整理笔记'}。</p></div>}

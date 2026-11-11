@@ -916,7 +916,7 @@ def test_share_text_parses_douyin_and_xiaohongshu_samples(desktop_app):
     assert response.json()["items"] == douyin + xhs
     assert client.post("/desktop/sites/douyin/login").status_code == 409
     sites = client.get("/desktop/sites").json()["sites"]
-    assert [item["site"] for item in sites] == ["douyin", "xiaohongshu"]
+    assert [item["site"] for item in sites] == ["douyin", "xiaohongshu", "bilibili", "weread"]
     assert client.get("/desktop/settings").json()["site_logins"] == sites
 
 

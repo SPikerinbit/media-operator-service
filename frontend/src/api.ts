@@ -8,7 +8,7 @@ export type SourceProbe = { ready: true; title?: string; platform: string; media
   images?: string[]; body?: string; author?: string; canonical_url?: string } |
   { ready: false; code: string; message: string; images?: string[]; body?: string }
 export type ParsedSource = { url: string; platform: string; author: string; title: string; source_kind: Exclude<SourceKind, 'local'>; duration?: number }
-export type SiteLogin = { site: 'douyin' | 'xiaohongshu'; platform: string; logged_in: boolean; logging_in: boolean }
+export type SiteLogin = { site: 'douyin' | 'xiaohongshu' | 'bilibili' | 'weread'; platform: string; logged_in: boolean; logging_in: boolean }
 export type Preflight = Record<string, { ready: true; title: string; planned_stages: WorkflowStage[] } |
   { ready: false; title: string; message: string; code: string }>
 

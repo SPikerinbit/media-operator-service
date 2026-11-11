@@ -611,7 +611,7 @@ class StageBilibiliUploadRequest(BaseModel):
 
 class BatchCreateRequest(BaseModel):
     notes_auto: bool = False
-    notes_mode: Literal['curated', 'comprehensive'] = 'curated'
+    notes_mode: Literal['summary', 'curated', 'comprehensive'] = 'curated'
     knowledge_only: bool = False
     source_language: str = Field(default="auto", pattern=r"^(auto|[a-z]{2,3})$")
     transcript_ids: dict[str, int] = Field(default_factory=dict)

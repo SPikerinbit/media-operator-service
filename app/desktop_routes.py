@@ -74,6 +74,27 @@ def save_settings(preferences: Preferences):
     return settings()
 
 
+@router.post("/deepseek/test")
+def test_deepseek():
+    key = config.credentials().get("TRANSLATE_API_KEY") or ""
+    if not key:
+        raise HTTPException(400, "还没有 DeepSeek 密钥")
+    model = config.settings().get("ai_model") or media.TRANSLATE_MODEL
+    try:
+        import httpx
+        response = httpx.post(
+            "https://api.deepseek.com/chat/completions",
+            timeout=20,
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]},
+        )
+    except Exception as error:
+        raise HTTPException(502, "无法连接 DeepSeek") from error
+    if response.status_code != 200:
+        raise HTTPException(502, "DeepSeek 没有接受这个密钥")
+    return {"ok": True, "model": model}
+
+
 class OutputDefaults(BaseModel):
     source_language: str = Field(default="auto", pattern=r"^(auto|[a-z]{2,3})$")
     target_lang: str = Field(default="zh-CN", max_length=80)
