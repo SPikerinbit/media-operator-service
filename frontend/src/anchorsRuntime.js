@@ -51,10 +51,10 @@
     }
   }
   const woodSpread = [
-    { x: -0.06, y: 0.03, rot: -14 },
-    { x: 0.08, y: 0.07, rot: 8 },
-    { x: -0.01, y: -0.02, rot: -6 },
-    { x: 0.1, y: 0.04, rot: 12 },
+    { x: -0.07, y: -0.012, rot: -11 },
+    { x: 0.05, y: 0.008, rot: 7 },
+    { x: -0.01, y: -0.02, rot: -3 },
+    { x: 0.08, y: 0.002, rot: 12 },
   ]
   function woodLanding(rect, manifest, index) {
     const rim = anchorPixels(rect, manifest.brazier.anchors.rim, manifest.brazier.size)
@@ -79,14 +79,24 @@
     const entered = (1 - remain) * height
     return { x: feed.x - width / 2, y: feed.y - height + entered, width: width, height: height, feed: feed, output: output, tray: tray, entered: entered }
   }
+  function bowlMouth(rect, manifest) {
+    const image = containedImage(rect, manifest.brazier.size)
+    return {
+      cx: image.left + image.width * 0.48,
+      cy: image.top + image.height * 0.495,
+      rx: image.width * 0.26,
+      ry: image.height * 0.052,
+    }
+  }
   function burnPaper(rect, manifest, remaining) {
-    const rim = anchorPixels(rect, manifest.brazier.anchors.rim, manifest.brazier.size)
-    const width = rect.width * 0.34
-    const full = rect.height * 0.28
+    const mouth = bowlMouth(rect, manifest)
     const remain = clamp01(remaining)
-    const x = rim.x - width / 2
-    const y = rim.y - full * 0.35
-    return { x: x, y: y, width: width, height: full, full: full, edgeX: rim.x, edgeY: y + full * remain, remaining: remain }
+    const width = mouth.rx * 1.15
+    const full = mouth.ry * 1.35
+    const sunk = mouth.ry * (0.15 + remain * 0.35)
+    const x = mouth.cx - width / 2
+    const y = mouth.cy - full * 0.35 + sunk
+    return { x: x, y: y, width: width, height: full, full: full, edgeX: mouth.cx, edgeY: y + full * remain, remaining: remain, mouth: mouth }
   }
   function atlasPosition(frame, columns, rows) {
     const col = frame % columns
@@ -179,6 +189,7 @@
     woodLanding: woodLanding,
     parabolaPoint: parabolaPoint,
     shredderPaper: shredderPaper,
+    bowlMouth: bowlMouth,
     burnPaper: burnPaper,
     normBox: normBox,
     foldPaperTarget: foldPaperTarget,

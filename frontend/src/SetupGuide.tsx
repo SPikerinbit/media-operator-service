@@ -32,7 +32,7 @@ export function SetupGuide({ settings, onSettings, onClose }: {
   function close() {
     if (leaving) return
     setLeaving(true)
-    window.setTimeout(onClose, matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 440)
+    window.setTimeout(onClose, matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 560)
   }
   const [busy, setBusy] = useState(false)
   const index = steps.indexOf(step)

@@ -11,7 +11,7 @@ function pump(now: number) {
   let live = false
   for (const [id, job] of [...jobs]) {
     let keep = false
-    try { keep = job.frame(now) } catch { jobs.delete(id) }
+    try { keep = job.frame(now) } catch (error) { console.error(error); jobs.delete(id) }
     if (!keep) jobs.delete(id)
     else live = true
   }
