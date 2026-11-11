@@ -194,7 +194,10 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
   flight.style.perspective = ''
   const source = (nodes.sheet?.closest('.sheet-stack') as HTMLElement | null) || nodes.sheet || null
   const hint = nodes.sheet?.closest('.writing-paper')?.querySelector<HTMLElement>('.paper-hint') || null
-  if (source) source.style.opacity = '0'
+  if (source) {
+    source.style.transition = 'opacity 160ms linear'
+    source.style.opacity = '0'
+  }
   if (hint) hint.style.opacity = '0'
   const shade = castShadow()
   shade.dataset.lane = lane
@@ -277,19 +280,22 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
     if (sealT < 0.02) {
       const open = ramp(elapsed, 40, 320)
       const waxOff = ramp(elapsed, 20, 160)
-      nodes.flap.style.transform = `rotateX(${(1 - open) * 180}deg)`
+      nodes.flap.style.transform = `rotateX(${open * 180}deg)`
       nodes.wax.style.opacity = String(1 - waxOff)
       nodes.wax.style.transform = `translate(-50%, -50%) translateY(${-14 * waxOff}px) scale(${lerp(1, 0.7, waxOff)})`
     } else {
-      nodes.flap.style.transform = `rotateX(${Math.min(1, sealT) * 180}deg)`
-      if (sealT < 0.9) {
+      const shut = Math.min(1, sealT / 0.62)
+      nodes.flap.style.transform = `rotateX(${(1 - shut) * 180}deg)`
+      const pressStart = 0.62
+      if (sealT < pressStart) {
         nodes.wax.style.opacity = '0'
-        nodes.wax.style.transform = 'translate(-50%, -50%) scale(.7)'
+        nodes.wax.style.transform = 'translate(-50%, -50%) scale(1.42)'
       } else {
-        const stamp = Math.max(0, springAt(((sealT - 0.9) / 0.1) * 220, SPRING.press))
-        const squashY = stamp < 0.62 ? lerp(1.28, 0.86, stamp / 0.62) : lerp(0.86, 1, (stamp - 0.62) / 0.38)
-        const squashX = stamp < 0.62 ? lerp(1, 1.08, stamp / 0.62) : lerp(1.08, 1, (stamp - 0.62) / 0.38)
-        nodes.wax.style.opacity = '1'
+        const local = (sealT - pressStart) / (1 - pressStart)
+        const stamp = Math.max(0, springAt(local * 340, SPRING.press))
+        nodes.wax.style.opacity = String(Math.min(1, local / 0.16))
+        const squashY = stamp < 0.48 ? lerp(1.46, 0.76, stamp / 0.48) : lerp(0.76, 1, Math.min(1, (stamp - 0.48) / 0.52))
+        const squashX = stamp < 0.48 ? lerp(0.86, 1.16, stamp / 0.48) : lerp(1.16, 1, Math.min(1, (stamp - 0.48) / 0.52))
         nodes.wax.style.transform = `translate(-50%, -50%) scale(${squashX}, ${squashY})`
       }
     }
@@ -299,7 +305,7 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
         const mouth = normBox(mail, slot, manifest.mailbox.size)
         const slotCenter = { x: mouth.left + mouth.width / 2, y: mouth.top + mouth.height * 0.35 }
         const metalBottom = mail.top + mail.height * 0.8
-        const approachScale = 0.42
+        const approachScale = 0.7
         const half = restH * approachScale * 0.5
         const approach = { x: slotCenter.x, y: metalBottom + half + 10 }
         const lift = { x: home.x - 28, y: (home.y + approach.y) / 2 - 18 }
@@ -335,10 +341,28 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
           }
           if (into > 0.72) nodes.mail.classList.add('is-shut')
         }
-        nodes.env.style.zIndex = into > 0.02 ? '2' : '6'
+        const hatch = into > 0.02 ? nodes.mail.querySelector<HTMLElement>('.slot-window') : null
+        if (hatch && nodes.env.parentElement !== hatch) {
+          hatch.append(nodes.env)
+          nodes.env.style.position = 'absolute'
+          nodes.env.style.margin = '0'
+          nodes.env.style.left = '0'
+          nodes.env.style.top = '0'
+          nodes.env.style.width = restW + 'px'
+          nodes.env.style.height = restH + 'px'
+          nodes.env.style.zIndex = '1'
+        }
+        nodes.env.style.zIndex = hatch ? '1' : '6'
         nodes.env.style.transformOrigin = 'center center'
-        nodes.env.style.transform = `translate3d(${cx - home.x}px, ${cy - home.y}px, 0) scale(${scale}) rotate(${tilt}deg)`
-        if (into > 0.02) {
+        if (hatch) {
+          const hatchBox = hatch.getBoundingClientRect()
+          nodes.env.style.transform = `translate3d(${cx - hatchBox.left - restW / 2}px, ${cy - hatchBox.top - restH / 2}px, 0) scale(${scale}) rotate(${tilt}deg)`
+          nodes.env.style.clipPath = ''
+          nodes.env.style.opacity = String(1 - ramp(into, 0.86, 1))
+        } else {
+          nodes.env.style.transform = `translate3d(${cx - home.x}px, ${cy - home.y}px, 0) scale(${scale}) rotate(${tilt}deg)`
+        }
+        if (!hatch && into > 0.02) {
           const s = Math.max(0.05, scale)
           const top = Math.max(0, (mouth.top - cy) / s + restH / 2 - 4 / s)
           const bottom = Math.max(0, restH - ((mouth.top + mouth.height - cy) / s + restH / 2) - 3 / s)
@@ -347,8 +371,8 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
           nodes.env.style.clipPath = top + bottom < restH - 1 && left + right < restW - 1
             ? `inset(${top}px ${right}px ${bottom}px ${left}px)`
             : ''
-        } else nodes.env.style.clipPath = ''
-        nodes.env.style.opacity = String(1 - ramp(insertT, 0.94, 1))
+        } else if (!hatch) nodes.env.style.clipPath = ''
+        if (!hatch) nodes.env.style.opacity = String(1 - ramp(insertT, 0.94, 1))
         const groundY = Math.max(home.y, cy) + restH * 0.08
         shade.style.opacity = String(0.28 * (1 - into))
         shade.style.transform = `translate3d(${cx - 28}px, ${groundY}px, 0) scale(${0.55 + (1 - scale) * 0.2}, 0.55)`
@@ -587,9 +611,9 @@ export function flyTaskPaper(from: DOMRect, to: () => Point | null, title: strin
       const fadeIn = ramp(elapsed, 0, 140)
       const sx = from.left + w0 / 2
       const sy = from.top + h0 / 2
-      const end = { x: dest.x, y: dest.y + 42 }
-      const c1 = { x: sx + (end.x - sx) * 0.2, y: sy - 78 }
-      const c2 = { x: sx + (end.x - sx) * 0.78, y: Math.min(sy, end.y) - 110 }
+      const end = { x: dest.x, y: dest.y + 18 }
+      const c1 = { x: sx + 160, y: sy - 110 }
+      const c2 = { x: end.x - 8, y: end.y - 30 }
       const tx = cubicTan(sx, c1.x, c2.x, end.x, Math.min(0.98, Math.max(0.02, te)))
       const ty = cubicTan(sy, c1.y, c2.y, end.y, Math.min(0.98, Math.max(0.02, te)))
       const len = Math.hypot(tx, ty) || 1

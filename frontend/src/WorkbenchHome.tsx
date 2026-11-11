@@ -331,7 +331,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
         <Prop name="envelope" layer="body" className="envelope-back" />
         <div className="letter-insert" ref={paperRef} aria-hidden="true"><div className="letter-insert-copy" ref={copyRef}>{snapshot.slice(0, 6).map(line => <span key={line}>{line.replace(/\s+/g, ' ')}</span>)}</div></div>
         <Prop name="envelope" layer="front" className="envelope-front" />
-        <div className="envelope-flap" ref={flapRef}><img src={asset('flap-light-front')} alt="" /><img className="flap-lining" src={asset('flap-light-back')} alt="" /></div>
+        <div className="envelope-flap" ref={flapRef}><img className="flap-face" src={asset('flap-light-closed')} alt="" /><img className="flap-lining" src={asset('flap-light-back')} alt="" /></div>
         <img ref={closedRef} className="flap-closed" src={asset('flap-light-closed')} alt="" />
         <div className="wax-seal" ref={waxRef}>
           <button className={'wax-button' + (press ? ' is-pressing' : '')} type="button" aria-label={`投递${title}信件`} disabled={!filled || busy} onClick={() => void deliver()}><Prop name={lane === 'publish' ? 'wax' : 'wax-blue'} layer="beauty" /></button>

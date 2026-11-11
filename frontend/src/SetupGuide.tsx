@@ -2,6 +2,15 @@ import { useEffect, useState } from 'react'
 import { request, type LocalResources, type Settings, type SiteLogin } from './api'
 import { openSiteLogin, readSites } from './siteSessions'
 
+function whisperName(name: string) {
+  return name.replace(/\s*\d+(?:\.\d+)?\s*G(?:B)?$/i, '').trim() || name
+}
+function whisperGigabytes(bytes: number) {
+  const gb = bytes / 1e9
+  const rounded = gb >= 10 ? String(Math.round(gb)) : String(Math.round(gb * 10) / 10)
+  return rounded + ' GB'
+}
+
 type Step = 'accounts' | 'model' | 'key' | 'ready'
 
 const steps: Step[] = ['accounts', 'model', 'key', 'ready']
@@ -19,6 +28,12 @@ export function SetupGuide({ settings, onSettings, onClose }: {
   const [key, setKey] = useState('')
   const [modelName, setModelName] = useState(settings?.ai_model || 'deepseek-chat')
   const [notice, setNotice] = useState('')
+  const [leaving, setLeaving] = useState(false)
+  function close() {
+    if (leaving) return
+    setLeaving(true)
+    window.setTimeout(onClose, matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 440)
+  }
   const [busy, setBusy] = useState(false)
   const index = steps.indexOf(step)
 
@@ -83,7 +98,7 @@ export function SetupGuide({ settings, onSettings, onClose }: {
     setStep(next)
   }
 
-  return <div className="onboarding" role="dialog" aria-labelledby="setup-title">
+  return <div className={'onboarding' + (leaving ? ' is-leaving' : '')} role="dialog" aria-labelledby="setup-title">
     <div className={'setup-book' + (step === 'ready' ? ' is-ready' : '')}>
       <header>
         <h2 id="setup-title">安装清单</h2>
@@ -110,7 +125,7 @@ export function SetupGuide({ settings, onSettings, onClose }: {
           <p>{gpu ? (gpu.ready ? '检测到 NVIDIA，可以用 GPU 转录。' : '没有检测到可用 GPU，转录会用 CPU。') : '正在查看这台机器的环境。'}</p>
           <div className="setup-models" role="radiogroup" aria-label="模型大小">
             {(resources?.models || []).map(item => <button key={item.name} type="button" role="radio" aria-checked={model === item.name} className={model === item.name ? 'is-set' : ''} onClick={() => setModel(item.name)}>
-              <strong>{item.name}</strong><small>{(item.size / 1e9).toFixed(2)} GB{item.available ? ' · 已就绪' : ''}</small>
+              <strong>{whisperName(item.name)}</strong><small>{whisperGigabytes(item.size)}{item.available ? ' · 已就绪' : ''}</small>
             </button>)}
           </div>
           {chosen?.download.running && <p role="status">正在下载 {chosen.download.percent ?? 0}% {chosen.download.message || ''}</p>}
@@ -137,13 +152,13 @@ export function SetupGuide({ settings, onSettings, onClose }: {
             <li className={resources?.models.some(item => item.available) ? 'is-stamped' : ''}>模型：{resources?.models.filter(item => item.available).map(item => item.name).join('、') || '尚未下载'}</li>
             <li className={settings?.has_ai_key ? 'is-stamped' : ''}>DeepSeek：{settings?.has_ai_key ? '已保存' : '尚未配置'}</li>
           </ul>
-          <button type="button" className="setup-next" onClick={onClose}>合上清单</button>
+          <button type="button" className="setup-next" onClick={close}>合上清单</button>
         </>}
       </div>
       {notice && <p className="setup-slip" role="status">{notice}</p>}
       <footer>
         {index > 0 && step !== 'ready' && <button type="button" className="text-action" onClick={() => go(steps[index - 1])}>上一页</button>}
-        <button type="button" className="text-action" onClick={onClose}>以后再说</button>
+        <button type="button" className="text-action" onClick={close}>以后再说</button>
       </footer>
     </div>
   </div>

@@ -14,6 +14,11 @@ const categories = [
   ['bilibili','B 站投稿',Send],['obsidian','Obsidian',BookOpen],
 ] as const
 export type SettingsSection = typeof categories[number][0]
+function whisperGigabytes(bytes: number) {
+  const gb = bytes / 1e9
+  const rounded = gb >= 10 ? String(Math.round(gb)) : String(Math.round(gb * 10) / 10)
+  return rounded + ' GB'
+}
 type Category = SettingsSection
 type SaveSection = 'directory'|'deepseek'|'gpu'|'bilibili'|'obsidian'
 
@@ -258,7 +263,7 @@ export function Settings({ current, update, focus, onOpenGuide }: { current: Pre
         </ul>}
         <ul className="form-stack resource-list" aria-label="本地 Whisper 模型">
           {resources?.models.map((item) => <li key={item.name}><div><strong>{item.name}</strong>
-            <small>{item.available ? '本地已就绪' : item.download.message || '未下载'} · {(item.size / 1e9).toFixed(2)} GB</small></div>
+            <small>{item.available ? '本地已就绪' : item.download.message || '未下载'} · {whisperGigabytes(item.size)}</small></div>
             {!item.available && <Button variant="secondary" size="small" disabled={downloading}
               onClick={() => perform(async () => {
                 const next = await request<LocalResources>('/desktop/resources/models/' + item.name,'POST')

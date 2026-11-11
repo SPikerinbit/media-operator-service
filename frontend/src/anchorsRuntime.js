@@ -51,16 +51,15 @@
     }
   }
   const woodSpread = [
-    { x: -54, y: 2, rot: -8 },
-    { x: 58, y: 8, rot: 10 },
-    { x: -4, y: -6, rot: 4 },
-    { x: 24, y: 0, rot: -5 },
+    { x: -0.06, y: 0.03, rot: -14 },
+    { x: 0.08, y: 0.07, rot: 8 },
+    { x: -0.01, y: -0.02, rot: -6 },
+    { x: 0.1, y: 0.04, rot: 12 },
   ]
   function woodLanding(rect, manifest, index) {
     const rim = anchorPixels(rect, manifest.brazier.anchors.rim, manifest.brazier.size)
     const spread = woodSpread[index % 4]
-    const unit = rect.width / 370
-    return { x: rim.x + spread.x * unit, y: rim.y + spread.y * unit, rot: spread.rot }
+    return { x: rim.x + spread.x * rect.width, y: rim.y + spread.y * rect.height, rot: spread.rot }
   }
   function parabolaPoint(from, to, t, lift) {
     const eased = easeOut(t)

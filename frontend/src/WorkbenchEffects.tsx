@@ -300,7 +300,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
             fire.style.height = height + 'px'
             flame.current.resize(width, height)
           }
-          fire.style.transform = `translate3d(${host.clientWidth / 2 - width / 2}px, ${host.clientHeight * 0.38}px, 0)`
+          fire.style.transform = `translate3d(${host.clientWidth / 2 - width / 2}px, ${pose.y - height * 0.78}px, 0)`
           const lit = running && arrivedRef.current
           if (lit && !litAt.current) litAt.current = now
           if (!lit) litAt.current = 0
@@ -347,7 +347,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
         const nextKey = `${Math.round(pose.x)}:${Math.round(pose.tray.y)}:${Math.round(pose.width)}`
         if (nextKey !== trayKey.current) {
           trayKey.current = nextKey
-          setTray({ left: pose.x, top: pose.tray.y, width: pose.width })
+          setTray({ left: pose.tray.x, top: pose.tray.y, width: pose.width })
         }
         if (paperChanged) { painted.current = visual; host.dataset.layout = layoutKey }
       }
@@ -398,7 +398,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
     })}
     <canvas ref={canvas} className="process-paper" aria-hidden="true" />
     {lane === 'publish' && <canvas ref={fireNode} className="flame-layer" aria-hidden="true" />}
-    {showStrips && <div className="strip-tray" style={tray ? { left: tray.left + tray.width * 0.78, top: tray.top + 78, width: Math.max(148, tray.width * 0.7) } : undefined}>{links.slice(0, 8).map(link => <button type="button" key={link.id} className="shred-strip" data-card-id={link.id} data-refs={link.refs.join(' ')} style={{ backgroundImage: textures[link.id] ? `url(${textures[link.id]})` : undefined }} onClick={() => onStrip?.(link)} aria-label={'碎纸 ' + link.id} />)}</div>}
+    {showStrips && <div className="strip-tray">{links.slice(0, 8).map(link => <button type="button" key={link.id} className="shred-strip" data-card-id={link.id} data-refs={link.refs.join(' ')} style={{ backgroundImage: textures[link.id] ? `url(${textures[link.id]})` : undefined }} onClick={() => onStrip?.(link)} aria-label={'碎纸 ' + link.id} />)}</div>}
     <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} layer="front" className="process-machine foreground" />
   </div>
 }
