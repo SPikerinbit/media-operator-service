@@ -3,6 +3,7 @@
 Redirects and response bodies stay small. Every hop must be a public HTTP(S) host.
 """
 from html import unescape
+import json
 import re
 import threading
 from urllib.parse import urljoin, urlsplit, unquote
@@ -180,13 +181,13 @@ def format_notes(notes):
     return text
 
 
-def _brace_end(text, start):
+def _brace_end(text, start, limit=200000):
     if start >= len(text) or text[start] != "{":
         return None
     depth = 0
     quote = ""
     escaped = False
-    for index in range(start, min(len(text), start + 200000)):
+    for index in range(start, min(len(text), start + limit)):
         char = text[index]
         if quote:
             if escaped:
@@ -391,6 +392,188 @@ def collect_media_urls(html):
     return found
 
 
+def _assigned_json(text, marker):
+    index = (text or "").find(marker)
+    if index < 0:
+        return None
+    rest = text[index + len(marker):].lstrip()
+    if rest.startswith("="):
+        rest = rest[1:].lstrip()
+    if rest.startswith("JSON.parse"):
+        open_paren = rest.find("(")
+        rest = rest[open_paren + 1:].lstrip()
+        quote = rest[:1]
+        if quote in {'"', "'"}:
+            end = 1
+            escaped = False
+            while end < len(rest):
+                char = rest[end]
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    break
+                end += 1
+            try:
+                rest = json.loads(rest[:end + 1])
+            except (json.JSONDecodeError, ValueError):
+                return None
+            if isinstance(rest, str):
+                rest = rest.lstrip()
+            else:
+                return rest if isinstance(rest, dict) else None
+    if not isinstance(rest, str):
+        return rest if isinstance(rest, dict) else None
+    start = rest.find("{")
+    if start < 0:
+        return None
+    end = _brace_end(rest, start, 600000)
+    if not end:
+        return None
+    blob = re.sub(r"\bundefined\b", "null", rest[start:end])
+    try:
+        value = json.loads(blob)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return value if isinstance(value, dict) else None
+
+
+def _note_body(entry):
+    if not isinstance(entry, dict):
+        return None
+    note = entry.get("note")
+    if isinstance(note, dict):
+        return note
+    if any(key in entry for key in ("noteId", "desc", "imageList", "title")):
+        return entry
+    return None
+
+
+def _note_entry(note_map, note_id):
+    if not isinstance(note_map, dict) or not note_map:
+        return None
+    wanted = (note_id or "").casefold()
+    if wanted:
+        for key, value in note_map.items():
+            if str(key).casefold() == wanted:
+                return value
+        for value in note_map.values():
+            note = _note_body(value)
+            ident = str((note or {}).get("noteId") or (note or {}).get("note_id") or "")
+            if ident.casefold() == wanted:
+                return value
+        return None
+    if len(note_map) == 1:
+        return next(iter(note_map.values()))
+    return None
+
+
+def _http_url(value):
+    if not isinstance(value, str):
+        return ""
+    address = unescape(value.replace("\\/", "/").replace("\\u0026", "&")).strip()
+    return address if address.startswith("http") else ""
+
+
+def xhs_note(html, note_id=""):
+    """Read one note from ``note.noteDetailMap`` without treating the bare explore URL as the fetch URL."""
+    state = _assigned_json(decode_page(html or ""), "__INITIAL_STATE__")
+    if not isinstance(state, dict):
+        return None
+    note_map = ((state.get("note") or {}).get("noteDetailMap") or {})
+    note = _note_body(_note_entry(note_map, note_id))
+    if not note:
+        return None
+    streams = []
+    backups = []
+    media = ((note.get("video") or {}).get("media") or {})
+    groups = media.get("stream") or {}
+    if isinstance(groups, dict):
+        ordered = []
+        for codec in ("h264", "h265", "av1", "h266"):
+            if codec in groups:
+                ordered.append(groups[codec])
+        for value in groups.values():
+            if value not in ordered:
+                ordered.append(value)
+        for group in ordered:
+            items = group if isinstance(group, list) else [group]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                master = _http_url(item.get("masterUrl") or item.get("master_url"))
+                if master and master not in streams:
+                    streams.append(master)
+                extras = item.get("backupUrls") or item.get("backup_urls") or []
+                if isinstance(extras, str):
+                    extras = [extras]
+                for extra in extras:
+                    address = _http_url(extra)
+                    if address and address not in backups and address not in streams:
+                        backups.append(address)
+                if len(streams) >= 12:
+                    break
+    images = []
+    for image in note.get("imageList") or []:
+        if not isinstance(image, dict) or len(images) >= 20:
+            break
+        for key in ("urlDefault", "url", "urlPre"):
+            address = _http_url(image.get(key))
+            if address and address not in images and (host_allowed(address, CDN["小红书"]) or "xhscdn" in address):
+                images.append(address)
+        for info in image.get("infoList") or []:
+            if isinstance(info, dict):
+                address = _http_url(info.get("url"))
+                if address and address not in images and (host_allowed(address, CDN["小红书"]) or "xhscdn" in address):
+                    images.append(address)
+    duration = None
+    for value in (
+        ((note.get("video") or {}).get("capa") or {}).get("duration"),
+        (((note.get("video") or {}).get("media") or {}).get("video") or {}).get("duration"),
+    ):
+        try:
+            duration = _seconds_value(float(value))
+        except (TypeError, ValueError):
+            duration = None
+        if duration:
+            break
+    user = note.get("user") or {}
+    author = ""
+    if isinstance(user, dict):
+        author = str(user.get("nickname") or user.get("nickName") or "").strip()
+    kind = str(note.get("type") or "").lower()
+    image_note = (not streams) and (kind in {"normal", "image"} or (bool(images) and kind != "video"))
+    return {
+        "note_id": str(note.get("noteId") or note.get("note_id") or note_id or ""),
+        "title": str(note.get("title") or "").strip(),
+        "author": author,
+        "body": str(note.get("desc") or note.get("description") or "").strip(),
+        "streams": streams,
+        "backups": backups,
+        "images": images,
+        "duration": duration,
+        "image_note": image_note,
+    }
+
+
+def xhs_capture_ready(html, media_urls=None, video_urls=None):
+    """A logged-in Xiaohongshu page is ready only after note data, a video element, or a media response."""
+    detail = xhs_note(html or "", "")
+    if detail and (detail["streams"] or detail["backups"] or detail["images"] or detail["body"]):
+        return True
+    for group in (media_urls, video_urls):
+        for address in group or []:
+            if isinstance(address, str) and address.startswith("http"):
+                return True
+    return False
+
+
 def rank_media_urls(urls, aweme_id=""):
     def score(url):
         lowered = url.lower()
@@ -447,6 +630,33 @@ def parse_document(url, html):
     image_note = info["platform"] == "小红书" and not video_url and (
         '"type":"normal"' in compact or '"notetype":"normal"' in compact.lower()
     ) and '"type":"video"' not in compact
+    backups = []
+    detail = xhs_note(text, note_id) if info["platform"] == "小红书" else None
+    if detail:
+        if detail.get("note_id"):
+            note_id = detail["note_id"]
+        if detail.get("title"):
+            title = detail["title"]
+        if detail.get("author"):
+            author = detail["author"]
+        if detail.get("body"):
+            body = detail["body"]
+            description = description or detail["body"]
+        if detail.get("images"):
+            images = detail["images"]
+        if detail.get("duration"):
+            duration = detail["duration"]
+        if detail.get("streams"):
+            media_urls = []
+            for address in [*detail["streams"], *(detail.get("backups") or [])]:
+                if address not in media_urls:
+                    media_urls.append(address)
+            video_url = media_urls[0]
+            backups = list(detail.get("backups") or [])
+        image_note = bool(detail.get("image_note"))
+        if image_note and not detail.get("streams"):
+            video_url = ""
+            media_urls = []
     canonical = ""
     if info["platform"] == "抖音" and (video_id or aweme_id):
         canonical = f"https://www.douyin.com/video/{video_id or aweme_id}"
@@ -459,9 +669,9 @@ def parse_document(url, html):
         "url": url, "platform": info["platform"], "source_kind": info["source_kind"], "kind": info["kind"],
         "form": info["form"], "video_id": video_id, "aweme_id": aweme_id or video_id, "note_id": note_id,
         "title": title.strip(), "author": author.strip(), "description": description.strip(), "body": body.strip(),
-        "images": images, "video_url": video_url, "media_urls": media_urls,
+        "images": images, "video_url": video_url, "media_urls": media_urls, "backup_urls": backups,
         "duration": duration, "audio_url": audio_url, "image_note": image_note, "canonical_url": canonical,
-        "login_wall": login_wall,
+        "original_url": url, "resolved_fetch_url": url, "login_wall": login_wall,
     }
 
 
@@ -554,9 +764,24 @@ def resolve(url, fetch=None):
     parsed["url"] = final
     parsed["html"] = body
     parsed["status"] = status
+    parsed["original_url"] = url
+    fetch = final
+    if parsed.get("platform") == "小红书":
+        requested = urlsplit(url)
+        landed = urlsplit(final)
+        # A share query that actually opened the note must not be replaced by a bare explore URL.
+        if requested.query and XHS_ID.search(requested.path or "") and not landed.query:
+            fetch = url
+        elif landed.query:
+            fetch = final
+        elif requested.query:
+            fetch = url
+    parsed["resolved_fetch_url"] = fetch
     if not parsed.get("canonical_url"):
         parsed["canonical_url"] = "" if classify(final)["kind"] == "short" else final
     if parsed.get("canonical_url"):
         remember(url, parsed["canonical_url"])
         remember(final, parsed["canonical_url"])
+        if fetch and fetch not in {url, final}:
+            remember(fetch, parsed["canonical_url"])
     return parsed

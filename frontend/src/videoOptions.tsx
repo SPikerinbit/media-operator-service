@@ -235,7 +235,7 @@ export function Inspector({ options, change, settings, row, rowLabel, perItem, o
   defaultsOnly?: boolean
   terminal?: WorkflowStage
   batchExecution?: {concurrency: number; onChange: (value: number) => void}
-  only?: 'style' | 'publish'
+  only?: InspectorSection
 }) {
   const id = useId()
   const body = useRef<HTMLDivElement>(null)

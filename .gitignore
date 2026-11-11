@@ -38,3 +38,8 @@ Thumbs.db
 frontend/node_modules/
 app/static/desktop-ui/
 .taste-skill/
+
+# Blender editor backups and simulation scratch (editable .blend files stay tracked)
+*.blend1
+*.blend2
+waveletNoiseTile.bin

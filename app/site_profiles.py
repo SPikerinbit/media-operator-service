@@ -410,14 +410,18 @@ def capture(url):
                     const text = node.textContent || '';
                     if (node.id === 'RENDER_DATA' || /playAddr|play_addr|playApi|aweme_id|awemeId|RENDER_DATA/.test(text))
                       parts.push(text.slice(0, 200000));
+                    else if (/__INITIAL_STATE__|noteDetailMap/.test(text))
+                      parts.push(text.slice(0, 400000));
                   }
                   const video = document.querySelector('video');
+                  const videos = [...document.querySelectorAll('video')].map((node) => node.currentSrc || node.src || '').filter(Boolean).slice(0, 8);
                   const entries = performance.getEntriesByType('resource').map((entry) => entry.name);
-                  const videoEntries = entries.filter((name) => /douyinvod|\.mp4|aweme\/v1\/play|mime_type=video|playApi/i.test(name));
+                  const videoEntries = entries.filter((name) => /douyinvod|\.mp4|aweme\/v1\/play|mime_type=video|playApi|xhscdn|sns-video/i.test(name));
                   const audioEntries = entries.filter((name) => /mime_type=audio|\.m4a|audio_mp4|media-audio/i.test(name));
                   return {
                     text: parts.join('\n'),
                     src: video ? (video.currentSrc || video.src || '') : '',
+                    videos: videos,
                     duration: video && isFinite(video.duration) ? video.duration : 0,
                     entries: videoEntries.slice(-30),
                     audio: audioEntries.slice(-10)
@@ -457,6 +461,21 @@ def capture(url):
                 if not isinstance(payload, dict):
                     payload = {"text": str(payload or "")}
                 text = payload.get("text") or ""
+                if key == "xiaohongshu":
+                    from app.sites.resolve import xhs_capture_ready
+                    videos = []
+                    for item in [payload.get("src"), *(payload.get("videos") or [])]:
+                        if isinstance(item, str) and item.startswith("http") and item not in videos:
+                            videos.append(item)
+                    sniffed = list(media_urls)
+                    for item in payload.get("entries") or []:
+                        if isinstance(item, str) and item.startswith("http") and item not in sniffed:
+                            sniffed.append(item)
+                    if xhs_capture_ready(text, sniffed, videos) or time.monotonic() - started >= 20:
+                        finish(text, [*videos, *sniffed], payload.get("duration") or None)
+                        return
+                    threading.Thread(target=lambda: (time.sleep(0.8), schedule()), daemon=True).start()
+                    return
                 if key != "douyin":
                     finish(text, media_urls, None)
                     return

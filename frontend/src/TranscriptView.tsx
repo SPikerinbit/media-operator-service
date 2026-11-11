@@ -5,16 +5,24 @@ import { parseSrt } from './srt'
 import { transcriptSource, useSourceTitles } from './sourceTitles'
 import { Button, Busy, Feedback, Field, Select, useActions } from './ui'
 
-export function TranscriptView({ id, settings, translationUrl, onSettings }: {
+export function TranscriptView({ id, settings, translationUrl, onSettings, variant = 'stack', highlightCard = null, onActivateCard, onVisibleCards, onReady }: {
   id: number
   settings: Settings | null
   translationUrl?: string
   onSettings: (section: 'deepseek' | 'obsidian') => void
+  variant?: 'stack' | 'desk'
+  highlightCard?: number | null
+  onActivateCard?: (card: { id: number; refs: number[] }) => void
+  onVisibleCards?: (cards: { id: number; refs: number[] }[]) => void
+  onReady?: (api: { locate: (cue: number) => void }) => void
 }) {
   const [state, session] = useDraftSession(id)
   const { doc, edits, saves, selected, expanded, results, busy, activeCue, mode } = state
   const [filter, setFilter] = useState('')
-  const [writeAfter, setWriteAfter] = useState(false)
+  const [cueQuery, setCueQuery] = useState('')
+  const [slipPage, setSlipPage] = useState(0)
+  const readyRef = useRef(onReady)
+  readyRef.current = onReady
   const [translations, setTranslations] = useState<Map<number, string>>(new Map())
   const player = useRef<HTMLMediaElement>(null)
   const sourceBody = useRef<HTMLOListElement>(null)
@@ -58,15 +66,6 @@ export function TranscriptView({ id, settings, translationUrl, onSettings }: {
       const response = await request<{ added: number }>(path + '/generate', 'POST', { send_subtitles: true, mode })
       await session.refresh()
       setNotice({ text: response.added ? '新增 ' + response.added + ' 条观点' : '没有新增观点，已有内容已保留' })
-      if (writeAfter) {
-        if (!settings?.obsidian_vault) { onSettings('obsidian'); return }
-        const ids = session.get().doc?.cards.map((card) => card.id) || []
-        if (ids.length) {
-          session.update({ busy: 'publish' })
-          await publishIds(ids)
-          setNotice({ text: '观点已写入 Obsidian' })
-        }
-      }
     } finally { session.update({ busy: '' }) }
   }
   async function publish(ids: number[], newVersion = false) {
@@ -77,6 +76,16 @@ export function TranscriptView({ id, settings, translationUrl, onSettings }: {
       setNotice({ text: '已写入 Obsidian' })
     } finally { session.update({ busy: '' }) }
   }
+
+  useEffect(() => {
+    if (!doc || variant !== 'desk') return
+    const cards = doc.cards.filter(card => {
+      const value = edits[card.id] || card
+      return [value.claim, value.quote_translation, value.evidence, value.example].join(' ').toLocaleLowerCase().includes(filter.toLocaleLowerCase())
+    }).slice(slipPage * 8, slipPage * 8 + 8)
+    onVisibleCards?.(cards.map(card => ({ id: card.id, refs: card.refs })))
+  }, [doc, edits, filter, slipPage, variant, onVisibleCards])
+  useEffect(() => { if (doc) readyRef.current?.({ locate }) }, [doc])
 
   if (state.loading) return <Busy>正在载入笔记</Busy>
   if (!doc) return <div><Feedback notice={{ text: state.error, error: true }}/>
@@ -92,10 +101,61 @@ export function TranscriptView({ id, settings, translationUrl, onSettings }: {
       .join(' ').toLocaleLowerCase().includes(filter.toLocaleLowerCase())
   })
   const chosen = selected.length ? selected : doc.cards.map((card) => card.id)
+  const slipCards = visibleCards.slice(slipPage * 8, slipPage * 8 + 8)
   const editField = (value: Draft, key: 'claim' | 'quote_translation' | 'evidence' | 'example', label: string) =>
     <Field label={label}><textarea rows={key === 'claim' ? 2 : 3} value={value[key] || ''} disabled={busy === 'publish'}
       maxLength={key === 'claim' ? 4000 : 6000} onChange={(event) => session.edit({ ...value, [key]: event.target.value })}/></Field>
-
+  if (variant === 'desk') {
+    const shownCues = doc.cues.filter(cue => !cueQuery || (cue.text + ' ' + (translations.get(cue.number) || '')).toLocaleLowerCase().includes(cueQuery.toLocaleLowerCase()))
+    const pages = Math.max(1, Math.ceil(visibleCards.length / 8))
+    return <div className="note-desk">
+      <div className="note-slips">
+        <div className="note-actions">
+          <Button variant="secondary" disabled={Boolean(busy)} onClick={() => perform(generate)}>{busy === 'generate' ? '正在提取' : '提取观点'}</Button>
+        </div>
+        <input type="search" aria-label="筛选观点" placeholder="搜索观点" value={filter} onChange={event => { setFilter(event.target.value); setSlipPage(0) }} />
+        {slipCards.map(card => {
+          const value = edits[card.id] || card
+          const open = expanded === card.id
+          return <article key={card.id} className={'viewpoint-slip' + (highlightCard === card.id ? ' is-linked' : '')} data-slip-id={card.id}>
+            <button type="button" className="slip-body" onClick={() => onActivateCard?.({ id: card.id, refs: card.refs })}><strong>{value.claim}</strong></button>
+            <Button variant="secondary" size="small" onClick={() => session.update({ expanded: open ? null : card.id })}>{open ? '收起' : '编辑'}</Button>
+            {open && <div className="draft-editor">{editField(value, 'claim', '主题')}{editField(value, 'quote_translation', '译文')}{editField(value, 'evidence', '说明')}{editField(value, 'example', '例子')}</div>}
+          </article>
+        })}
+        {!visibleCards.length && <p className="slip-empty">还没有观点。</p>}
+        {pages > 1 && <div className="slip-pages"><button type="button" disabled={slipPage === 0} onClick={() => setSlipPage(page => page - 1)}>上一组</button><span>{slipPage + 1} / {pages}</span><button type="button" disabled={slipPage >= pages - 1} onClick={() => setSlipPage(page => page + 1)}>下一组</button></div>}
+      </div>
+      <div className="note-read">
+        <div className="note-actions">
+          <Button variant="secondary" disabled={!doc.cards.length || Boolean(busy)} onClick={() => perform(() => publish(chosen))}>{busy === 'publish' ? '正在写入' : '写入 Obsidian'}</Button>
+          {!note && <Button variant="secondary" onClick={() => perform(async () => { await saveAs(doc.title + '.srt', { format: 'srt', transcript_id: id }) })}>导出字幕</Button>}
+          <Button variant="secondary" onClick={() => perform(async () => { await saveAs(doc.title + '.md', { format: 'markdown', transcript_id: id }) })}>导出 Markdown</Button>
+        </div>
+        <Feedback notice={notice}/>
+        <input type="search" aria-label="搜索字幕" placeholder="搜索原文或译文" value={cueQuery} onChange={event => setCueQuery(event.target.value)} />
+        {doc.playable && !note && <Player ref={(node) => { player.current = node }} className={Player === 'audio' ? 'note-audio' : 'note-player'}
+          controls preload="metadata" src={path + '/media'}
+          onLoadedMetadata={() => { if (player.current) player.current.currentTime = session.scroll.playback }}
+          onTimeUpdate={() => {
+            if (!player.current) return
+            session.scroll.playback = player.current.currentTime
+            const ms = session.scroll.playback * 1000
+            const current = doc.cues.find((entry) => entry.start_ms <= ms && entry.end_ms > ms)
+            if (current && current.number !== activeCue) locate(current.number, false)
+          }}/>}
+        {pictures.length > 0 && <div className="note-images">{pictures.map((src) => <img key={src} src={src} alt=""/>)}</div>}
+        {prose && !doc.cues.length && <p className="note-prose">{prose}</p>}
+        <ol className="note-cues" ref={sourceBody}>
+          {shownCues.map(cue => <li key={cue.number}><button type="button" className="sentence" aria-pressed={activeCue === cue.number} onClick={() => locate(cue.number)} ref={node => { if (node) cueNodes.current.set(cue.number, node); else cueNodes.current.delete(cue.number) }}>
+            <time>{note ? '段落 ' + cue.number : timestamp(cue.start_ms)}</time>
+            <span>{cue.text}</span>
+            {translations.get(cue.number) && <span className="sentence-translation">{translations.get(cue.number)}</span>}
+          </button></li>)}
+        </ol>
+      </div>
+    </div>
+  }
   return <div className="note-work">
     <div className="note-chrome">
       <h2>{identity ? titles.label(identity) : doc.title}</h2>
@@ -105,8 +165,7 @@ export function TranscriptView({ id, settings, translationUrl, onSettings }: {
         <Button variant="secondary" disabled={Boolean(busy)} onClick={() => perform(generate)}>{busy === 'generate' ? '正在提取' : '提取观点'}</Button>
         <Button variant="secondary" disabled={!doc.cards.length || Boolean(busy)} onClick={() => perform(() => publish(chosen))}>
           {busy === 'publish' ? '正在写入' : '写入 Obsidian'}</Button>
-        {settings?.obsidian_vault && <label className="check"><input type="checkbox" checked={writeAfter} onChange={(event) => setWriteAfter(event.target.checked)}/>生成后写入 Obsidian</label>}
-        <Button variant="secondary" onClick={() => perform(async () => { await saveAs(doc.title + '.srt', { format: 'srt', transcript_id: id }) })}>导出字幕</Button>
+        {!note&&<Button variant="secondary" onClick={() => perform(async () => { await saveAs(doc.title + '.srt', { format: 'srt', transcript_id: id }) })}>导出字幕</Button>}
         <Button variant="secondary" onClick={() => perform(async () => { await saveAs(doc.title + '.md', { format: 'markdown', transcript_id: id }) })}>导出 Markdown</Button>
       </div>
       <Feedback notice={notice}/>
@@ -124,11 +183,11 @@ export function TranscriptView({ id, settings, translationUrl, onSettings }: {
           if (current && current.number !== activeCue) locate(current.number, false)
         }}/>}
       {pictures.length > 0 && <div className="note-images">{pictures.map((src) => <img key={src} src={src} alt=""/>)}</div>}
-      {prose && <p className="note-prose">{prose}</p>}
-      {!note && <ol className="note-cues" ref={sourceBody}>
+      {prose && !doc.cues.length && <p className="note-prose">{prose}</p>}
+      {<ol className="note-cues" ref={sourceBody}>
         {doc.cues.map((cue) => <li key={cue.number}><button type="button" className="sentence" aria-pressed={activeCue === cue.number}
           onClick={() => locate(cue.number)} ref={(node) => { if (node) cueNodes.current.set(cue.number, node); else cueNodes.current.delete(cue.number) }}>
-          <time>{timestamp(cue.start_ms)}</time>
+          <time>{note?'段落 '+cue.number:timestamp(cue.start_ms)}</time>
           <span>{cue.text}</span>
           {translations.get(cue.number) && <span className="sentence-translation">{translations.get(cue.number)}</span>}
         </button></li>)}
@@ -150,7 +209,7 @@ export function TranscriptView({ id, settings, translationUrl, onSettings }: {
             {value.quote_translation && <p className="viewpoint-translation">{value.quote_translation}</p>}
             <div className="viewpoint-evidence">
               {card.refs.map((ref) => { const cue = cues.get(ref); return cue && <button type="button" key={ref} onClick={() => locate(ref)}>
-                <time>{timestamp(cue.start_ms)}</time><span>{cue.text}</span></button> })}
+                <time>{note?'段落 '+cue.number:timestamp(cue.start_ms)}</time><span>{cue.text}</span></button> })}
             </div>
             {open && <div className="draft-editor">{editField(value, 'claim', '主题')}{editField(value, 'quote_translation', '译文')}
               {editField(value, 'evidence', '说明')}{editField(value, 'example', '例子')}</div>}

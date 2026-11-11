@@ -289,18 +289,57 @@ def note_info(url, resolved):
         "author": resolved.get("author") or "", "platform": site(url)[0], "media_type": "note",
         "has_audio": False, "audio_direct": False, "duration": None,
         "images": list(resolved.get("images") or []), "canonical_url": resolved.get("canonical_url") or "",
+        "resolved_fetch_url": resolved.get("resolved_fetch_url") or url,
+        "original_url": resolved.get("original_url") or url,
     }
+
+
+def refresh_reason(error):
+    """Why a later retry may refresh the fetch URL: login, network, signature_expired, or no_media."""
+    code = getattr(error, "code", "") or ""
+    text = str(error or "")
+    lowered = text.lower()
+    if code in {"session_required", "site_blocked"} or "登录" in text or "login" in lowered:
+        return "login"
+    if code == "signature_expired" or "签名" in text or "xsec" in lowered or "signature" in lowered:
+        return "signature_expired"
+    if code == "unavailable" or any(word in lowered for word in ("timeout", "timed out", "proxy", "connection", "unreachable")) or any(
+        word in text for word in ("网络", "超时", "代理")
+    ):
+        return "network"
+    if code in {"no_stream", "note_only"} or "没有可读取" in text or "未找到" in text or "没有找到" in text:
+        return "no_media"
+    return ""
+
+
+def download_page_url(request, info):
+    """Page URL passed to the downloader. Identity/canonical is not a fetch URL."""
+    info = info or {}
+    fetch = info.get("resolved_fetch_url") or ""
+    label = site(getattr(request, "source_value", "") or "")[0]
+    if label == "小红书":
+        return fetch or request.source_value
+    if fetch:
+        return fetch
+    return info.get("canonical_url") or request.source_value
 
 
 def ytdlp_target(url, resolved):
     from app.sites.resolve import classify
 
-    canonical = (resolved or {}).get("canonical_url") or ""
-    if site(url)[0] == "抖音" and classify(url).get("kind") == "short":
+    resolved = resolved or {}
+    canonical = resolved.get("canonical_url") or ""
+    fetch = resolved.get("resolved_fetch_url") or ""
+    label = site(url)[0]
+    if label == "抖音" and classify(url).get("kind") == "short":
         if canonical and "/video/" in urlsplit(canonical).path:
             return canonical
+        if fetch and "/video/" in urlsplit(fetch).path:
+            return fetch
         return ""
-    return canonical or url
+    if label == "小红书":
+        return fetch or url
+    return fetch or canonical or url
 
 
 def duration_matches(actual, expected):
@@ -393,15 +432,33 @@ def prepare_social(url, cookies):
             public_target(canonical, media.online_media_proxy(canonical))
         except ValueError:
             canonical = ""
+            resolved["canonical_url"] = ""
     if canonical:
         resolve.remember(url, canonical)
         resolve.remember(canonical, canonical)
-    else:
+    elif label != "小红书":
         resolved["canonical_url"] = ""
         canonical = "" if label == "抖音" and resolve.classify(url).get("kind") == "short" else url
+    fetch = resolved.get("resolved_fetch_url") or resolved.get("url") or url
+    if label == "抖音" and resolve.classify(url).get("kind") == "short":
+        fetch = canonical if canonical and "/video/" in urlsplit(canonical).path else ""
+        resolved["resolved_fetch_url"] = fetch
+        target = fetch or url
+    elif label == "小红书":
+        candidates = [resolved.get("resolved_fetch_url") or "", resolved.get("url") or "", url]
+        with_query = [item for item in candidates if item and urlsplit(item).query]
+        fetch = with_query[0] if with_query else (next((item for item in candidates if item), url))
+        resolved["resolved_fetch_url"] = fetch
+        resolved["original_url"] = resolved.get("original_url") or url
+        if canonical and fetch:
+            resolve.remember(fetch, canonical)
+        target = fetch
+    else:
+        resolved["resolved_fetch_url"] = fetch
+        target = fetch or canonical or url
     if resolved.get("login_wall") and not cookies:
         raise SourceError("session_required", f"尚未登录{label}。请在设置中登录{label}后重试。")
-    return canonical or url, resolved
+    return target, resolved
 
 
 def apply_resolved(info, resolved):
@@ -415,6 +472,9 @@ def apply_resolved(info, resolved):
         info["description"] = resolved["description"]
     if resolved.get("canonical_url"):
         info["canonical_url"] = resolved["canonical_url"]
+    for key in ("resolved_fetch_url", "original_url"):
+        if resolved.get(key):
+            info[key] = resolved[key]
     if resolved.get("body"):
         info["body"] = resolved["body"]
     return info
@@ -539,8 +599,23 @@ def inspect_online(url, cookies):
             "play_urls": resolved["play_urls"], "page_fallback": True,
             "canonical_url": resolved.get("canonical_url") or "", "page_notes": resolved.get("page_notes"),
             "share_duration": resolved.get("share_duration"),
+            "resolved_fetch_url": resolved.get("resolved_fetch_url") or url,
+            "original_url": resolved.get("original_url") or url,
         }
         return info
+    if site(url)[0] == "小红书" and resolved.get("image_note") and not resolved.get("play_urls"):
+        return note_info(url, resolved)
+    if site(url)[0] == "小红书" and resolved.get("play_urls"):
+        return apply_resolved({
+            "title": resolved.get("title"), "description": resolved.get("description"),
+            "platform": "小红书", "media_type": "video", "audio_direct": False, "has_audio": True,
+            "duration": resolved.get("duration"), "media_url": resolved.get("video_url") or resolved["play_urls"][0],
+            "play_urls": resolved["play_urls"], "backup_urls": list(resolved.get("backup_urls") or []),
+            "page_fallback": True, "canonical_url": resolved.get("canonical_url") or "",
+            "resolved_fetch_url": resolved.get("resolved_fetch_url") or url,
+            "original_url": resolved.get("original_url") or url,
+            "page_notes": resolved.get("page_notes"),
+        }, resolved)
     play = ytdlp_target(url, resolved)
     try:
         if not play:
@@ -847,11 +922,16 @@ def download(job_id, request, info, cookies, progress):
         return save_note(folder, info, progress)
     if site(request.source_value)[0] == "抖音":
         return download_douyin(job_id, request, info, cookies, progress)
-    if info.get("page_fallback") and info.get("media_url"):
-        path = download_direct(info["media_url"], folder, cookies, progress, referer_for(info.get("canonical_url") or request.source_value))
-        actual = inspect_file(path)
-        return path, info, actual
-    url = info.get("canonical_url") or request.source_value
+    if info.get("page_fallback") and (info.get("play_urls") or info.get("media_url")):
+        addresses = [item for item in (info.get("play_urls") or []) if item]
+        if info.get("media_url") and info["media_url"] not in addresses:
+            addresses.insert(0, info["media_url"])
+        referer = referer_for(info.get("resolved_fetch_url") or info.get("canonical_url") or request.source_value)
+        if len(addresses) == 1:
+            path = download_direct(addresses[0], folder, cookies, progress, referer)
+            return path, info, inspect_file(path)
+        return download_candidates(addresses, folder, cookies, progress, referer, None, request, info)
+    url = download_page_url(request, info)
     try:
         public_target(url, media.online_media_proxy(url))
     except ValueError:

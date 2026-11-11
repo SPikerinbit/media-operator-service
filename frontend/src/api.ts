@@ -63,10 +63,10 @@ export type Item = {
   log_tail?: string[]
   error?: { message: string }
   stage_details?: Record<string, { status: Status; progress: number; message: string }>
-  result?: { title?: string; bvid?: string; aid?: number; final_video_url?: string; english_srt_url?: string; translated_srt_url?: string;
+  result?: { title?: string; bvid?: string; aid?: number; final_video_url?: string; final_video_path?: string; english_srt_url?: string; translated_srt_url?: string;
     bilingual_srt_url?: string; transcript_id?: number; bilibili_url?: string; bilibili_metadata?: PostingMetadata;
-    cover_asset_url?: string; cover_source?: string; cover_mode?: string; burn_encoder?: 'cpu' | 'nvenc';
-    source_media_url?: string; source_video_url?: string; asset_type?: 'audio' | 'video'; original_description?: string }
+    cover?: string; upload_title?: string; cover_asset_url?: string; cover_source?: string; cover_mode?: string; burn_encoder?: 'cpu' | 'nvenc';
+    source_media_url?: string; source_video_url?: string; asset_type?: 'audio' | 'video'; original_description?: string; refresh_reason?: string }
 }
 type LegacyWorkflow = { subtitle_output_mode?: string; bilibili_upload?: {enabled?: boolean} }
 export type Batch = { batch_id: string; status: Status; queued: number; running: number; items: Item[];
@@ -100,6 +100,8 @@ export type Publication = {
   card_id: number; title?: string; status: 'published' | 'already_published' | 'failed';
   publication_id?: string; cleared?: boolean; message?: string;
 }
+export type EntryLog = { offset: number; limit: number; total: number; lines: string[] }
+export type RemovalRow = { id: string; ok: boolean; kept?: boolean; status?: string; message?: string; cancelled?: number; undo_until?: number }
 
 type NativeBridge = {
   choose_media(multiple?: boolean): Promise<string[]>

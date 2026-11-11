@@ -249,6 +249,11 @@ def parse_sources(request: ShareText):
     return {"items": share_text.parse(request.text)}
 
 
+@router.post("/sources/classify")
+def classify_sources(request: ShareText):
+    return {"items": share_text.classify_letters(request.text)}
+
+
 @router.get("/sites")
 def site_status():
     return site_profiles.status_all()

@@ -62,5 +62,5 @@ def complete(batch_id, item_id, result, settings, run):
             progress(0, '正在提取观点')
             count = knowledge.generate_cards(transcript_id, media.TRANSLATE_API_KEY, model, mode, progress=progress)
             result['note_notice'] = f'已生成 {count} 条观点' if count else '未找到值得摘录的观点'
-            cache.save(signature, 'extract', 'notes', {'transcript_id': transcript_id, 'count': count})
+            cache.save(signature, 'extract', 'notes', {'transcript_id': transcript_id, 'count': count}, transcript.get('source') or '')
     progress(100, result['note_notice'])

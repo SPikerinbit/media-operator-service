@@ -1,114 +1,46 @@
-import { BookOpen, Clapperboard, Settings2 } from 'lucide-react'
+import { Home, Settings2 } from 'lucide-react'
 import { MotionConfig } from 'motion/react'
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { errorMessage, request, type Settings as Preferences } from './api'
-import type { NoteHandoff, VideoTransfer } from './inbox'
-import { Knowledge } from './Knowledge'
 import { Settings, type SettingsSection } from './Settings'
-import { Video } from './Video'
+import { WorkbenchHome } from './WorkbenchHome'
+import { WorkbenchQueue } from './WorkbenchQueue'
+import { useInbox } from './workbenchState'
 import './styles.css'
 import './studio.css'
+import './workbench.css'
 
-const navigation = [
-  { id: 'publish', label: '投稿', icon: Clapperboard },
-  { id: 'notes', label: '笔记', icon: BookOpen },
-  { id: 'settings', label: '设置', icon: Settings2 },
-] as const
-type View = typeof navigation[number]['id']
-
-function viewFrom(hash: string): View {
-  if (hash === 'video' || hash === 'publish') return 'publish'
-  if (hash === 'knowledge' || hash === 'notes') return 'notes'
-  if (hash === 'settings') return 'settings'
-  return 'publish'
+type View='home'|'publish'|'notes'|'settings'
+const navigation=[{id:'home',label:'信箱'},{id:'publish',label:'投稿'},{id:'notes',label:'笔记'},{id:'settings',label:'设置'}] as const
+function fromHash():View {const value=location.hash.slice(1).split('/')[0];return value==='video'?'publish':value==='knowledge'?'notes':['home','publish','notes','settings'].includes(value)?value as View:'home'}
+function App(){
+  const [view,setView]=useState<View>(fromHash);const [visited,setVisited]=useState<View[]>(['home',fromHash()])
+  const [settings,setSettings]=useState<Preferences|null>(null);const [error,setError]=useState('')
+  const [settingsFocus,setSettingsFocus]=useState<SettingsSection>('general');const inbox=useInbox()
+  useEffect(()=>{
+    const forced=matchMedia('(forced-colors: active)')
+    const sync=()=>void window.pywebview?.api?.set_window_theme?.(false,forced.matches)?.catch(()=>{})
+    sync();window.addEventListener('pywebviewready',sync);forced.addEventListener('change',sync)
+    return()=>{window.removeEventListener('pywebviewready',sync);forced.removeEventListener('change',sync)}
+  },[])
+  useEffect(()=>{void request<Preferences>('/desktop/settings').then(setSettings).catch(e=>setError(errorMessage(e)))},[])
+  useEffect(()=>{const change=()=>show(fromHash());window.addEventListener('hashchange',change);return()=>window.removeEventListener('hashchange',change)},[])
+  function show(next:View){setView(next);setVisited(v=>v.includes(next)?v:[...v,next]);history.replaceState(null,'','#'+next)}
+  function openSettings(section:SettingsSection){setSettingsFocus(section);show('settings')}
+  return <MotionConfig reducedMotion="user"><a className="skip-link" href="#workspace">跳到工作区</a><div className="shell workbench-shell">
+    <aside className="sidebar"><div className="workbench-brand" title="Media Operator">M<span>O</span></div><nav aria-label="工作台">{navigation.map(({id,label})=>{
+      const count=inbox.data.entries.filter(e=>e.lane===id&&['ready','running','queued','blocked','failed','identifying','starting'].includes(e.status)).length
+      return <button type="button" className="nav-item" key={id} aria-label={label} aria-current={view===id?'page':undefined} onClick={()=>show(id)}>
+        {id==='home'?<Home size={20} aria-hidden="true"/>:id==='settings'?<Settings2 size={20} aria-hidden="true"/>:<span className="sidebar-mail-slot" data-mail-slot={id} aria-hidden="true"><i/></span>}
+        <span>{label}</span>{count>0&&<small className="nav-count">{count}</small>}</button>
+    })}</nav><small className="sidebar-version">0.5.0</small></aside>
+    <main id="workspace" className="workspace" data-view={view} tabIndex={-1}><div className="workspace-content">
+      {(error||inbox.error)&&<div className="notice error" role="alert">{error||inbox.error}<button type="button" onClick={()=>void inbox.refresh()}>重新连接</button></div>}
+      <div className="home-view" hidden={view!=='home'}><WorkbenchHome data={inbox.data} active={view==='home'} onOpen={show}/></div>
+      {(['publish','notes'] as const).map(lane=>visited.includes(lane)&&<div className="lane-view" key={lane} hidden={view!==lane}><WorkbenchQueue lane={lane} data={inbox.data} settings={settings} active={view===lane} onHome={()=>show('home')} onSettings={openSettings} refresh={inbox.refresh}/></div>)}
+      {visited.includes('settings')&&<div className="settings-view" hidden={view!=='settings'}><Settings current={settings} update={setSettings} focus={settingsFocus}/></div>}
+    </div></main>
+  </div></MotionConfig>
 }
-
-const initial = window.location.hash.slice(1).split('/')
-const initialView = viewFrom(initial[0] || '')
-
-function App() {
-  const [view, setView] = useState<View>(initialView)
-  const [settings, setSettings] = useState<Preferences | null>(null)
-  const [error, setError] = useState('')
-  const [settingsFocus, setSettingsFocus] = useState<SettingsSection>('general')
-  const [transcript, setTranscript] = useState<number | null>(initialView === 'notes' && /^\d+$/.test(initial[1] || '') ? Number(initial[1]) : null)
-  const [transfer, setTransfer] = useState<VideoTransfer | null>(null)
-  const [noteHandoff, setNoteHandoff] = useState<NoteHandoff | null>(null)
-  const [activity, setActivity] = useState({ publish: '', notes: '' })
-  const [visited, setVisited] = useState<View[]>(['publish', initialView])
-  const setPublishActivity = useCallback((line: string) => setActivity((current) => current.publish === line ? current : { ...current, publish: line }), [])
-  const setNotesActivity = useCallback((line: string) => setActivity((current) => current.notes === line ? current : { ...current, notes: line }), [])
-  const clearTransfer = useCallback(() => setTransfer(null), [])
-  const clearHandoff = useCallback(() => setNoteHandoff(null), [])
-
-  useEffect(() => {
-    const dark = window.matchMedia('(prefers-color-scheme: dark)')
-    const forcedColors = window.matchMedia('(forced-colors: active)')
-    const syncTitle = () => {
-      void window.pywebview?.api?.set_window_theme?.(dark.matches, forcedColors.matches)?.catch(() => {})
-    }
-    syncTitle()
-    window.addEventListener('pywebviewready', syncTitle)
-    dark.addEventListener('change', syncTitle)
-    forcedColors.addEventListener('change', syncTitle)
-    return () => {
-      window.removeEventListener('pywebviewready', syncTitle)
-      dark.removeEventListener('change', syncTitle)
-      forcedColors.removeEventListener('change', syncTitle)
-    }
-  }, [])
-
-  useEffect(() => {
-    let active = true
-    void request<Preferences>('/desktop/settings').then((data) => { if (active) setSettings(data) })
-      .catch((reason) => { if (active) setError(errorMessage(reason)) })
-    return () => { active = false }
-  }, [])
-
-  function show(next: View) {
-    setView(next)
-    setVisited((values) => values.includes(next) ? values : [...values, next])
-    window.history.replaceState(null, '', '#' + next)
-  }
-  function openSettings(section: SettingsSection) {
-    setSettingsFocus(section)
-    show('settings')
-  }
-  const progress = view === 'publish' ? activity.publish : view === 'notes' ? activity.notes : ''
-
-  return <MotionConfig reducedMotion="user">
-    <a className="skip-link" href="#workspace">跳到工作区</a>
-    <div className="shell">
-      <aside className="sidebar">
-        <nav aria-label="工作台">
-          {navigation.map(({ id, label, icon: Icon }) => <button type="button" key={id} className="nav-item"
-            aria-label={label} aria-current={view === id ? 'page' : undefined} onClick={() => show(id)}>
-            <Icon aria-hidden="true" size={18}/><span>{label}</span>
-          </button>)}
-        </nav>
-        <p className="sidebar-progress" role="status">{progress}</p>
-      </aside>
-      <main className="workspace thin-scroll" id="workspace" data-view={view} tabIndex={-1}>
-        {error && <div className="notice error" role="alert">{error}</div>}
-        <div className="workspace-content">
-          <div className="publish-view" hidden={view !== 'publish'}>
-            <Video settings={settings} transfer={transfer} onTransferUsed={clearTransfer} active={view === 'publish'}
-              onActivity={setPublishActivity} onSettings={openSettings}
-              onOpenNote={(note) => { setNoteHandoff(note); if (note.transcriptId) setTranscript(note.transcriptId); show('notes') }}/>
-          </div>
-          {visited.includes('notes') && <div className="notes-view" hidden={view !== 'notes'}>
-            <Knowledge settings={settings} transcriptId={transcript} incoming={noteHandoff} onIncomingUsed={clearHandoff}
-              active={view === 'notes'} onActivity={setNotesActivity} onSettings={openSettings}
-              onVideo={(value) => { setTransfer(value); show('publish') }}/>
-          </div>}
-          {visited.includes('settings') && <div className="settings-view" hidden={view !== 'settings'}>
-            <Settings current={settings} update={setSettings} focus={settingsFocus}/>
-          </div>}
-        </div>
-      </main>
-    </div>
-  </MotionConfig>
-}
-
-createRoot(document.getElementById('root')!).render(<App/>)
+createRoot(document.getElementById('root')!).render(<App/> )

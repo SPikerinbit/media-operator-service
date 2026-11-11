@@ -6,7 +6,7 @@
 @font-face { font-family: "Source Han Serif CN"; src: url("/desktop/fonts/SourceHanSerifCN-Bold.otf") format("opentype"); font-weight: 600 900; font-display: swap; }
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   font-family: "Source Han Sans CN", "Segoe UI Variable", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
   color: var(--ink);
   background: var(--page);
@@ -75,30 +75,8 @@
   --color-muted-foreground: var(--muted);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --page: #111521;
-    --surface: #1a2030;
-    --secondary: #222a3e;
-    --hover: #2a344e;
-    --chrome: #1a2133;
-    --ink: #edf2ff;
-    --muted: #b4c0d8;
-    --subtle: #a8b5cf;
-    --line: #344058;
-    --line-strong: #566585;
-    --accent: #aec3ff;
-    --primary: #3868e0;
-    --selected: #293b6b;
-    --success-bg: #203f35;
-    --success: #aff0c5;
-    --error-bg: #492f3d;
-    --error: #ffd3d7;
-    --warn-bg: #493d29;
-    --warn: #f1d7a1;
-    --shadow: 0 8px 22px rgb(0 0 0 / .17);
-    --focus: #b6c8ff;
-  }
+@media (forced-colors: active) {
+  :root { color-scheme: light dark; }
 }
 
 * { box-sizing: border-box; }

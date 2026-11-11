@@ -212,7 +212,7 @@ BurnEncoder = Literal["auto", "nvenc", "cpu"]
 SourceKind = Literal["youtube", "bilibili", "local", "url"]
 MediaType = Literal["audio", "video", "unknown", "note"]
 WorkflowStage = Literal["download", "transcribe", "translate", "burn", "bilibili_upload"]
-BatchItemStatus = Literal["queued", "running", "succeeded", "failed"]
+BatchItemStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
 BilibiliCopyright = Literal[1, 2]
 BilibiliSourceMode = Literal["original_url", "custom"]
 BilibiliCoverMode = Literal[
@@ -1114,16 +1114,19 @@ def save_batch(batch: BatchState) -> BatchState:
 
 def recompute_batch_counts(data: dict[str, Any]) -> None:
     items = data.get("items") or []
-    data["queued"] = sum(1 for item in items if item.get("status") == "queued")
-    data["running"] = sum(1 for item in items if item.get("status") == "running")
-    data["succeeded"] = sum(1 for item in items if item.get("status") == "succeeded")
-    data["failed"] = sum(1 for item in items if item.get("status") == "failed")
+    statuses = [item.get("status") for item in items]
+    data["queued"] = statuses.count("queued")
+    data["running"] = statuses.count("running")
+    data["succeeded"] = statuses.count("succeeded")
+    data["failed"] = statuses.count("failed")
     if data["running"]:
         data["status"] = "running"
     elif data["queued"]:
         data["status"] = "queued"
     elif data["failed"]:
         data["status"] = "failed"
+    elif statuses and all(item == "cancelled" for item in statuses):
+        data["status"] = "cancelled"
     else:
         data["status"] = "succeeded"
 
@@ -1156,6 +1159,8 @@ def update_batch_item(
             if item["item_id"] != item_id:
                 continue
             found = True
+            if item.get("status") == "cancelled" and status != "cancelled":
+                return batch
             if status is not None:
                 item["status"] = status
             if stage is not None:

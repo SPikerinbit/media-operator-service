@@ -34,8 +34,27 @@ def download_context(request):
     context = DOWNLOAD_CONTEXTS.get((request.operator_batch_id, request.operator_item_id))
     if context:
         return context
-    return (desktop_sources.probe(request.source_value, request.source_kind),
-            desktop_sources.cookies_for(request.source_value, ""))
+    from app import workbench_cache as cache
+    cache.initialize()
+    cookies = desktop_sources.cookies_for(request.source_value, "")
+    reused = cache.reused_probe(request.source_value)
+    if reused:
+        return reused, cookies
+    return (desktop_sources.probe(request.source_value, request.source_kind), cookies)
+
+
+def probe_source(source, *, refresh=False):
+    """Preflight and execute reuse a verified local file before opening the network."""
+    from app import workbench_cache as cache
+    cache.initialize()
+    if not refresh:
+        reused = cache.reused_probe(source.source_value)
+        if reused:
+            return with_share_duration(reused, source)
+        info = desktop_sources.probe(source.source_value, source.source_kind, source.session_id)
+    else:
+        info = desktop_sources.probe(source.source_value, source.source_kind, source.session_id, refresh=True)
+    return with_share_duration(info, source)
 
 
 def same_source(left, right):
@@ -79,6 +98,23 @@ def reusable_media(cache_key, need_video):
     return None
 
 
+def cached_transcription(source, language, model, inference):
+    if inference == 'gpu_only':return None
+    from app import workbench_cache as cache
+    cache.initialize()
+    return cache.read(cache.signature('transcribe', source, {'source_video_url':source,
+                      'language':language,'whisper_model':model,'whisper_inference_mode':inference}))
+
+
+def transcript_lane(transcript_id, fallback):
+    # Older releases stored transcript provenance in task history rather than the
+    # stage cache. Only a completed recorded artifact establishes a reuse mark.
+    for batch in stored_batches():
+        if any((item.result or {}).get('transcript_id') == transcript_id for item in batch.items):
+            return 'notes' if batch.request.get('knowledge_only') else 'publish'
+    return fallback
+
+
 def with_share_duration(info, source):
     hint = getattr(source, "expected_duration", None)
     if not hint:
@@ -96,8 +132,7 @@ def plan_batch(request):
         row_id = source.client_row_id
         info = {}
         try:
-            info = with_share_duration(
-                desktop_sources.probe(source.source_value, source.source_kind, source.session_id), source)
+            info = probe_source(source)
             media_type = info["media_type"]
             if media_type == "note":
                 if not request.knowledge_only:
@@ -134,7 +169,8 @@ def plan_batch(request):
                         raise ValueError("所选字幕与来源不匹配")
                     if inference == "gpu_only" and not previous:
                         raise ValueError("严格 GPU 模式需要重新转录，请直接添加素材")
-                if not (explicit or previous or (inference != "gpu_only" and knowledge.cached_id(cache_key))):
+                if not (explicit or previous or (inference != "gpu_only" and knowledge.cached_id(cache_key))
+                        or cached_transcription(source.source_value, settings['source_language'], model, inference)):
                     if not media.whisper_model_status(model)["available"]:
                         raise ValueError(f"请在设置中下载 Whisper {model}")
                     if inference == "gpu_only" and desktop_config.worker_environment()["WHISPER_DEVICE"] != "cuda":
@@ -225,20 +261,24 @@ def stage_result(batch_id, item_id, stage, payload, transcript_id=None):
     lane = 'notes' if batch.request.get('knowledge_only') else 'publish'
     def waiting():
         media.update_batch_item(batch_id, item_id, stage=stage, message='等待已有任务完成可共享步骤')
-    with cache.flight(key, waiting):
+    flight_key=cache.signature(stage,item.source_value,{**payload,'audio_only':False}) if stage=='download' else key
+    with cache.flight(flight_key, waiting):
         found = cache.read(key)
         if not found and stage == 'download' and payload.get('audio_only'):
             found = cache.read(cache.signature(stage, item.source_value, {**payload, 'audio_only': False}))
         if found:
             _, current = batch_item(batch_id, item_id)
             steps = current.planned_stages or list(RUNNERS)
-            progress = min(79 if batch.request.get('notes_auto') else 99, round((steps.index(stage)+1)/len(steps)*100)) if stage in steps else current.progress
+            progress = ({'download':15,'transcribe':60,'translate':80}.get(stage,current.progress) if batch.request.get('notes_auto') else
+                        min(99, round((steps.index(stage)+1)/len(steps)*100)) if stage in steps else current.progress)
             media.update_batch_item(batch_id, item_id, stage=stage, status='running', progress=max(current.progress, progress),
                                     message='已复用' + {'download':'源媒体','transcribe':'原文字幕','translate':'译文','burn':'成片'}.get(stage,stage),
                                     stage_details={**current.stage_details, stage: {'status':'succeeded','progress':100,'reused':True,'origin_lane':found['lane']}})
             return {**found['result'], 'reuse': [{'stage': stage, 'origin_lane': found['lane']}]}
         result = _stage_result_uncached(batch_id, item_id, stage, payload, transcript_id)
-        cache.save(key, stage, lane, result)
+        origin=transcript_lane(transcript_id,lane) if stage=='transcribe' and transcript_id else lane
+        cache.save(key, stage, origin, result, item.source_value)
+        if transcript_id and stage=='transcribe':result={**result,'reuse':[{'stage':stage,'origin_lane':origin}]}
         return result
 
 
@@ -349,8 +389,19 @@ def finish_note(batch_id, item_id, item, result, download_payload, transcript_id
 def run_item(batch_id, item_id):
     stage = "download"
     result = {}
+    with media.batch_lock:
+        try:
+            _, existing = batch_item(batch_id, item_id)
+        except (FileNotFoundError, ValueError):
+            return
+        if existing.status == "cancelled":
+            return
+        if existing.status == "queued":
+            media.update_batch_item(batch_id, item_id, status="running", message=existing.message or "正在处理")
     try:
         batch, item = batch_item(batch_id, item_id)
+        if item.status == "cancelled":
+            return
         settings = media.batch_item_settings(batch.request, item)
         knowledge_only = bool(batch.request.get("knowledge_only"))
         managed = item.planned_stages is not None
@@ -363,6 +414,14 @@ def run_item(batch_id, item_id):
         language = settings.get("source_language") or "auto"
         model = settings.get("whisper_model") or media.WHISPER_MODEL
         inference = settings.get("whisper_inference_mode") or media.WHISPER_INFERENCE_MODE
+        try:
+            from app import workbench_cache as cache
+            cache.remember_source(item.source_value, item.source_value, "", {
+                "title": source_title or "", "platform": item.platform or "", "media_type": item.media_type or "",
+                "language": language, "model": model, "inference": inference, "kind": item.source_kind or "",
+            }, kind=item.source_kind or "")
+        except Exception:
+            pass
         mode = settings.get("subtitle_output_mode") or "en_only"
         explicit_transcripts = batch.request.get("transcript_ids") or {}
         if inference == "gpu_only" and explicit_transcripts.get(item.client_row_id) and not previous:
@@ -371,7 +430,7 @@ def run_item(batch_id, item_id):
         transcript_id = (previous.result["transcript_id"] if previous else None) or explicit_transcripts.get(item.client_row_id) or (
             knowledge.cached_id(cache_key) if inference != "gpu_only" else None
         )
-        if not transcript_id and (not managed or "transcribe" in planned):
+        if not transcript_id and (not managed or "transcribe" in planned) and not cached_transcription(item.source_value,language,model,inference):
             stage = "transcribe"
             if not media.whisper_model_status(model)["available"]:
                 raise ValueError(f"本地 Whisper {model} 未准备好，请在「设置 → 转录与本地资源」下载后重试。")
@@ -413,7 +472,7 @@ def run_item(batch_id, item_id):
                 media.resolve_local_artifact_from_url(existing)
             except (ValueError, OSError):
                 existing = None
-        if not existing and inference != "gpu_only":
+        if not existing and inference != "gpu_only" and knowledge_only:
             reused = reusable_media(cache_key, not download_payload["audio_only"])
             if reused:
                 record, path = reused
@@ -427,6 +486,8 @@ def run_item(batch_id, item_id):
         if existing:
             result.update({key: original[key] for key in ("source_video_url", "source_media_url", "title",
                            "original_description", "asset_type", "duration", "has_audio") if key in original})
+            if transcript_id:
+                result['reuse']=[{'stage':'download','origin_lane':transcript_lane(transcript_id,'notes' if knowledge_only else 'publish')}]
             media.update_batch_item(batch_id, item_id, result={**result, "output_name": output_name},
                                     stage_details={**item.stage_details, "download": {
                                         "status": "succeeded", "progress": 100, "message": "已复用源视频",
@@ -509,8 +570,12 @@ def run_item(batch_id, item_id):
         if stage == "bilibili_upload":
             _, current = batch_item(batch_id, item_id)
             result.update(current.result or {})
+        failure = {"stage": stage, "message": message}
+        reason = desktop_sources.refresh_reason(error)
+        if reason:
+            failure["refresh_reason"] = reason
         media.update_batch_item(batch_id, item_id, status="failed", stage=stage, message=message,
-                                result=result or None, error={"stage": stage, "message": message})
+                                result=result or None, error=failure)
     finally:
         DOWNLOAD_CONTEXTS.pop((batch_id, item_id), None)
 
@@ -547,8 +612,7 @@ def submit_desktop_batch(request):
                  for row_id, plan in decisions.items()}
         contexts = {}
         for source in request.sources:
-            info = with_share_duration(
-                desktop_sources.probe(source.source_value, source.source_kind, source.session_id), source)
+            info = probe_source(source)
             contexts[source.client_row_id] = (info, desktop_sources.cookies_for(source.source_value, source.session_id))
             source.source_title = str(info.get("title") or source.source_title)[:500]
         batch = media.create_batch(request, plans)
@@ -638,6 +702,13 @@ def upload_candidates(batch_id):
 
 
 def run_history_upload(batch_id, item_id, job_id):
+    with media.batch_lock:
+        try:
+            _, item = batch_item(batch_id, item_id)
+        except (FileNotFoundError, ValueError):
+            return
+        if item.status == "cancelled":
+            return
     try:
         RUNNERS["bilibili_upload"](job_id)
     except Exception as error:
@@ -734,6 +805,32 @@ def queue_history_uploads(batch_id, item_ids, confirmed, defaults=None, use_curr
         return batch
 
 
+def cancel_queued(batch_id, item_id):
+    """Atomically cancel a queued item that has not started. Returns (ok, message)."""
+    with media.batch_lock:
+        try:
+            _, item = batch_item(batch_id, item_id)
+        except (FileNotFoundError, ValueError):
+            return False, "任务记录不可用"
+        if item.status == "cancelled":
+            return True, ""
+        if item.status != "queued":
+            if item.stage == "bilibili_upload":
+                return False, "投稿已开始，不能删除"
+            return False, "任务已开始执行，不能删除"
+        job_id = (item.stage_jobs or {}).get("bilibili_upload") or (
+            item.active_stage_job_id if item.stage == "bilibili_upload" else "")
+        if job_id:
+            try:
+                state = media.load_state(job_id)
+            except (FileNotFoundError, ValueError, OSError):
+                state = None
+            if state is not None and state.status in {"running", "succeeded"}:
+                return False, "投稿已开始，不能删除"
+        media.update_batch_item(batch_id, item_id, status="cancelled", stage="cancelled", message="已取消")
+        return True, ""
+
+
 def retry(batch_id, item_id, confirmed, session_id=""):
     with media.batch_lock:
         batch, item = batch_item(batch_id, item_id)
@@ -748,16 +845,43 @@ def retry(batch_id, item_id, confirmed, session_id=""):
             media.update_batch_item(batch_id, item_id, stage_jobs=kept, stage_details=details, result={},
                                     stage="download", progress=0, message="重新下载抖音正片")
             batch, item = batch_item(batch_id, item_id)
-        if session_id or desktop_sources.cookies_for(item.source_value, ""):
+        from app import workbench_cache as cache
+        cache.initialize()
+        if not cache.media_ready(item.source_value):
+            reason = ""
+            if isinstance(item.error, dict):
+                reason = item.error.get("refresh_reason") or desktop_sources.refresh_reason(
+                    desktop_sources.SourceError(item.error.get("code") or item.error.get("stage") or "", item.message))
+            if not reason:
+                reason = desktop_sources.refresh_reason(
+                    desktop_sources.SourceError("", item.message)) or "no_media"
             try:
-                info = desktop_sources.probe(item.source_value, item.source_kind, session_id, refresh=True)
-                DOWNLOAD_CONTEXTS[batch_id, item_id] = (
-                    info, desktop_sources.cookies_for(item.source_value, session_id),
+                info = dict(desktop_sources.probe(item.source_value, item.source_kind, session_id, refresh=True))
+                info["refresh_reason"] = reason
+                try:
+                    cookies = desktop_sources.cookies_for(item.source_value, session_id)
+                except desktop_sources.SourceError:
+                    cookies = desktop_sources.cookies_for(item.source_value, "")
+                    reason = reason or "login"
+                    info["refresh_reason"] = reason
+                DOWNLOAD_CONTEXTS[batch_id, item_id] = (info, cookies)
+                kept = dict(item.result or {})
+                kept["refresh_reason"] = reason
+                if info.get("resolved_fetch_url"):
+                    kept["resolved_fetch_url"] = info["resolved_fetch_url"]
+                media.update_batch_item(batch_id, item_id, result=kept)
+            except desktop_sources.SourceError as error:
+                kept_reason = desktop_sources.refresh_reason(error) or reason or "no_media"
+                media.update_batch_item(
+                    batch_id, item_id,
+                    error={"stage": item.stage, "message": str(error), "refresh_reason": kept_reason},
                 )
+                raise HTTPException(400, str(error)) from error
+            finally:
                 if session_id:
                     desktop_sources.forget_session(session_id)
-            except desktop_sources.SourceError as error:
-                raise HTTPException(400, str(error)) from error
+        elif session_id:
+            desktop_sources.forget_session(session_id)
         updated = media.update_batch_item(batch_id, item_id, status="queued", message="等待重试", clear_error=True)
         enqueue(batch, item_id)
     return updated

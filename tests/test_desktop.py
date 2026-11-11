@@ -1240,3 +1240,105 @@ def test_empty_transcription_is_not_success(monkeypatch, tmp_path):
     assert saved["message"] == "字幕没有可用的时间戳片段"
     assert "transcription completed" not in saved["message"]
 
+
+NOTE_ID = "64f0aabbccddeeff00112233"
+BARE_NOTE = f"https://www.xiaohongshu.com/explore/{NOTE_ID}"
+LONG_NOTE = BARE_NOTE + "?xsec_token=abc&xsec_source=pc_share"
+
+
+def _xhs_state(kind="video"):
+    note = {
+        "noteId": NOTE_ID, "type": kind, "title": "夜航" if kind == "video" else "图文",
+        "desc": "正文一段", "user": {"nickname": "航线"},
+        "imageList": [{"urlDefault": "https://sns-img.xhscdn.com/cover.jpg"}],
+    }
+    if kind == "video":
+        note["video"] = {"capa": {"duration": 12500}, "media": {"stream": {
+            "h264": [{"masterUrl": "https://sns-video.xhscdn.com/master.mp4",
+                      "backupUrls": ["https://sns-video.xhscdn.com/backup.mp4"]}],
+            "h265": [{"masterUrl": "https://sns-video.xhscdn.com/h265.mp4", "backupUrls": []}],
+        }}}
+    else:
+        note["video"] = None
+    return "<script>window.__INITIAL_STATE__=" + json.dumps({"note": {"noteDetailMap": {NOTE_ID: {"note": note}}}}, ensure_ascii=False) + "</script>"
+
+
+def test_classify_letters_keeps_one_share_and_finds_paths():
+    from app import share_text
+
+    assert len(share_text.classify_letters("第一行\n" + DOUYIN_SHARE + "\n最后")) == 1
+    split = share_text.classify_letters(DOUYIN_SHARE + "\n" + XHS_SHARE)
+    assert [item["url"] for item in split] == ["https://v.douyin.com/aDqmydz7iGA/", "https://xhslink.cn/o/4LXLtDW6SVI"]
+    assert len(share_text.classify_letters("https://example.com/a\nagain https://example.com/a")) == 1
+    quoted = share_text.classify_letters(r'"D:\My Videos\clip.mp4"')
+    assert quoted[0]["kind"] == "local" and quoted[0]["local"] is True
+    assert quoted[0]["source"].casefold() == str(Path(r"D:\My Videos\clip.mp4")).casefold()
+    unc = share_text.classify_letters(r"\\server\share\my file.mkv")
+    assert unc[0]["kind"] == "local" and unc[0]["source"].lower().startswith("\\\\server\\share")
+    filed = share_text.classify_letters("file:///D:/My%20Videos/clip.mp4")
+    assert filed[0]["kind"] == "local" and "My Videos" in filed[0]["source"]
+    mixed = share_text.classify_letters('"D:\\My Videos\\clip.mp4"\nhttps://example.com/a')
+    assert [item["kind"] for item in mixed] == ["local", "url"]
+    assert share_text.classify_letters("   ") == []
+
+
+def test_xiaohongshu_fetch_url_is_not_replaced_by_canonical(monkeypatch, tmp_path):
+    from app.sites import resolve
+    from app import desktop_sources, workbench_cache as cache
+
+    monkeypatch.setattr(media, "DATA_DIR", tmp_path)
+    cache.initialize()
+    video_html = _xhs_state("video")
+    image_html = (
+        '<script>window.__INITIAL_STATE__={"note":{"noteDetailMap":{"'
+        + NOTE_ID + '":{"note":{"noteId":"' + NOTE_ID
+        + '","type":"normal","title":"图文","desc":"正文","user":{"nickname":"作者"},'
+        + '"imageList":[{"urlDefault":"https://sns-img.xhscdn.com/a.jpg"}],"video":undefined}}}}}</script>'
+    )
+    video = resolve.parse_document(LONG_NOTE, video_html)
+    assert video["canonical_url"] == BARE_NOTE
+    assert video["resolved_fetch_url"] == LONG_NOTE
+    assert video["resolved_fetch_url"] != video["canonical_url"]
+    assert video["video_url"] == "https://sns-video.xhscdn.com/master.mp4"
+    assert video["backup_urls"] == ["https://sns-video.xhscdn.com/backup.mp4"]
+    assert "https://sns-video.xhscdn.com/h265.mp4" in video["media_urls"]
+    assert video["body"] == "正文一段" and video["author"] == "航线"
+    assert video["image_note"] is False and video["duration"] == 12.5
+    image = resolve.parse_document(LONG_NOTE, image_html)
+    assert image["image_note"] is True and image["video_url"] == ""
+    assert image["images"] == ["https://sns-img.xhscdn.com/a.jpg"] and image["body"] == "正文"
+    assert resolve.xhs_capture_ready("", [], []) is False
+    assert resolve.xhs_capture_ready("<html>login</html>", [], []) is False
+    assert resolve.xhs_capture_ready(video_html, [], []) is True
+    assert resolve.xhs_capture_ready("", ["https://sns-video.xhscdn.com/a.mp4"], []) is True
+    assert resolve.xhs_capture_ready("", [], ["https://sns-video.xhscdn.com/player.mp4"]) is True
+
+    def fetch(target):
+        if "xhslink" in target:
+            return 302, LONG_NOTE, "", ""
+        assert "xsec_token=abc" in target
+        return 200, "", video_html, "text/html"
+
+    landed = resolve.resolve("https://xhslink.cn/o/4LXLtDW6SVI", fetch=fetch)
+    assert landed["resolved_fetch_url"] == LONG_NOTE
+    assert landed["canonical_url"] == BARE_NOTE
+    assert cache.identity(LONG_NOTE) == cache.identity(BARE_NOTE) == "xiaohongshu:" + NOTE_ID
+    request = SimpleNamespace(source_value=LONG_NOTE)
+    assert desktop_sources.ytdlp_target(LONG_NOTE, landed) == LONG_NOTE
+    assert desktop_sources.download_page_url(request, {"canonical_url": BARE_NOTE, "resolved_fetch_url": LONG_NOTE}) == LONG_NOTE
+    monkeypatch.setattr(desktop_sources, "public_target", lambda *args, **kwargs: None)
+    monkeypatch.setattr(resolve, "resolve", lambda url, fetch=None: dict(landed, url=LONG_NOTE))
+    monkeypatch.setattr(desktop_sources, "dump_online", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("yt-dlp")))
+    target, resolved = desktop_sources.prepare_social(LONG_NOTE, "")
+    assert target == LONG_NOTE and resolved["canonical_url"] == BARE_NOTE
+    info = desktop_sources.inspect_online(LONG_NOTE, "")
+    assert info["media_type"] == "video" and info["media_url"].endswith("master.mp4")
+    assert info["resolved_fetch_url"] == LONG_NOTE
+    monkeypatch.setattr(resolve, "resolve", lambda url, fetch=None: dict(image, url=LONG_NOTE, html=""))
+    note = desktop_sources.inspect_online(LONG_NOTE, "")
+    assert note["media_type"] == "note" and note["resolved_fetch_url"] == LONG_NOTE
+    assert desktop_sources.refresh_reason(desktop_sources.SourceError("session_required", "尚未登录小红书")) == "login"
+    assert desktop_sources.refresh_reason(desktop_sources.SourceError("unavailable", "连接超时")) == "network"
+    assert desktop_sources.refresh_reason(desktop_sources.SourceError("signature_expired", "链接签名已过期")) == "signature_expired"
+    assert desktop_sources.refresh_reason(desktop_sources.SourceError("no_stream", "未找到可用的视频流")) == "no_media"
+

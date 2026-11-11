@@ -17,10 +17,8 @@ import uvicorn
 
 from app import desktop_config as config
 
-WINDOW_PALETTE = {
-    False: ("#f5f5f4", "#fafafa", "#24272c"),
-    True: ("#17191c", "#1c1f23", "#eceef0"),
-}
+# Paper and ink. The title bar stays on this light pair unless forced-colors is active.
+WINDOW_PALETTE = ("#FEFEFC", "#FEFEFC", "#28373C")
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 DWMWA_CAPTION_COLOR = 35
 DWMWA_TEXT_COLOR = 36
@@ -119,7 +117,7 @@ class NativeFiles:
         return paths[0] if paths else ""
 
     def set_window_theme(self, dark, forced_colors):
-        theme_title_bar(self._window, dark is True, forced_colors is True)
+        theme_title_bar(self._window, forced_colors is True)
 
 
 def windows_dark_theme():
@@ -136,15 +134,15 @@ def colorref(color):
     return red | (green << 8) | (blue << 16)
 
 
-def theme_title_bar(window, dark, forced_colors):
+def theme_title_bar(window, forced_colors):
     native = getattr(window, "native", None)
     if native is None:
         return
     hwnd = ctypes.c_void_p(native.Handle.ToInt64())
     set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
-    _, caption, text = WINDOW_PALETTE[dark]
+    _background, caption, text = WINDOW_PALETTE
     for attribute, value in (
-        (DWMWA_USE_IMMERSIVE_DARK_MODE, int(dark)),
+        (DWMWA_USE_IMMERSIVE_DARK_MODE, 0),
         (DWMWA_CAPTION_COLOR, DWMWA_COLOR_DEFAULT if forced_colors else colorref(caption)),
         (DWMWA_TEXT_COLOR, DWMWA_COLOR_DEFAULT if forced_colors else colorref(text)),
     ):
@@ -152,9 +150,9 @@ def theme_title_bar(window, dark, forced_colors):
         set_attribute(hwnd, attribute, ctypes.byref(data), ctypes.sizeof(data))
 
 
-def window_options(webview, dark):
+def window_options(webview):
     options = {"width": 1440, "height": 940, "min_size": (950, 680),
-               "background_color": WINDOW_PALETTE[dark][0]}
+               "background_color": WINDOW_PALETTE[0]}
     screens = webview.screens
     if screens:
         screen = screens[0]
@@ -186,13 +184,12 @@ def run_window():
             raise RuntimeError("应用服务启动失败")
 
         bridge = NativeFiles(webview)
-        dark = windows_dark_theme()
         window = webview.create_window(
             "Media Operator", f"{origin}/desktop/connect?token={token}", js_api=bridge,
-            **window_options(webview, dark),
+            **window_options(webview),
         )
         bridge._window = window
-        window.events.shown += lambda: theme_title_bar(window, dark, False)
+        window.events.shown += lambda: theme_title_bar(window, False)
         webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
         def allow_close():
             from app import desktop_gpu, desktop_jobs, desktop_models, desktop_routes, obsidian
