@@ -309,7 +309,7 @@ def generate_cards(transcript_id, api_key, model, mode="curated", progress=None)
         "claim 是简短中文主题（建议6–20字），不是一大段概括。"
         "quote_translation 是 refs 中所有原话的忠实中文译句，表达自然、避免逐词硬译，不解释、不扩写；原话已是中文时留空。"
         "evidence 和 example 只填原文明确提供的简短论据和例子，无则留空。没有值得摘录的句子就返回空数组。"
-        "当前模式：" + {"summary": "摘要", "curated": "精华观点", "comprehensive": "大多数观点"}.get(mode, "精华观点")
+        "当前模式：" + {"summary": "摘要", "curated": "精华观点", "comprehensive": "大多数观点，较完整"}.get(mode, "精华观点")
         + f"，每小时约{lower}–{upper}条作为软目标，"
         + f"本段至多{per_group}条候选，内容不足可少写，不凑数。"
         '输出 JSON：{"cards":[{"claim":"主题","quote_translation":"译句",'
