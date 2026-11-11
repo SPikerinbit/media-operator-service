@@ -278,12 +278,17 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
         }
         const fire = fireNode.current
         if (fire && flame.current) {
-          const width = Math.min(145, Math.max(110, local.width * 0.32))
-          const height = Math.min(160, Math.max(120, width * 1.12))
-          fire.style.left = (rim.x - width / 2) + 'px'
-          fire.style.top = (rim.y - height * 0.92) + 'px'
-          fire.style.width = width + 'px'
-          fire.style.height = height + 'px'
+          const width = Math.min(240, Math.max(180, local.width * 0.5))
+          const height = Math.min(220, Math.max(170, width * 0.9))
+          if (fire.dataset.size !== width + 'x' + height) {
+            fire.dataset.size = width + 'x' + height
+            fire.style.left = '0'
+            fire.style.top = '0'
+            fire.style.width = width + 'px'
+            fire.style.height = height + 'px'
+            flame.current.resize(width, height)
+          }
+          fire.style.transform = `translate3d(${rim.x - width / 2}px, ${rim.y - height * 0.62}px, 0)`
           const lit = running && arrivedRef.current
           if (lit && !litAt.current) litAt.current = now
           if (!lit) litAt.current = 0

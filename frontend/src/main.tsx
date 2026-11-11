@@ -25,6 +25,7 @@ function App(){
   const [view,setView]=useState<View>(fromHash);const [visited,setVisited]=useState<View[]>(['home',fromHash()])
   const [settings,setSettings]=useState<Preferences|null>(null);const [error,setError]=useState('')
   const [settingsFocus,setSettingsFocus]=useState<SettingsSection>('general');const inbox=useInbox()
+  const [warm,setWarm]=useState(false)
   const [leaving,setLeaving]=useState<View|null>(null)
   const [deck,setDeck]=useState<{kind:string;dir:number}>({kind:'drawer',dir:1})
   const reduced=useReducedMotion()
@@ -38,6 +39,13 @@ function App(){
     return()=>{window.removeEventListener('pywebviewready',sync);forced.removeEventListener('change',sync)}
   },[])
   useEffect(()=>{void request<Preferences>('/desktop/settings').then(setSettings).catch(e=>setError(errorMessage(e)))},[])
+  useEffect(()=>{
+    const base=import.meta.env.BASE_URL
+    ;['workbench/materials/walnut.webp','workbench/materials/leather.webp','workbench/materials/linen.webp','workbench/materials/paper.webp','workbench/materials/brass.webp','workbench/mailbox-light-body.webp','workbench/mailbox-light-front.webp','workbench/mailbox-light-slot-front.webp','workbench/mailbox-light-slot-back.webp','workbench/envelope-light-front.webp','workbench/envelope-light-body.webp','workbench/brazier-light-body.webp','workbench/brazier-light-front.webp','workbench/shredder-light-body.webp','workbench/shredder-light-front.webp','workbench/trash-light-body.webp','workbench/trash-light-front.webp'].forEach(path=>{const img=new Image();img.src=base+path})
+    let alive=true
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{if(alive)setWarm(true)}))
+    return()=>{alive=false}
+  },[])
   useEffect(()=>{const change=()=>show(fromHash());window.addEventListener('hashchange',change);return()=>window.removeEventListener('hashchange',change)},[])
   function show(next:View){
     const current=viewRef.current
@@ -47,7 +55,7 @@ function App(){
     if(!reduced){
       setLeaving(current)
       window.clearTimeout(leaveTimer.current)
-      leaveTimer.current=window.setTimeout(()=>setLeaving(shown=>shown===current?null:shown),680)
+      leaveTimer.current=window.setTimeout(()=>setLeaving(shown=>shown===current?null:shown),820)
     }
     setView(next);setVisited(v=>v.includes(next)?v:[...v,next]);history.replaceState(null,'','#'+next)
   }
@@ -61,14 +69,14 @@ function App(){
     <aside className="sidebar"><div className="workbench-brand" title="Media Operator">M<span>O</span></div><nav aria-label="工作台">{navigation.map(({id,label})=>{
       const count=inbox.data.entries.filter(e=>e.lane===id&&['ready','running','queued','blocked','failed','identifying','starting'].includes(e.status)).length
       return <button type="button" className="nav-item" key={id} aria-label={label} aria-current={view===id?'page':undefined} onClick={()=>show(id)}>
-        {id==='home'?<Home size={20} aria-hidden="true"/>:id==='settings'?<Settings2 size={20} aria-hidden="true"/>:<span className="sidebar-mail-slot" data-mail-slot={id} aria-hidden="true"><i/></span>}
+        {id==='home'?<Home size={20} aria-hidden="true"/>:id==='settings'?<Settings2 size={20} aria-hidden="true"/>:<span className="sidebar-mail-slot" aria-hidden="true"><span className="slot-mouth" data-mail-slot={id}/><i/></span>}
         <span>{label}</span>{count>0&&<small className="nav-count">{count}</small>}</button>
     })}</nav><small className="sidebar-version">{__APP_VERSION__}</small></aside>
     <main id="workspace" className={'workspace'+(leaving?' is-decking':'')} data-view={view} data-motion={deck.kind} data-dir={deck.dir} tabIndex={-1}><div className="workspace-content">
       {(error||inbox.error)&&<div className="notice error" role="alert">{error||inbox.error}<button type="button" onClick={()=>void inbox.refresh()}>重新连接</button></div>}
-      <div className={'home-view '+deckClass('home')} hidden={view!=='home'&&leaving!=='home'}><WorkbenchHome data={inbox.data} active={view==='home'} onOpen={show}/></div>
-      {(['publish','notes'] as const).map(lane=>visited.includes(lane)&&<div className={'lane-view '+deckClass(lane)} key={lane} hidden={view!==lane&&leaving!==lane}><WorkbenchQueue lane={lane} data={inbox.data} settings={settings} active={view===lane} onHome={()=>show('home')} onSettings={openSettings} refresh={inbox.refresh}/></div>)}
-      {visited.includes('settings')&&<div className={'settings-view '+deckClass('settings')} hidden={view!=='settings'&&leaving!=='settings'}><Settings current={settings} update={setSettings} focus={settingsFocus}/></div>}
+      <div className={'home-view '+deckClass('home')+(warm&&view!=='home'&&leaving!=='home'?' is-parked':'')} hidden={!warm&&view!=='home'&&leaving!=='home'}><WorkbenchHome data={inbox.data} active={view==='home'} onOpen={show}/></div>
+      {(['publish','notes'] as const).map(lane=>(warm||visited.includes(lane))&&<div className={'lane-view '+deckClass(lane)+(warm&&view!==lane&&leaving!==lane?' is-parked':'')} key={lane} hidden={!warm&&view!==lane&&leaving!==lane}><WorkbenchQueue lane={lane} data={inbox.data} settings={settings} active={view===lane} onHome={()=>show('home')} onSettings={openSettings} refresh={inbox.refresh}/></div>)}
+      {(warm||visited.includes('settings'))&&<div className={'settings-view '+deckClass('settings')+(warm&&view!=='settings'&&leaving!=='settings'?' is-parked':'')} hidden={!warm&&view!=='settings'&&leaving!=='settings'}><Settings current={settings} update={setSettings} focus={settingsFocus}/></div>}
     </div></main>
   </div></MotionConfig>
 }

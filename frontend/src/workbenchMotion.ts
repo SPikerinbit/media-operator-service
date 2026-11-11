@@ -87,7 +87,9 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
   const face = ruledSheet(lines.slice(0, 7), sheetW, sheetH)
   const bend = document.createElement('div')
   bend.className = 'fold-bend'
-  flight.append(face, bend)
+  const crease = document.createElement('div')
+  crease.className = 'fold-crease'
+  flight.append(face, bend, crease)
   document.body.append(flight)
   const originX = homeRect?.left || 0
   const originY = homeRect?.top || 0
@@ -123,7 +125,11 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
     const x = lerp(originX, destX, tuckT)
     const y = lerp(originY, destY, tuckT) - foldT * (1 - tuckT) * 14
     const scaleY = lerp(1, foldedH / sheetH, foldT)
-    flight.style.transform = `translate3d(${x}px, ${y}px, 0) scaleY(${scaleY}) rotateX(${foldT * 58}deg)`
+    const lift = foldT * (1 - tuckT) * 26
+    flight.style.transformOrigin = '50% 0%'
+    flight.style.transform = `perspective(1100px) translate3d(${x}px, ${y - lift}px, 0) rotateX(${foldT * 74}deg) scaleY(${scaleY})`
+    crease.style.opacity = String(Math.min(1, foldT * 1.4) * (1 - tuckT))
+    crease.style.transform = `scaleX(${0.4 + foldT * 0.6})`
     flight.style.opacity = String(1 - ramp(u, 0.42, 0.56))
     const bendAtlas = manifest['paper-bend']
     if (bendAtlas) {
@@ -151,19 +157,25 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
     if (insertT > 0 && mail.width > 2) {
       const slot = manifest.mailbox.anchors.slotFront
       if (slot) {
-        const slotCenter = { x: mail.left + (slot[0] + slot[2] / 2) * mail.width, y: mail.top + (slot[1] + slot[3] / 2) * mail.height }
+        const mouth = normBox(mail, slot, manifest.mailbox.size)
+        const slotCenter = { x: mouth.left + mouth.width / 2, y: mouth.top + mouth.height * 0.55 }
         const visible = manifest.envelope.visible_bounds
         const visibleW = visible ? (visible[2] - visible[0]) : 0.84
-        const endScale = (slot[2] * mail.width) / Math.max(1, visibleW * restW)
-        const center = { x: lerp(home.x, slotCenter.x, insertT), y: lerp(home.y, slotCenter.y, insertT) }
-        const scale = lerp(1, endScale, Math.max(0, (insertT - 0.12) / 0.88))
+        const endScale = Math.min(0.28, (mouth.width * 0.9) / Math.max(1, visibleW * restW))
+        const bow = Math.sin(Math.PI * insertT) * 28
+        const center = { x: lerp(home.x, slotCenter.x, insertT), y: lerp(home.y, slotCenter.y, insertT) - bow }
+        const scale = lerp(1, endScale, insertT)
+        nodes.env.style.zIndex = '2'
         nodes.env.style.transformOrigin = 'center center'
         nodes.env.style.transform = `translate3d(${center.x - home.x}px, ${center.y - home.y}px, 0) scale(${scale})`
-        const clip = ramp(u, 0.72, 0.9) * 74
-        nodes.env.style.clipPath = clip > 0.4 ? `inset(${clip}% 0 0 0)` : ''
-        nodes.env.style.opacity = String(1 - ramp(u, 0.8, 0.94))
+        nodes.env.style.clipPath = ''
+        nodes.env.style.opacity = String(1 - ramp(u, 0.9, 1))
         const exit = manifest.mailbox.anchors.exit
         if (u > 0.74 && exit) {
+          const side = shell?.querySelector<HTMLElement>(`[data-mail-slot="${lane}"]`)
+          const sideBox = side?.getBoundingClientRect()
+          const exitPoint = { x: mail.left + exit[0] * mail.width, y: mail.top + exit[1] * mail.height }
+          const dest = sideBox && sideBox.width > 2 ? { x: sideBox.left + sideBox.width / 2, y: sideBox.top + sideBox.height / 2 } : { x: exitPoint.x - 80, y: exitPoint.y }
           if (!route) {
             route = document.createElement('div')
             route.className = 'routing-letter'
@@ -176,16 +188,27 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
             document.body.append(route)
             pin(route, 0, 0, 36, 24)
           }
-          const exitPoint = { x: mail.left + exit[0] * mail.width, y: mail.top + exit[1] * mail.height }
-          const side = shell?.querySelector(`[data-mail-slot="${lane}"]`)?.getBoundingClientRect()
-          const dest = side && side.width > 2 ? { x: side.left + side.width / 2, y: side.top + side.height / 2 } : { x: exitPoint.x - 80, y: exitPoint.y }
           const local = Math.min(1, (u - 0.74) / 0.26)
-          const p = springAt(local * 560, SPRING.soft)
-          const arc = p > 0 && p < 1 ? Math.sin(Math.PI * p) * 16 : 0
-          const rx = lerp(exitPoint.x, dest.x, p) - 18
-          const ry = lerp(exitPoint.y, dest.y, p) - 12 - arc
-          route.style.transform = `translate3d(${rx}px, ${ry}px, 0) rotate(${lerp(-8, 4, Math.min(1, p))}deg)`
-          route.style.opacity = String(ramp(u, 0.74, 0.84) * (1 - ramp(u, 0.94, 1)))
+          const p = springAt(local * 640, SPRING.mass)
+          const into = Math.max(0, (p - 0.55) / 0.45)
+          if (side && into > 0.02 && route.parentElement !== side) side.append(route)
+          if (route.parentElement === side && sideBox) {
+            route.style.position = 'absolute'
+            route.style.left = '0'
+            route.style.top = '0'
+            route.style.width = '34px'
+            route.style.height = '18px'
+            route.style.margin = '0'
+            route.style.transformOrigin = 'center top'
+            route.style.transform = `translate3d(${sideBox.width / 2 - 17}px, ${lerp(4, -20, into)}px, 0) scale(${lerp(0.85, 0.55, into)})`
+            route.style.opacity = '1'
+          } else {
+            const arc = p > 0 && p < 1 ? Math.sin(Math.PI * Math.min(1, p)) * 34 : 0
+            const rx = lerp(exitPoint.x, dest.x, Math.min(1, p)) - 18
+            const ry = lerp(exitPoint.y, dest.y, Math.min(1, p)) - 12 - arc
+            route.style.transform = `translate3d(${rx}px, ${ry}px, 0) rotate(${lerp(-6, 2, Math.min(1, p))}deg)`
+            route.style.opacity = '1'
+          }
         }
       }
     }
@@ -200,6 +223,10 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
 }
 
 export function resetDelivery(env: HTMLElement, flap: HTMLElement, paper: HTMLElement, closed: HTMLElement, wax: HTMLElement) {
+  const station = env.closest('.delivery-apparatus')
+  if (station && env.parentElement !== station) station.append(env)
+  delete env.dataset.slotted
+  env.style.zIndex = ''
   env.style.position = ''
   env.style.margin = ''
   env.style.left = ''
@@ -220,7 +247,7 @@ export function resetDelivery(env: HTMLElement, flap: HTMLElement, paper: HTMLEl
   wax.style.top = ''
   wax.style.transform = ''
   const lane = env.closest('.letter-station')?.classList.contains('notes') ? 'notes' : 'publish'
-  document.querySelectorAll('.fold-sheet,.routing-letter').forEach(node => {
+  document.querySelectorAll('.fold-sheet,.routing-letter,.slot-letter').forEach(node => {
     if ((node as HTMLElement).dataset.lane === lane) node.remove()
   })
 }
@@ -355,14 +382,17 @@ export function flyTaskPaper(from: DOMRect, to: () => Point | null, title: strin
         started = now
       }
       prev = dest
-      const p = springAt(now - started, SPRING.soft)
-      const arc = p > 0 && p < 1 ? Math.sin(Math.PI * p) * 22 : 0
+      const p = springAt(now - started, SPRING.mass)
+      const along = Math.min(1, Math.max(0, p))
+      const arc = along > 0 && along < 1 ? Math.sin(Math.PI * along) * 54 : 0
       const x = lerp(sx, dest.x, p)
       const y = lerp(sy, dest.y, p) - arc
-      const scaleX = lerp(1, 168 / w0, Math.min(1, p))
-      const scaleY = lerp(1, 220 / h0, Math.min(1, p))
-      card.style.transform = `translate3d(${x - w0 / 2}px, ${y - h0 / 2}px, 0) scale(${scaleX}, ${scaleY})`
-      if (!springSettled(now - started)) return true
+      const scaleX = lerp(1, 132 / w0, along)
+      const scaleY = lerp(1, 86 / h0, along)
+      const rot = lerp(-8, 4, along) + (p > 1 ? (p - 1) * -12 : 0)
+      card.style.transform = `perspective(800px) translate3d(${x - w0 / 2}px, ${y - h0 / 2}px, 0) scale(${scaleX}, ${scaleY}) rotate(${rot}deg) rotateX(${along * 18}deg)`
+      card.style.opacity = springSettled(now - started, SPRING.mass) ? String(Math.max(0, 1 - (now - started - 720) / 220)) : '1'
+      if (!springSettled(now - started, SPRING.mass) || now - started < 920) return true
       card.remove()
       resolve()
       return false

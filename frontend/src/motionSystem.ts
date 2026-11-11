@@ -1,9 +1,11 @@
 /** Shared study-room motion. Springs overshoot about 5% and then settle. */
 
 export const SPRING = {
-  /** Landing, drawers, flights. ζ ≈ 0.70 → ~5% overshoot. */
+  /** Landing and flights. ζ ≈ 0.70 → ~5% overshoot. */
   soft: { stiffness: 180, damping: 18.8, mass: 1 },
-  /** Button and wax release. Slightly quicker, same overshoot. */
+  /** Drawers and pushed desks. Heavier, slower to leave, ~3% overshoot. */
+  mass: { stiffness: 92, damping: 14.2, mass: 1.7 },
+  /** Button and wax release. */
   press: { stiffness: 460, damping: 30, mass: 1 },
 } as const
 
@@ -24,7 +26,8 @@ export function springAt(ms: number, spring: Spring = SPRING.soft) {
 }
 
 export function springSettled(ms: number, spring: Spring = SPRING.soft) {
-  return ms > 240 && Math.abs(springAt(ms, spring) - 1) < 0.0035
+  const min = spring.mass > 1.2 ? 420 : 240
+  return ms > min && Math.abs(springAt(ms, spring) - 1) < 0.0035
 }
 
 /** C2 ramp from 0 to 1 between a and b. Overlapping windows keep multi-stage motion moving. */

@@ -46,7 +46,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const [arrived, setArrived] = useState(false)
   const [leavingId, setLeavingId] = useState('')
   const short = useMediaQuery('(max-height: 780px)')
-  const pageSize = short ? 5 : 7
+  const pageSize = short ? 4 : 5
   const manifest = useWorkbenchManifest()
   const reduced = useReducedMotion()
   const root = useRef<HTMLElement>(null)
@@ -74,13 +74,12 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const lineRects = useRef<Record<string, DOMRect>>({})
   const mailBox = span(manifest.mailbox.visible_bounds, [0.08398, 0.22266, 0.91504, 0.79102])
   const envBox = span(manifest.envelope.visible_bounds, [0.07617, 0.3877, 0.9209, 0.85156])
-  const mailVisible = 220
-  const envVisible = 440
+  const mailVisible = 176
+  const envVisible = 340
   const mailSize = mailVisible / mailBox.w
   const envSize = envVisible / envBox.w
-  const footer = 36
-  const paperTuck = -((1 - mailBox.bottom) * mailSize) - 8
-  const envTuck = -(envBox.y * envSize + footer - 8)
+  const paperTuck = 20
+  const envTuck = -(envBox.y * envSize) + 108
 
   useEffect(() => {
     const stored = { lines: trimLines(draft.lines, draft.caretId), returned: draft.returned, caretId: draft.caretId }
@@ -269,12 +268,14 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     return () => window.clearTimeout(timer)
   }, [draft.returned.length])
 
-    return <section ref={root} className={'letter-station ' + lane + (short ? ' is-short' : '')} data-phase={phase === 'identifying' ? 'identify' : phase} aria-label={title + '信箱'} style={{ '--hinge-x': origin[0], '--hinge-y': origin[1], '--plaque-x': manifest.mailbox.anchors.plaque[0], '--plaque-y': manifest.mailbox.anchors.plaque[1], '--seal-x': seal[0], '--seal-y': seal[1], '--lines': pageSize, '--mail-box': mailSize + 'px', '--env-box': envSize + 'px', '--paper-w': '400px', '--paper-tuck': paperTuck + 'px', '--env-tuck': envTuck + 'px' } as React.CSSProperties}>
+    return <section ref={root} className={'letter-station ' + lane + (short ? ' is-short' : '')} data-phase={phase === 'identifying' ? 'identify' : phase} aria-label={title + '信箱'} style={{ '--hinge-x': origin[0], '--hinge-y': origin[1], '--plaque-x': manifest.mailbox.anchors.plaque[0], '--plaque-y': manifest.mailbox.anchors.plaque[1], '--seal-x': seal[0], '--seal-y': seal[1], '--lines': pageSize, '--mail-box': mailSize + 'px', '--env-box': envSize + 'px', '--paper-w': '420px', '--paper-tuck': paperTuck + 'px', '--env-tuck': envTuck + 'px' } as React.CSSProperties}>
+    <header className="station-heading"><h2>{title}</h2><p>{lane === 'publish' ? '投递后再设置。' : '投递后自动整理。'}</p></header>
     <div className="delivery-apparatus">
       <div className="desk-mailbox" ref={mailRef}>
         <ContactShadow name="mailbox" />
         <Prop name="mailbox" layer="body" className="mailbox-body" />
         <Prop name="mailbox" layer="slot-back" className="mailbox-slot" />
+        <div className="slot-window" data-slot-window />
         <Prop name="mailbox" layer="slot-front" className="mailbox-slot mailbox-slot-front" />
         <Prop name="mailbox" layer="front" className="mailbox-front" />
         <span className="mailbox-name">{title}</span>
@@ -287,7 +288,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
               {Array.from({ length: pageSize }, (_, slot) => {
                 const index = page * pageSize + slot
                 const line = draft.lines[index]
-                return <input key={slot} data-line-id={line?.id || ''} ref={node => { if (line) inputs.current[line.id] = node }} className="rule-input" aria-label={`${title}第 ${index + 1} 行`} value={line?.text ?? ''}
+                return <input key={slot} data-line-id={line?.id || ''} ref={node => { if (line) inputs.current[line.id] = node }} className="rule-input" aria-label={`${title}第 ${index + 1} 行`} placeholder={page === 0 && slot === 0 ? '写在这里' : ''} value={line?.text ?? ''}
                   onCompositionStart={() => { composing.current = true }}
                   onCompositionEnd={() => { composing.current = false }}
                   onFocus={() => { if (line) setDraft(current => ({ ...current, caretId: line.id })); else if (!composing.current) focusIndex(index) }}
@@ -316,7 +317,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
             <button type="button" className={'page-corner next' + (turning ? ' is-lifted' : '')} aria-label="下一页" disabled={turning || busy || page >= maxPage(draft.lines.length, pageSize)} onClick={() => void turn('next')} />
           </div>
         </div>
-        <div className="paper-foot" aria-hidden="true" />
+        <p className="paper-hint">Ctrl + Enter</p>
       </div>
       <div className="delivery-envelope" ref={envRef}>
         <Prop name="envelope" layer="body" className="envelope-back" />
@@ -339,7 +340,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
 }
 
 export function WorkbenchHome({ data, active }: { data: InboxState; active: boolean; onOpen?: (lane: Lane) => void }) {
-  return <div className="mailroom"><div className="two-mailboxes">
+  return <div className="mailroom"><header className="mailroom-heading"><div><h1>把灵感寄出去</h1><p>一封准备发布，一封留作笔记。</p></div></header><div className="two-mailboxes">
     <LetterStation lane="publish" data={data} active={active} />
     <LetterStation lane="notes" data={data} active={active} />
   </div></div>

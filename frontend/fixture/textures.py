@@ -43,21 +43,24 @@ def save(name, img, quality=74):
 
 
 def walnut():
-    w = h = 640
-    fine = value_noise(w, h, 5, 2)
+    w = h = 720
+    fine = value_noise(w, h, 4, 2)
+    figure = value_noise(w, h, 110, 8)
     img = Image.new("RGB", (w, h))
     px = img.load()
     for y in range(h):
         for x in range(w):
-            yy = y + math.sin(x * 0.018) * 2.1 + math.sin(x * 0.006 + 1.7) * 3.4 + (fine[y][x] - 0.5) * 1.6
-            band = (yy * 0.28) % 1
-            tone = 96 + band * 28
-            if band > 0.72:
-                tone = 58 + (band - 0.72) * 30
-            tone += (fine[y][x] - 0.5) * 7
-            r = tone + 32
-            g = tone * 0.52 + 10
-            b = tone * 0.26 + 4
+            yy = y + math.sin(x * 0.013) * 3.2 + math.sin(x * 0.004 + 1.2) * 5 + (fine[y][x] - 0.5) * 2.2
+            band = (yy * 0.16) % 1
+            tone = 74 + band * 48 + figure[y][x] * 22
+            if band > 0.58:
+                tone = 42 + (1 - band) * 36
+            if 0.35 < figure[y][x] < 0.62 and band < 0.45:
+                tone += 14
+            tone += (fine[y][x] - 0.5) * 16
+            r = tone + 36
+            g = tone * 0.46 + 12
+            b = tone * 0.2 + 4
             px[x, y] = (clamp(r), clamp(g), clamp(b))
     save("walnut.webp", img)
 
@@ -72,13 +75,13 @@ def leather():
     pores = {(rng.randrange(w), rng.randrange(h)) for _ in range(2200)}
     for y in range(h):
         for x in range(w):
-            r = 58 + blot[y][x] * 26 + grain[y][x] * 8
-            g = 32 + blot[y][x] * 12 + grain[y][x] * 4
-            b = 22 + blot[y][x] * 6
-            if (x, y) in pores or grain[y][x] > 0.92:
-                r -= 16
-                g -= 8
-                b -= 4
+            r = 48 + blot[y][x] * 40 + grain[y][x] * 22
+            g = 26 + blot[y][x] * 18 + grain[y][x] * 8
+            b = 16 + blot[y][x] * 8
+            if (x, y) in pores or grain[y][x] > 0.84:
+                r -= 26
+                g -= 14
+                b -= 8
             px[x, y] = (clamp(r), clamp(g), clamp(b))
     save("leather.webp", img)
 

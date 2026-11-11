@@ -21,7 +21,7 @@ const state = {
     entry({ id: 'e-ready', group_id: 'g-ready', lane: 'publish', status: 'ready', title: '如何把一个想法变成作品', raw: 'https://www.bilibili.com/video/BV1ready', message: '待设置', deletable: true }),
     entry({ id: 'e-run', group_id: 'g-run', lane: 'publish', status: 'running', title: '火盆里的信', stage: 'transcribe', progress: 42, progress_known: true, message: '正在转录', summary: ['Whisper 转录'], deletable: false }),
     entry({ id: 'e-ok', group_id: 'g-ok', lane: 'publish', status: 'succeeded', title: '已经寄出的作品', progress: 100, progress_known: true, stage: 'done', message: '投稿成功', deletable: true,
-      result: { bilibili_url: 'https://www.bilibili.com/video/BV1ok', upload_title: '已经寄出的作品', final_video_url: '' } }),
+      result: { bilibili_url: 'https://www.bilibili.com/video/BV1ok', upload_title: '已经寄出的作品', final_video_url: '/static/desktop-ui/workbench/fixture-reel.mp4' } }),
     entry({ id: 'e-fail', group_id: 'g-fail', lane: 'publish', status: 'failed', title: '卡住的一封', stage: 'translate', message: '请配置 DeepSeek', summary: ['翻译没有完成'], deletable: true }),
     entry({ id: 'e-note', group_id: 'g-notes', lane: 'notes', status: 'succeeded', title: '值得留下的一段', progress: 100, progress_known: true, stage: 'done', message: '已完成', deletable: true,
       result: { transcript_id: 7 } }),

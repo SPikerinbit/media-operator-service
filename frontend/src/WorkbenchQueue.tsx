@@ -4,6 +4,7 @@ import { errorMessage, request, type EntryLog, type RemovalRow, type Settings } 
 import { Inspector, getOverride, outputDefaults, resolveOptions, savedVideoOptions, type DefaultGroup, type InspectorSection, type Override, type Row, type VideoDefaults, type VideoOptions } from './videoOptions'
 import { Modal, Button } from './ui'
 import { Presence, usePresented } from './presence'
+import { NoteThreads, type ThreadEnd } from './noteThreads'
 import { TranscriptView } from './TranscriptView'
 import { ContactShadow, CoverArt, DeskProjector, PaperProcess, Prop, asset } from './WorkbenchEffects'
 import { anchorPixels, currentManifest, useWorkbenchManifest, woodLanding } from './workbenchAnchors'
@@ -69,7 +70,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   const woodImg=useRef<Record<string,HTMLImageElement|null>>({})
   const locateRef=useRef<(cue:number)=>void>(()=>{})
   const deskRef=useRef<HTMLDivElement>(null)
-  const [curves,setCurves]=useState<string[]>([])
+  const [threads,setThreads]=useState<ThreadEnd[]>([])
   const entries=data.entries.filter(e=>e.lane===lane&&e.status!=='removed')
   const visible=entries.filter(e=>(filter==='all'||(filter==='waiting'?['ready','blocked','rejected','failed','duplicate'].includes(e.status):filter==='processing'?['identifying','starting','queued','running'].includes(e.status):e.status==='succeeded'))&&entryLabel(e).toLowerCase().includes(query.toLowerCase()))
   const pickedEntry=entries.find(e=>e.id===selected)||visible.find(e=>['ready','running','starting','queued'].includes(e.status))||visible[0]
@@ -264,10 +265,10 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
         const slip=host.querySelector(`[data-slip-id="${link.id}"]`)?.getBoundingClientRect()
         if(!strip||!slip||strip.width<2||slip.width<2)return []
         if(strip.bottom<box.top||strip.top>box.bottom||slip.bottom<box.top||slip.top>box.bottom)return []
-        const x1=strip.right-box.left,y1=strip.top+strip.height/2-box.top,x2=slip.left-box.left,y2=slip.top+slip.height/2-box.top,gap=Math.min(x1+28,x2-16)
-        return [`${link.id}|M ${x1} ${y1} C ${gap} ${y1}, ${gap} ${y2}, ${x2} ${y2}`]
+        const x1=strip.right-box.left,y1=strip.top+strip.height/2-box.top,x2=slip.left-box.left,y2=slip.top+slip.height/2-box.top
+        return [{ id: link.id, x1, y1, x2, y2, hot: link.id === activeCard }]
       })
-      setCurves(paths)
+      setThreads(paths)
     }
     draw()
     host.addEventListener('scroll',draw,true)
@@ -317,7 +318,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
           {lane==='notes'&&transcript&&entry.status==='succeeded'?<div className="notes-completion" ref={deskRef}>
             <PaperProcess key={entry.id+':'+(entry.run||1)} frameKey={entry.id+':'+(entry.run||1)} lane={lane} progress={entry.progress_known?entry.progress:0} progressKnown={entry.progress_known!==false} status={entry.status} title={entryLabel(entry)} mark={reuseMark(entry)} active={active} arrived={arrived} links={links} onStrip={link=>{setActiveCard(link.id);if(link.refs[0])locateRef.current(link.refs[0])}} parked={entry.message.includes('等待已有任务完成可共享步骤')}/>
             <TranscriptView key={transcript} id={transcript} settings={settings} translationUrl={entry.result?.translated_srt_url} onSettings={onSettings} variant="desk" highlightCard={activeCard} onActivateCard={card=>{setActiveCard(card.id);if(card.refs[0])locateRef.current(card.refs[0])}} onVisibleCards={setLinks} onReady={api=>{locateRef.current=api.locate}}/>
-            <svg className="notes-links" aria-hidden="true">{curves.map(item=>{const [id,d]=item.split('|');return <path key={id} d={d} className={Number(id)===activeCard?'is-hot':''}/>})}</svg>
+            <NoteThreads threads={threads}/>
           </div>:<div className="task-scene">
             <div className="task-stage">
               <PaperProcess key={entry.id+':'+(entry.run||1)} frameKey={entry.id+':'+(entry.run||1)} lane={lane} progress={entry.progress_known?entry.progress:0} progressKnown={entry.progress_known!==false} status={entry.status} title={entryLabel(entry)} mark={reuseMark(entry)} active={active} arrived={arrived} replaySmoke={smoke} parked={entry.message.includes('等待已有任务完成可共享步骤')}/>
