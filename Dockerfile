@@ -13,7 +13,11 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app /app/app
+COPY scripts/serve_api.sh /app/serve_api.sh
+RUN chmod +x /app/serve_api.sh
 
 EXPOSE 8090
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]
+# Listens on 127.0.0.1 inside the container unless MEDIA_BIND_HOST is set.
+# A non-loopback host is refused until MEDIA_API_TOKEN is set.
+CMD ["/app/serve_api.sh"]

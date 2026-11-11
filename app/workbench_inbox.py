@@ -343,7 +343,7 @@ def default_options():
     return {**(prefs.get('video_output_defaults') or {}),
             'subtitle_style': prefs.get('video_subtitle_style_defaults') or {},
             'subtitle_output_mode': (prefs.get('video_output_defaults') or {}).get('subtitle_output_mode', 'bilingual'),
-            'translate_model': prefs.get('ai_model', 'deepseek-flash')}
+            'translate_model': prefs.get('ai_model', media.DEFAULT_TRANSLATE_MODEL)}
 
 
 def merge(base, override):
@@ -585,7 +585,7 @@ def finish_subtitle(ident, transcript_id, options):
         update(ident, status='blocked', message='请配置 DeepSeek，字幕已导入', result=result)
         return
     if translate:
-        entry = get_entry(ident)
+        get_entry(ident)
         job_dir = media.JOBS_DIR / ('subtitle_' + ident)
         job_dir.mkdir(parents=True, exist_ok=True)
         knowledge.subtitle_file(transcript_id, job_dir/'original.srt')

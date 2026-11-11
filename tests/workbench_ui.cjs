@@ -1,4 +1,4 @@
-const {chromium}=require(process.env.MEDIA_UI_PLAYWRIGHT||'D:/dev/Media Operator 构建 0.2.5/development-tools/ui-test/node_modules/playwright');
+const {chromium}=require(process.env.MEDIA_UI_PLAYWRIGHT||'playwright');
 const assert=require('node:assert/strict');const fs=require('node:fs');
 const out=process.argv[2];fs.mkdirSync(out,{recursive:true});
 (async()=>{

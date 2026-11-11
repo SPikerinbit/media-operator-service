@@ -10,12 +10,12 @@ import sys
 
 root = Path(sys.argv[1]).resolve()
 root.mkdir(parents=True, exist_ok=True)
-os.environ.update(MEDIA_DESKTOP_HOME=str(root / "profile"), MEDIA_DESKTOP_DATA=str(root / "data"),
-                  MEDIA_DESKTOP_TOOLS=r"D:\Media Operator\tools", MEDIA_DESKTOP_FONTS=r"D:\Media Operator\fonts")
+os.environ["MEDIA_DESKTOP_HOME"] = str(root / "profile")
+os.environ["MEDIA_DESKTOP_DATA"] = str(root / "data")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import desktop
 desktop.prepare()
-from app import desktop_config as config, knowledge, desktop_jobs, desktop_bilibili
+from app import desktop_config as config, knowledge, desktop_bilibili
 from app import main as media
 import uvicorn
 

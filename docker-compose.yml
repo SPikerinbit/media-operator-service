@@ -6,10 +6,13 @@ services:
     environment:
       MEDIA_ROOT_DIR: /app
       MEDIA_DATA_DIR: /app/data
-      PUBLIC_BASE_URL: http://localhost:8090
+      MEDIA_BIND_HOST: 127.0.0.1
+      PUBLIC_BASE_URL: http://127.0.0.1:8090
       WORKER_CONCURRENCY: 2
       ALLOW_PLACEHOLDER_ARTIFACTS: "false"
+      # Set this and change MEDIA_BIND_HOST before publishing the port.
+      # MEDIA_API_TOKEN: ""
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     volumes:
       - ./data:/app/data

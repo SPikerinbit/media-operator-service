@@ -62,4 +62,4 @@ FFmpeg、ffprobe、yt-dlp 或 Deno 检测失败时，可重新运行安装程序
 
 ## 无界面 API
 
-可选的无界面服务见仓库根目录的 `Dockerfile` 和 `docker-compose.yml`。它和桌面程序共用处理流水线，但没有桌面这套本机会话。使用前请阅读 README 里的网络与密钥说明，不要把未加访问控制的服务暴露到局域网。
+可选的无界面服务见仓库根目录的 `Dockerfile`、`docker-compose.yml` 和 `scripts/serve_api.sh`。它和桌面程序共用处理流水线，但没有桌面这套本机会话。默认只监听 `127.0.0.1`。要绑到其他地址，必须先设置 `MEDIA_API_TOKEN`，请求里带上 `Authorization: Bearer <token>` 或 `X-Media-Token`。桌面程序不使用这个令牌。

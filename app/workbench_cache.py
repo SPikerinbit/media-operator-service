@@ -4,7 +4,7 @@ import json
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urlsplit, parse_qs, urlencode, urlunsplit
+from urllib.parse import urlsplit, parse_qs, urlunsplit
 
 from app import knowledge
 from app import main as media

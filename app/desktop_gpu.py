@@ -80,6 +80,16 @@ def download(client, url, destination, checksum, size, report):
     raise RuntimeError("NVIDIA 运行库下载未完成或校验失败")
 
 
+def download_progress(index, total, percent):
+    return f"正在下载 NVIDIA 运行库 {index}/{total} · {percent}%"
+
+
+def progress_reporter(index, total):
+    def report(percent, index=index, total=total):
+        PROGRESS["message"] = download_progress(index, total, percent)
+    return report
+
+
 def _install(destination):
     try:
         cache = destination.parent / ".media-operator-downloads"
@@ -87,9 +97,7 @@ def _install(destination):
         with httpx.Client(follow_redirects=True, timeout=60) as client:
             archives = []
             for index, (url, checksum, size) in enumerate(FILES, 1):
-                def report(percent):
-                    PROGRESS["message"] = f"正在下载 NVIDIA 运行库 {index}/{len(FILES)} · {percent}%"
-
+                report = progress_reporter(index, len(FILES))
                 report(0)
                 archives.append(download(client, "https://developer.download.nvidia.com/compute/" + url,
                                          cache / f"{index}.zip", checksum, size, report))

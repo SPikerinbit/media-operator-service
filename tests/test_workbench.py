@@ -92,6 +92,7 @@ def test_note_language_branch(text,language,translate):
     assert notes.language_of({'detected_language':language},{'cues':[{'text':text}]})[1] is translate
 
 
+@pytest.mark.skipif(os.name != "nt", reason="local letters are Windows paths")
 def test_paths_are_validated_and_publish_stays_video_only(workspace, monkeypatch):
     from pathlib import Path
     missing = Path(r'D:\missing\no-such-clip.mp4')

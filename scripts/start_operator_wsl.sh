@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_OUT="${MEDIA_LOG_OUT:-/tmp/media-operator.out.log}"
 LOG_ERR="${MEDIA_LOG_ERR:-/tmp/media-operator.err.log}"
-BIND_HOST="${MEDIA_BIND_HOST:-0.0.0.0}"
+BIND_HOST="${MEDIA_BIND_HOST:-127.0.0.1}"
 BIND_PORT="${MEDIA_PORT:-8090}"
 PYTHON_BIN="${MEDIA_PYTHON:-$ROOT_DIR/.venv-wsl/bin/python}"
 
@@ -12,6 +12,16 @@ cd "$ROOT_DIR"
 pkill -f "uvicorn app.main:app" || true
 
 : "${TRANSLATE_API_KEY:?TRANSLATE_API_KEY is required}"
+
+case "$BIND_HOST" in
+  127.0.0.1|localhost|::1) ;;
+  *)
+    if [[ -z "${MEDIA_API_TOKEN:-}" ]]; then
+      echo "Refusing to bind ${BIND_HOST} without MEDIA_API_TOKEN." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 env \
   ALLOW_PLACEHOLDER_ARTIFACTS=false \
@@ -21,7 +31,7 @@ env \
   WHISPER_MODEL="${WHISPER_MODEL:-small}" \
   TRANSLATE_PROVIDER=deepseek \
   TRANSLATE_API_BASE="${TRANSLATE_API_BASE:-https://api.deepseek.com}" \
-  TRANSLATE_MODEL="${TRANSLATE_MODEL:-deepseek-chat}" \
+  TRANSLATE_MODEL="${TRANSLATE_MODEL:-deepseek-flash}" \
   TRANSLATE_API_KEY="$TRANSLATE_API_KEY" \
   nohup "$PYTHON_BIN" -m uvicorn app.main:app --host "$BIND_HOST" --port "$BIND_PORT" >"$LOG_OUT" 2>"$LOG_ERR" &
 

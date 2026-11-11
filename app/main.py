@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -24,11 +25,12 @@ from urllib import request as urllib_request
 import httpx
 import srt
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, Response, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.defaults import DEFAULT_TRANSLATE_MODEL
 from app.version import VERSION
 
 APP_NAME = "media-operator-service"
@@ -37,7 +39,6 @@ WINDOW_FLAGS = subprocess.CREATE_NO_WINDOW if DESKTOP and os.name == "nt" else 0
 DEFAULT_TARGET_LANG = "zh-CN"
 DEFAULT_YT_DLP_FORMAT = "bestvideo+bestaudio/best"
 DEFAULT_WHISPER_MODEL = "small"
-DEFAULT_TRANSLATE_MODEL = "deepseek-chat"
 DEFAULT_FONT = "Microsoft YaHei"
 DEFAULT_FONTS_DIR = os.getenv("SUBTITLE_FONTS_DIR", "/mnt/c/Windows/Fonts")
 BUNDLED_FONT_FAMILIES = {"Source Han Sans CN", "Source Han Serif CN"}
@@ -176,6 +177,54 @@ BILI_PROXY = os.getenv("BILI_PROXY", "").strip()
 BILI_UPLOAD_SEMAPHORE = threading.BoundedSemaphore(BILI_UPLOAD_CONCURRENCY)
 
 app = FastAPI(title=APP_NAME, version=VERSION)
+
+
+def desktop_process() -> bool:
+    return os.getenv("MEDIA_DESKTOP") == "1"
+
+
+def api_token() -> str:
+    return os.getenv("MEDIA_API_TOKEN", "").strip()
+
+
+def bind_host_is_loopback(host: str) -> bool:
+    return host.strip().lower() in {"127.0.0.1", "localhost", "::1"}
+
+
+def require_token_when_exposed(host: str) -> None:
+    """Headless entry points call this before listening.
+
+    The desktop window never calls it. It already binds 127.0.0.1 and checks
+    its own session cookie. A headless process may listen beyond loopback only
+    when MEDIA_API_TOKEN is set.
+    """
+    if desktop_process() or bind_host_is_loopback(host):
+        return
+    if not api_token():
+        raise SystemExit(
+            f"Refusing to bind {host} without MEDIA_API_TOKEN. "
+            "Set the token, or bind 127.0.0.1."
+        )
+
+
+def presented_api_token(request: Request) -> str:
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return request.headers.get("x-media-token", "").strip()
+
+
+@app.middleware("http")
+async def headless_api_token(request: Request, call_next):
+    expected = api_token()
+    if desktop_process() or not expected:
+        return await call_next(request)
+    supplied = presented_api_token(request)
+    if not supplied or not secrets.compare_digest(supplied.encode(), expected.encode()):
+        return Response("Missing or invalid API token", status_code=401)
+    return await call_next(request)
+
+
 executor = ThreadPoolExecutor(max_workers=WORKER_CONCURRENCY)
 batch_executor = ThreadPoolExecutor(max_workers=BATCH_WORKER_MAX_CONCURRENCY)
 state_lock = threading.Lock()
@@ -1446,7 +1495,7 @@ def create_job(request: VideoJobRequest) -> JobState:
     )
     write_json(request_path(job_id), payload)
     save_state(state)
-    report_stage_progress(job_id, stage, 0, "queued", status="queued", force=True)
+    report_stage_progress(job_id, "queued", 0, "queued", status="queued", force=True)
     return state
 
 
@@ -4886,7 +4935,6 @@ def ranked_preview_formats(data: dict[str, Any]) -> list[dict[str, Any]]:
         if str(item.get("vcodec") or "").lower() == "none":
             continue
         protocol = str(item.get("protocol") or "").lower()
-        ext = str(item.get("ext") or "").lower()
         url = str(item.get("url") or "")
         if not (url.startswith("http://") or url.startswith("https://")):
             continue
@@ -5630,4 +5678,7 @@ def submit_stage_bilibili_upload(request: StageBilibiliUploadRequest) -> str:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8090)
+    host = os.getenv("MEDIA_BIND_HOST", "127.0.0.1")
+    port = int(os.getenv("MEDIA_PORT", "8090"))
+    require_token_when_exposed(host)
+    uvicorn.run(app, host=host, port=port)
