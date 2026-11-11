@@ -28,6 +28,7 @@ function App(){
   const [warm,setWarm]=useState(false)
   const [leaving,setLeaving]=useState<View|null>(null)
   const [deck,setDeck]=useState<{kind:string;dir:number}>({kind:'drawer',dir:1})
+  const [welcome,setWelcome]=useState(()=>localStorage.getItem('workbench-onboarding')!=='done')
   const reduced=useReducedMotion()
   const leaveTimer=useRef(0)
   const viewRef=useRef(view)
@@ -60,6 +61,7 @@ function App(){
     setView(next);setVisited(v=>v.includes(next)?v:[...v,next]);history.replaceState(null,'','#'+next)
   }
   function openSettings(section:SettingsSection){setSettingsFocus(section);show('settings')}
+  function dismissWelcome(){localStorage.setItem('workbench-onboarding','done');setWelcome(false)}
   function deckClass(id:View){
     if(leaving===id)return 'is-deck-out'
     if(view===id&&leaving)return 'is-deck-in'
@@ -78,6 +80,16 @@ function App(){
       {(['publish','notes'] as const).map(lane=>(warm||visited.includes(lane))&&<div className={'lane-view '+deckClass(lane)+(warm&&view!==lane&&leaving!==lane?' is-parked':'')} key={lane} hidden={!warm&&view!==lane&&leaving!==lane}><WorkbenchQueue lane={lane} data={inbox.data} settings={settings} active={view===lane} onHome={()=>show('home')} onSettings={openSettings} refresh={inbox.refresh}/></div>)}
       {(warm||visited.includes('settings'))&&<div className={'settings-view '+deckClass('settings')+(warm&&view!=='settings'&&leaving!=='settings'?' is-parked':'')} hidden={!warm&&view!=='settings'&&leaving!=='settings'}><Settings current={settings} update={setSettings} focus={settingsFocus}/></div>}
     </div></main>
+    {welcome&&<div className="onboarding" role="dialog" aria-labelledby="onboarding-title">
+      <div className="onboarding-sheet">
+        <h2 id="onboarding-title">先把要用的账号准备好</h2>
+        <p>投稿需要 B 站登录。笔记里的抖音、小红书链接也需要各自的登录。可以现在去设置，也可以稍后再说。</p>
+        <div className="toolbar">
+          <button type="button" className="button-press-motion" onClick={()=>{dismissWelcome();openSettings('sites')}}>去登录</button>
+          <button type="button" className="text-action" onClick={dismissWelcome}>稍后再说</button>
+        </div>
+      </div>
+    </div>}
   </div></MotionConfig>
 }
 createRoot(document.getElementById('root')!).render(<App/> )

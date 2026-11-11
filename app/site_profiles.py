@@ -7,6 +7,7 @@ databases are never read. A Netscape file uploaded on a card remains the per-bat
 """
 import json
 import logging
+import os
 import shutil
 import threading
 import time
@@ -28,14 +29,26 @@ SITES = {
         "domains": ("xiaohongshu.com",),
         "session_names": {"web_session"},
     },
+    "bilibili": {
+        "label": "B 站",
+        "home": "https://passport.bilibili.com/login",
+        "domains": ("bilibili.com",),
+        "session_names": {"SESSDATA", "bili_jct", "DedeUserID"},
+    },
 }
-NAMES = {"抖音": "douyin", "小红书": "xiaohongshu"}
+NAMES = {"抖音": "douyin", "小红书": "xiaohongshu", "B 站": "bilibili"}
+BILI_COOKIE_NAMES = {
+    "SESSDATA": "BILI_SESSDATA",
+    "bili_jct": "BILI_JCT",
+    "buvid3": "BILI_BUVID3",
+    "DedeUserID": "BILI_DEDEUSERID",
+}
 
 
 def canonical_site(value):
     key = NAMES.get(value, value)
     if key not in SITES:
-        raise ValueError("仅支持登录抖音或小红书")
+        raise ValueError("仅支持登录抖音、小红书或 B 站")
     return key
 
 
@@ -101,7 +114,31 @@ def write_cookies(site, lines, logged_in):
     _write_meta(key, logged_in)
     if logged_in:
         _clear_probes(SITES[key]["label"])
+        if key == "bilibili":
+            _store_bilibili(lines)
     return status(key)
+
+
+def _store_bilibili(lines):
+    """Copy the popup's session cookies into the upload credential store."""
+    found = {}
+    for line in lines:
+        parts = line.split("\t")
+        if len(parts) < 7:
+            continue
+        name, value = parts[-2], parts[-1]
+        secret = BILI_COOKIE_NAMES.get(name)
+        if secret and value:
+            found[secret] = value
+    if not found:
+        return
+    from app import desktop_config
+    from app import main as media
+
+    desktop_config.update({}, found)
+    for secret, value in found.items():
+        os.environ[secret] = value
+        setattr(media, secret, value)
 
 
 def cookie_rows(url):

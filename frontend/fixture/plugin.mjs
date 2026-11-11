@@ -58,6 +58,7 @@ const settings = {
   site_logins: [
     { site: 'douyin', platform: '抖音', logged_in: false, logging_in: false },
     { site: 'xiaohongshu', platform: '小红书', logged_in: false, logging_in: false },
+    { site: 'bilibili', platform: 'B 站', logged_in: false, logging_in: false },
   ],
 }
 

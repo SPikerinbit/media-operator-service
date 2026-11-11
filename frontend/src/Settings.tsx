@@ -9,7 +9,7 @@ const secretsList = [['BILI_SESSDATA','SESSDATA'],['BILI_JCT','bili_jct'],['BILI
   ['BILI_DEDEUSERID','DedeUserID'],['BILI_AC_TIME_VALUE','ac_time_value']] as const
 
 const categories = [
-  ['general','常规与目录',FolderOpen],['sites','站点登录',LogIn],['defaults','输出与字幕默认值',SlidersHorizontal],
+  ['general','常规与目录',FolderOpen],['sites','账号与凭据',LogIn],['defaults','输出与字幕默认值',SlidersHorizontal],
   ['resources','转录与本地资源',Cpu],['deepseek','DeepSeek',KeyRound],
   ['bilibili','B 站投稿',Send],['obsidian','Obsidian',BookOpen],
 ] as const
@@ -174,8 +174,8 @@ export function Settings({ current, update, focus }: { current: Preferences | nu
       <div className="settings-body thin-scroll">
       <Feedback notice={notice}/>
       <section className="settings-panel" hidden={category !== 'sites'}>
-        <h2>站点登录</h2>
-        <p className="muted">在桌面窗口登录抖音或小红书。登录后，投稿和笔记会读取该站点。</p>
+        <h2>账号与凭据</h2>
+        <p className="muted">在桌面窗口登录 B 站、抖音或小红书。登录完成后会记下该站点的凭据，投稿和笔记都会读取。</p>
         <ul className="form-stack resource-list" aria-label="站点登录状态">
           {sites.map((status) => <li key={status.site}><span>{status.platform}</span>
             <span>{status.logging_in ? '正在登录' : status.logged_in ? '已登录' : '未登录'}</span></li>)}
