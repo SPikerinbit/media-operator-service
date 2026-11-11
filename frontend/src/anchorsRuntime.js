@@ -82,11 +82,11 @@
   }
   function burnPaper(rect, manifest, remaining) {
     const rim = anchorPixels(rect, manifest.brazier.anchors.rim, manifest.brazier.size)
-    const width = rect.width * 0.46
-    const full = rect.height * 0.5
+    const width = rect.width * 0.34
+    const full = rect.height * 0.28
     const remain = clamp01(remaining)
     const x = rim.x - width / 2
-    const y = rim.y - full
+    const y = rim.y - full * 0.35
     return { x: x, y: y, width: width, height: full, full: full, edgeX: rim.x, edgeY: y + full * remain, remaining: remain }
   }
   function atlasPosition(frame, columns, rows) {

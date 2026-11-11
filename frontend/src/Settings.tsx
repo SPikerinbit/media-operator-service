@@ -175,21 +175,22 @@ export function Settings({ current, update, focus, onOpenGuide }: { current: Pre
       <Feedback notice={notice}/>
       <section className="settings-panel" hidden={category !== 'sites'}>
         <h2>账号与凭据</h2>
-        <p className="muted">在桌面窗口登录 B 站、抖音或小红书。登录完成后会记下该站点的凭据，投稿和笔记都会读取。</p>
-        <ul className="form-stack resource-list" aria-label="站点登录状态">
-          {sites.map((status) => <li key={status.site}><span>{status.platform}</span>
-            <span>{status.logging_in ? '正在登录' : status.logged_in ? '已登录' : '未登录'}</span></li>)}
+        <p className="muted">在桌面窗口登录。登录完成后会记下该站点的凭据。</p>
+        <ul className="account-rows" aria-label="站点登录状态">
+          {sites.map((status) => <li key={status.site}>
+            <span className={'account-mark ' + status.site} aria-hidden="true" />
+            <span className="account-name">{status.platform}</span>
+            <span className={'account-lamp' + (status.logged_in ? ' is-on' : '')}>{status.logging_in ? '正在登录' : status.logged_in ? '已登录' : '未登录'}</span>
+            {status.logged_in && !status.logging_in
+              ? <button type="button" onClick={() => signOut(status.site)}>退出</button>
+              : <button type="button" disabled={status.logging_in} onClick={() => signIn(status.site)}>登录</button>}
+          </li>)}
         </ul>
-        <div className="toolbar">
-          {sites.map((status) => status.logged_in && !status.logging_in
-            ? <Button key={status.site} variant="secondary" onClick={() => signOut(status.site)}>退出{status.platform}</Button>
-            : <Button key={status.site} variant="secondary" disabled={status.logging_in} onClick={() => signIn(status.site)}>登录{status.platform}</Button>)}
-        </div>
-        <p className="muted">也可以导入 Netscape Cookie。一小时内，这份登录供对应站点的链接使用。</p>
+        <Disclosure title="高级 / 导入 Cookie"><p className="muted">也可以导入 Netscape Cookie。一小时内，这份登录供对应站点的链接使用。</p>
         <div className="toolbar">
           <Button variant="ghost" size="small" onClick={() => { loginSite.current = '抖音'; loginInput.current?.click() }}>导入抖音 Cookie</Button>
           <Button variant="ghost" size="small" onClick={() => { loginSite.current = '小红书'; loginInput.current?.click() }}>导入小红书 Cookie</Button>
-        </div>
+        </div></Disclosure>
         <input ref={loginInput} hidden type="file" accept=".txt,text/plain" aria-label="选择本站 Cookie 文件" onChange={(event) => {
           const file = event.target.files?.[0]
           const site = loginSite.current

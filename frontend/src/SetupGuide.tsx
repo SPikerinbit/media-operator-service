@@ -103,7 +103,7 @@ export function SetupGuide({ settings, onSettings, onClose }: {
               {!site.logged_in && !skipped[site.site] && <button type="button" className="text-action" onClick={() => setSkipped(current => ({ ...current, [site.site]: true }))}>跳过</button>}
             </li>)}
           </ul>
-          <button type="button" className="button-press-motion" disabled={!accountDone} onClick={() => go('model')}>下一页</button>
+          <button type="button" className="setup-next" disabled={!accountDone} onClick={() => go('model')}>下一页</button>
         </>}
         {step === 'model' && <>
           <h3>准备转录模型</h3>
@@ -116,7 +116,7 @@ export function SetupGuide({ settings, onSettings, onClose }: {
           {chosen?.download.running && <p role="status">正在下载 {chosen.download.percent ?? 0}% {chosen.download.message || ''}</p>}
           {chosen?.available && <p className="is-stamped">模型已核验，可以离线转录。</p>}
           <div className="toolbar">
-            <button type="button" className="button-press-motion" disabled={busy || chosen?.available || chosen?.download.running} onClick={() => void download()}>{chosen?.download.running ? '下载中' : '下载所选模型'}</button>
+            <button type="button" className="setup-next" disabled={busy || chosen?.available || chosen?.download.running} onClick={() => void download()}>{chosen?.download.running ? '下载中' : '下载所选模型'}</button>
             <button type="button" className="text-action" onClick={() => go('key')}>{chosen?.available ? '下一页' : '跳过模型'}</button>
           </div>
         </>}
@@ -125,8 +125,8 @@ export function SetupGuide({ settings, onSettings, onClose }: {
           <label>模型<input value={modelName} onChange={event => setModelName(event.target.value)} /></label>
           <label>API Key<input type="password" value={key} autoComplete="off" placeholder={settings?.has_ai_key ? '已保存，留空则保留' : '粘贴密钥'} onChange={event => setKey(event.target.value)} /></label>
           <div className="toolbar">
-            <button type="button" className="button-press-motion" disabled={busy} onClick={() => void saveKey(false)}>保存</button>
-            <button type="button" className="button-press-motion" disabled={busy || !(key.trim() || settings?.has_ai_key)} onClick={() => void saveKey(true)}>测试连接</button>
+            <button type="button" className="setup-next" disabled={busy} onClick={() => void saveKey(false)}>保存</button>
+            <button type="button" className="setup-next" disabled={busy || !(key.trim() || settings?.has_ai_key)} onClick={() => void saveKey(true)}>测试连接</button>
             <button type="button" className="text-action" onClick={() => go('ready')}>跳过密钥</button>
           </div>
         </>}
@@ -137,7 +137,7 @@ export function SetupGuide({ settings, onSettings, onClose }: {
             <li className={resources?.models.some(item => item.available) ? 'is-stamped' : ''}>模型：{resources?.models.filter(item => item.available).map(item => item.name).join('、') || '尚未下载'}</li>
             <li className={settings?.has_ai_key ? 'is-stamped' : ''}>DeepSeek：{settings?.has_ai_key ? '已保存' : '尚未配置'}</li>
           </ul>
-          <button type="button" className="button-press-motion" onClick={onClose}>合上清单</button>
+          <button type="button" className="setup-next" onClick={onClose}>合上清单</button>
         </>}
       </div>
       {notice && <p className="setup-slip" role="status">{notice}</p>}

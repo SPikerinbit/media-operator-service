@@ -3,7 +3,7 @@ import { useReducedMotion } from 'motion/react'
 import { errorMessage, request } from './api'
 import { Prop, asset } from './WorkbenchEffects'
 import { currentManifest, flapOrigin, useWorkbenchManifest } from './workbenchAnchors'
-import { ShredLever, type NotesMode } from './ShredLever'
+import { type NotesMode } from './ShredLever'
 import { launchTear, playDelivery, playPageTurn, resetDelivery, type DeliveryPhase } from './workbenchMotion'
 import { useMediaQuery } from './ui'
 import { classifyLetters, splitLetters, type InboxState, type Lane, type PaperLine } from './workbenchState'
@@ -278,7 +278,6 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
 
     return <section ref={root} className={'letter-station ' + lane + (tight ? ' is-tight' : compact ? ' is-short' : '')} data-phase={phase === 'identifying' ? 'identify' : phase} aria-label={title + '信箱'} style={{ '--hinge-x': origin[0], '--hinge-y': origin[1], '--plaque-x': manifest.mailbox.anchors.plaque[0], '--plaque-y': manifest.mailbox.anchors.plaque[1], '--seal-x': seal[0], '--seal-y': seal[1], '--lines': pageSize, '--mail-box': mailSize + 'px', '--env-box': envSize + 'px', '--paper-w': paperW + 'px', '--env-tuck': envTuck + 'px', '--mail-top': mailTop + 'px', '--mail-bot': mailBot + 'px', '--env-bot': envBot + 'px', '--stack-gap': stackGap + 'px' } as React.CSSProperties}>
     <header className="station-heading"><h2>{title}</h2><p>{lane === 'publish' ? '投递后再设置。' : '投递后自动整理。'}</p></header>
-    {lane === 'notes' && <div className="home-lever"><ShredLever value={notesMode} onChange={mode => { setNotesMode(mode); localStorage.setItem('workbench-notes-mode', mode) }} /></div>}
     <div className="delivery-apparatus">
       <div className="desk-mailbox" ref={mailRef}>
         <Prop name="mailbox" layer="body" className="mailbox-body" />
