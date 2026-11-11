@@ -11,3 +11,8 @@ src = ["app", "tests", "desktop_entry.py"]
 # Real defects only. Style rules are left off so a pass does not rewrite the tree.
 select = ["E9", "F", "B023"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Stage files run inside app.main and use that module's imports.
+"app/main.py" = ["F401"]
+"app/stages/*.py" = ["F821"]
