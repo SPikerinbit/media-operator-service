@@ -333,6 +333,7 @@ def present(entry):
     shown['result'] = shape_result(shown.get('result') or {})
     if shown['result'].get('refresh_reason'):
         shown['refresh_reason'] = shown['result']['refresh_reason']
+    shown.pop('weread_text', None)
     shown['summary'] = summary_of(shown)
     shown['deletable'] = can_delete(shown)
     return shown
@@ -411,6 +412,7 @@ class Letter(BaseModel):
 class Delivery(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
     lane: Literal['publish', 'notes']
+    notes_mode: Literal['summary', 'curated', 'comprehensive'] = 'curated'
     entries: list[Letter] = Field(min_length=1, max_length=300)
 
 
@@ -421,7 +423,10 @@ def deliver(request: Delivery):
             existing = db.execute('SELECT id FROM workbench_group WHERE request_id=?', (request.request_id,)).fetchone()
             if existing: return {'group_id': existing[0]}
         ident = str(uuid.uuid4())
-        group = {'id': ident, 'lane': request.lane, 'created_at': media.now_iso(), 'options': default_options(),
+        options = default_options()
+        if request.lane == 'notes':
+            options['notes_mode'] = request.notes_mode
+        group = {'id': ident, 'lane': request.lane, 'created_at': media.now_iso(), 'options': options,
                  'overrides': {}, 'prepared': [], 'revision': 0}
         sessions = {}
         with knowledge.database() as db:
@@ -489,8 +494,23 @@ def identify(ident, session_id=''):
             if alive():
                 update(ident, status='rejected', message='投稿只接收视频', kind='local', source=source)
             return
+        weread_text = ''
         if subtitle:
             probe = {'title': Path(source).name, 'media_type': 'subtitle', 'platform': '字幕文件', 'has_audio': False}
+        elif 'weread.qq.com' in (source or '') and entry['lane'] == 'notes':
+            from app import site_profiles, weread
+            try:
+                book = weread.fetch_book(source, weread.cookie_header(site_profiles.cookie_rows(source) or ''))
+            except weread.LoginRequired as error:
+                if alive():
+                    update(ident, status='blocked', message=str(error), platform='微信读书', source=source, kind='url')
+                return
+            except (ValueError, OSError) as error:
+                if alive():
+                    update(ident, status='blocked', message=str(error) or '没能读到微信读书正文', platform='微信读书', source=source, kind='url')
+                return
+            weread_text = book['text']
+            probe = {'title': book['title'] or source, 'platform': '微信读书', 'media_type': 'weread', 'has_audio': False, 'canonical_url': source}
         else:
             reused = cache.reused_probe(source)
             probe = reused if reused else desktop_sources.probe(source, parsed.get('source_kind') or 'url', session_id)
@@ -527,7 +547,7 @@ def identify(ident, session_id=''):
             if duplicate:
                 update(ident, **data, status='duplicate', duplicate_of=duplicate['id'], message='已在队列中，未重复创建')
                 return
-            update(ident, **data, status='ready' if entry['lane']=='publish' else 'starting', message='待设置' if entry['lane']=='publish' else '准备生成笔记')
+            update(ident, **data, weread_text=weread_text, status='ready' if entry['lane']=='publish' else 'starting', message='待设置' if entry['lane']=='publish' else '准备生成笔记')
         if entry['lane'] == 'notes' and alive():
             start_notes(ident, run)
     except Exception as error:
@@ -555,6 +575,15 @@ def start_notes(ident, run=None):
         options = settings_payload(get_group(entry['group_id'])['options'])
         options.update(knowledge_only=True, notes_auto=True, rights_confirmed=True,
                        subtitle_output_mode='en_only', bilibili_upload={'enabled': False}, batch_concurrency=2)
+        if entry.get('probe', {}).get('media_type') == 'weread':
+            text = entry.get('weread_text') or ''
+            if not text.strip():
+                update(ident, status='blocked', message='没有读到微信读书正文')
+                return
+            transcript_id = knowledge.register(Path('weread.txt'), source_kind='url', source=entry.get('source') or '',
+                                               title=entry.get('title') or '微信读书', media_type='note', note_body=text)
+            finish_subtitle(ident, transcript_id, options)
+            return
         if entry['probe']['media_type'] == 'subtitle':
             transcript_id = knowledge.register(Path(entry['source']), source_kind='subtitle', source=entry['source'], title=entry['title'])
             # A local subtitle has no media job; finish it as a persisted inbox task.
@@ -596,10 +625,11 @@ def finish_subtitle(ident, transcript_id, options):
         if done.status!='succeeded':raise ValueError((done.error or {}).get('message') or done.message)
         result.update(done.result or {})
     update(ident,status='running',stage='extract',progress=80,message='正在提取观点',result=result)
-    key=cache.digest(['extract-v3',transcript['digest'],transcript['source'],'curated',options.get('translate_model') or media.TRANSLATE_MODEL])
+    mode=options.get('notes_mode') or 'curated'
+    key=cache.digest(['extract-v3',transcript['digest'],transcript['source'],mode,options.get('translate_model') or media.TRANSLATE_MODEL])
     with cache.flight(key):
         if not cache.read(key):
-            count=knowledge.generate_cards(transcript_id,media.TRANSLATE_API_KEY,options.get('translate_model') or media.TRANSLATE_MODEL,
+            count=knowledge.generate_cards(transcript_id,media.TRANSLATE_API_KEY,options.get('translate_model') or media.TRANSLATE_MODEL,mode,
                                            progress=lambda value,message:update(ident,progress=80+int(value*.19),message=message))
             cache.save(key,'extract','notes',{'transcript_id':transcript_id,'count':count}, transcript.get('source') or '')
     update(ident,status='succeeded',stage='done',progress=100,message='笔记已完成',result=result)

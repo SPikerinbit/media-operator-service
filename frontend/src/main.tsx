@@ -7,6 +7,7 @@ import { Settings, type SettingsSection } from './Settings'
 import { WorkbenchHome } from './WorkbenchHome'
 import { WorkbenchQueue } from './WorkbenchQueue'
 import { useInbox } from './workbenchState'
+import { SetupGuide } from './SetupGuide'
 import './styles.css'
 import './studio.css'
 import './workbench.css'
@@ -62,6 +63,7 @@ function App(){
   }
   function openSettings(section:SettingsSection){setSettingsFocus(section);show('settings')}
   function dismissWelcome(){localStorage.setItem('workbench-onboarding','done');setWelcome(false)}
+  function reopenGuide(){localStorage.removeItem('workbench-onboarding');setWelcome(true)}
   function deckClass(id:View){
     if(leaving===id)return 'is-deck-out'
     if(view===id&&leaving)return 'is-deck-in'
@@ -78,18 +80,9 @@ function App(){
       {(error||inbox.error)&&<div className="notice error" role="alert">{error||inbox.error}<button type="button" onClick={()=>void inbox.refresh()}>重新连接</button></div>}
       <div className={'home-view '+deckClass('home')+(warm&&view!=='home'&&leaving!=='home'?' is-parked':'')} hidden={!warm&&view!=='home'&&leaving!=='home'}><WorkbenchHome data={inbox.data} active={view==='home'} onOpen={show}/></div>
       {(['publish','notes'] as const).map(lane=>(warm||visited.includes(lane))&&<div className={'lane-view '+deckClass(lane)+(warm&&view!==lane&&leaving!==lane?' is-parked':'')} key={lane} hidden={!warm&&view!==lane&&leaving!==lane}><WorkbenchQueue lane={lane} data={inbox.data} settings={settings} active={view===lane} onHome={()=>show('home')} onSettings={openSettings} refresh={inbox.refresh}/></div>)}
-      {(warm||visited.includes('settings'))&&<div className={'settings-view '+deckClass('settings')+(warm&&view!=='settings'&&leaving!=='settings'?' is-parked':'')} hidden={!warm&&view!=='settings'&&leaving!=='settings'}><Settings current={settings} update={setSettings} focus={settingsFocus}/></div>}
+      {(warm||visited.includes('settings'))&&<div className={'settings-view '+deckClass('settings')+(warm&&view!=='settings'&&leaving!=='settings'?' is-parked':'')} hidden={!warm&&view!=='settings'&&leaving!=='settings'}><Settings current={settings} update={setSettings} focus={settingsFocus} onOpenGuide={reopenGuide}/></div>}
     </div></main>
-    {welcome&&<div className="onboarding" role="dialog" aria-labelledby="onboarding-title">
-      <div className="onboarding-sheet">
-        <h2 id="onboarding-title">先把要用的账号准备好</h2>
-        <p>投稿需要 B 站登录。笔记里的抖音、小红书链接也需要各自的登录。可以现在去设置，也可以稍后再说。</p>
-        <div className="toolbar">
-          <button type="button" className="button-press-motion" onClick={()=>{dismissWelcome();openSettings('sites')}}>去登录</button>
-          <button type="button" className="text-action" onClick={dismissWelcome}>稍后再说</button>
-        </div>
-      </div>
-    </div>}
+    {welcome&&<SetupGuide settings={settings} onSettings={setSettings} onClose={dismissWelcome}/>}
   </div></MotionConfig>
 }
 createRoot(document.getElementById('root')!).render(<App/> )

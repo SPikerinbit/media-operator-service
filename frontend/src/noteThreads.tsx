@@ -1,17 +1,16 @@
 import { useEffect, useRef } from 'react'
 import { springAt, SPRING } from './motionSystem'
 
-export type ThreadEnd = { id: number; x1: number; y1: number; x2: number; y2: number; hot: boolean }
+export type ThreadEnd = { id: number; x1: number; y1: number; x2: number; y2: number; hot: boolean; clear: number }
 
 type Live = ThreadEnd & { born: number; index: number }
 
-function curve(a: ThreadEnd, bias: number, settle: number) {
-  const dx = a.x2 - a.x1
-  const sag = (Math.min(36, Math.abs(dx) * 0.12 + 14) + Math.max(0, settle - 1) * 6) * bias
-  const c1x = a.x1 + dx * 0.4
-  const c2x = a.x2 - dx * 0.28
+function curve(a: ThreadEnd, _bias: number, _settle: number) {
+  const gate = Math.max(a.x1 + 24, a.clear || a.x1 + 36)
+  const c1x = gate
   const c1y = a.y1
-  const c2y = a.y2 + Math.min(8, Math.max(0, sag) * 0.15)
+  const c2x = Math.max(gate, a.x2 - 16)
+  const c2y = a.y2
   return `M ${a.x1.toFixed(1)} ${a.y1.toFixed(1)} C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${a.x2.toFixed(1)} ${a.y2.toFixed(1)}`
 }
 
@@ -58,6 +57,7 @@ export function NoteThreads({ threads }: { threads: ThreadEnd[] }) {
           cur.x2 += (next.x2 - cur.x2) * k
           cur.y2 += (next.y2 - cur.y2) * k
           cur.hot = next.hot
+          cur.clear = next.clear
           cur.index = index
           live.current.set(next.id, cur)
           const sprung = reduced ? 1 : springAt(Math.max(0, now - cur.born - index * 90), SPRING.soft)

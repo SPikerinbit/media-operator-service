@@ -3,6 +3,7 @@ import { useReducedMotion } from 'motion/react'
 import { errorMessage, request } from './api'
 import { Prop, asset } from './WorkbenchEffects'
 import { currentManifest, flapOrigin, useWorkbenchManifest } from './workbenchAnchors'
+import { ShredLever, type NotesMode } from './ShredLever'
 import { launchTear, playDelivery, playPageTurn, resetDelivery, type DeliveryPhase } from './workbenchMotion'
 import { useMediaQuery } from './ui'
 import { classifyLetters, splitLetters, type InboxState, type Lane, type PaperLine } from './workbenchState'
@@ -42,6 +43,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const [error, setError] = useState('')
   const [snapshot, setSnapshot] = useState<string[]>([])
   const [press, setPress] = useState(false)
+  const [notesMode, setNotesMode] = useState<NotesMode>(() => (localStorage.getItem('workbench-notes-mode') as NotesMode) || 'curated')
   const [turning, setTurning] = useState(false)
   const [arrived, setArrived] = useState(false)
   const [leavingId, setLeavingId] = useState('')
@@ -244,7 +246,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     requestId.current ||= crypto.randomUUID()
     try {
       const response = await request<{ group_id: string }>('/desktop/inbox/deliveries', 'POST', {
-        request_id: requestId.current, lane, entries: frozen.map(line => ({ id: line.id, text: line.text, local: Boolean(line.local) })),
+        request_id: requestId.current, lane, notes_mode: lane === 'notes' ? notesMode : 'curated', entries: frozen.map(line => ({ id: line.id, text: line.text, local: Boolean(line.local) })),
       })
       requestId.current = ''
       pending.current = response.group_id
@@ -276,6 +278,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
 
     return <section ref={root} className={'letter-station ' + lane + (tight ? ' is-tight' : compact ? ' is-short' : '')} data-phase={phase === 'identifying' ? 'identify' : phase} aria-label={title + '信箱'} style={{ '--hinge-x': origin[0], '--hinge-y': origin[1], '--plaque-x': manifest.mailbox.anchors.plaque[0], '--plaque-y': manifest.mailbox.anchors.plaque[1], '--seal-x': seal[0], '--seal-y': seal[1], '--lines': pageSize, '--mail-box': mailSize + 'px', '--env-box': envSize + 'px', '--paper-w': paperW + 'px', '--env-tuck': envTuck + 'px', '--mail-top': mailTop + 'px', '--mail-bot': mailBot + 'px', '--env-bot': envBot + 'px', '--stack-gap': stackGap + 'px' } as React.CSSProperties}>
     <header className="station-heading"><h2>{title}</h2><p>{lane === 'publish' ? '投递后再设置。' : '投递后自动整理。'}</p></header>
+    {lane === 'notes' && <div className="home-lever"><ShredLever value={notesMode} onChange={mode => { setNotesMode(mode); localStorage.setItem('workbench-notes-mode', mode) }} /></div>}
     <div className="delivery-apparatus">
       <div className="desk-mailbox" ref={mailRef}>
         <Prop name="mailbox" layer="body" className="mailbox-body" />
@@ -283,6 +286,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
         <div className="slot-window" data-slot-window />
         <Prop name="mailbox" layer="slot-front" className="mailbox-slot mailbox-slot-front" />
         <Prop name="mailbox" layer="front" className="mailbox-front" />
+        <span className="slot-flap" aria-hidden="true" />
         <span className="mailbox-name">{title}</span>
       </div>
       <div className="writing-paper">

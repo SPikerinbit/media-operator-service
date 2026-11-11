@@ -3,16 +3,17 @@ import { siteOf } from './shareText'
 
 export type { SiteLogin }
 export type SiteId = SiteLogin['site']
-export type LoginSite = '抖音' | '小红书' | 'B 站'
+export type LoginSite = '抖音' | '小红书' | 'B 站' | '微信读书'
 const sessions: Partial<Record<LoginSite, string>> = {}
 
 export const loginUrl: Record<LoginSite, string> = {
   抖音: 'https://www.douyin.com/',
   小红书: 'https://www.xiaohongshu.com/',
   'B 站': 'https://passport.bilibili.com/login',
+  '微信读书': 'https://weread.qq.com/',
 }
 
-export const siteKey: Record<LoginSite, SiteId> = { 抖音: 'douyin', 小红书: 'xiaohongshu', 'B 站': 'bilibili' }
+export const siteKey: Record<LoginSite, SiteId> = { 抖音: 'douyin', 小红书: 'xiaohongshu', 'B 站': 'bilibili', '微信读书': 'weread' }
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 

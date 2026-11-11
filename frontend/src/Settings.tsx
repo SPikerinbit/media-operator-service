@@ -17,7 +17,7 @@ export type SettingsSection = typeof categories[number][0]
 type Category = SettingsSection
 type SaveSection = 'directory'|'deepseek'|'gpu'|'bilibili'|'obsidian'
 
-export function Settings({ current, update, focus }: { current: Preferences | null; update: (settings: Preferences) => void; focus?: Category }) {
+export function Settings({ current, update, focus, onOpenGuide }: { current: Preferences | null; update: (settings: Preferences) => void; focus?: Category; onOpenGuide?: () => void }) {
   const [category,setCategory] = useState<Category>(focus || 'general')
   const loginInput = useRef<HTMLInputElement>(null)
   const loginSite = useRef<LoginSite>('抖音')
@@ -220,6 +220,7 @@ export function Settings({ current, update, focus }: { current: Preferences | nu
       </section>
       <section className="settings-panel" hidden={category !== 'general'}>
         <div className="section-heading"><div className="section-icon"><FolderOpen size={18}/></div><h2>本地资料</h2></div>
+        <Button variant="secondary" onClick={() => onOpenGuide?.()}>重新打开安装清单</Button>
         <p className="muted">任务、媒体和待发布草稿保存在此目录。切换目录需要重启应用。</p>
         <div className="path-row"><Field label="资料目录"><input value={dataDir} readOnly/></Field>
           <Button variant="secondary" size="small" leadingIcon={FolderOpen} onClick={() => perform(async () => {
@@ -285,8 +286,8 @@ export function Settings({ current, update, focus }: { current: Preferences | nu
       </section>
       <section className="settings-panel" hidden={category !== 'bilibili'}>
         <div className="section-heading"><div className="section-icon"><KeyRound size={18}/></div><h2>B 站投稿</h2></div>
-        <p className="muted">{current?.has_bilibili_credentials ? '已保存投稿凭据。' : '配置后可在视频制作中启用投稿。'}</p>
-        <Disclosure title="投稿凭据"><div className="form-stack">{secretsList.map(([key,name]) => fieldSecret(key,name,'留空保留已保存内容'))}</div></Disclosure>
+        <p className="muted">{current?.has_bilibili_credentials ? 'B 站已登录，投稿可以使用这次凭据。' : '请到「账号与凭据」登录 B 站。下面只在需要时手动填写。'}</p>
+        <Disclosure title="高级 / 手动填写"><div className="form-stack">{secretsList.map(([key,name]) => fieldSecret(key,name,'留空则保留已保存的值'))}</div></Disclosure>
         {saveButton('bilibili')}
       </section>
       </div>

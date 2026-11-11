@@ -35,8 +35,14 @@ SITES = {
         "domains": ("bilibili.com",),
         "session_names": {"SESSDATA", "bili_jct", "DedeUserID"},
     },
+    "weread": {
+        "label": "微信读书",
+        "home": "https://weread.qq.com/",
+        "domains": ("weread.qq.com",),
+        "session_names": {"wr_skey", "wr_vid"},
+    },
 }
-NAMES = {"抖音": "douyin", "小红书": "xiaohongshu", "B 站": "bilibili"}
+NAMES = {"抖音": "douyin", "小红书": "xiaohongshu", "B 站": "bilibili", "微信读书": "weread"}
 BILI_COOKIE_NAMES = {
     "SESSDATA": "BILI_SESSDATA",
     "bili_jct": "BILI_JCT",
@@ -48,7 +54,7 @@ BILI_COOKIE_NAMES = {
 def canonical_site(value):
     key = NAMES.get(value, value)
     if key not in SITES:
-        raise ValueError("仅支持登录抖音、小红书或 B 站")
+        raise ValueError("仅支持登录抖音、小红书、B 站或微信读书")
     return key
 
 

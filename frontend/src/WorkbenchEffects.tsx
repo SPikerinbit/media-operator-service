@@ -266,7 +266,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
       const ash = landedAt.current && statusRef.current === 'running' ? Math.max(0, Math.min(1, (since - 760) / 1500)) : 0
       const visual = !arrivedRef.current ? 0 : statusRef.current === 'running' ? Math.min(1, shown * intro + (1 - shown) * ash) : shown
       const sheet = canvas.current
-      if (lane === 'publish' && sheet) sheet.style.opacity = arrivedRef.current ? String(1 - ash * 0.92) : ''
+      if (lane === 'publish' && sheet) sheet.style.opacity = ''
       const layoutKey = host.clientWidth + 'x' + host.clientHeight
       const paperChanged = Math.abs(visual - painted.current) > 0.001 || host.dataset.layout !== layoutKey
       const local = layoutOf(machine, host)
@@ -397,7 +397,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
     })}
     <canvas ref={canvas} className="process-paper" aria-hidden="true" />
     {lane === 'publish' && <canvas ref={fireNode} className="flame-layer" aria-hidden="true" />}
-    {showStrips && <div className="strip-tray" style={tray ? { left: tray.left, top: tray.top + 18, width: tray.width } : undefined}>{links.slice(0, 8).map(link => <button type="button" key={link.id} className="shred-strip" data-card-id={link.id} data-refs={link.refs.join(' ')} style={{ backgroundImage: textures[link.id] ? `url(${textures[link.id]})` : undefined }} onClick={() => onStrip?.(link)} aria-label={'碎纸 ' + link.id} />)}</div>}
+    {showStrips && <div className="strip-tray" style={tray ? { left: tray.left + tray.width * 0.62, top: tray.top + 64, width: Math.max(108, tray.width * 0.55) } : undefined}>{links.slice(0, 8).map(link => <button type="button" key={link.id} className="shred-strip" data-card-id={link.id} data-refs={link.refs.join(' ')} style={{ backgroundImage: textures[link.id] ? `url(${textures[link.id]})` : undefined }} onClick={() => onStrip?.(link)} aria-label={'碎纸 ' + link.id} />)}</div>}
     <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} layer="front" className="process-machine foreground" />
   </div>
 }

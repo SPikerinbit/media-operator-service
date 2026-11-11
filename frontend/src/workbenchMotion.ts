@@ -272,25 +272,24 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
     }
     flight.style.opacity = String(tuckT > 0.92 ? 1 - ramp(sealT, 0.02, 0.28) : 1)
     nodes.copy.style.opacity = '0'
+    nodes.flap.style.opacity = '1'
+    nodes.closed.style.opacity = '0'
     if (sealT < 0.02) {
-      const waxOff = ramp(elapsed, 20, 130)
-      nodes.flap.style.transform = 'rotateX(0deg)'
-      nodes.flap.style.opacity = String(openT)
-      nodes.closed.style.opacity = String(1 - openT)
+      const open = ramp(elapsed, 40, 320)
+      const waxOff = ramp(elapsed, 20, 160)
+      nodes.flap.style.transform = `rotateX(${(1 - open) * 180}deg)`
       nodes.wax.style.opacity = String(1 - waxOff)
-      nodes.wax.style.transform = `translate(-50%, -50%) translateY(${-12 * waxOff}px) scale(${lerp(1, 0.72, waxOff)})`
+      nodes.wax.style.transform = `translate(-50%, -50%) translateY(${-14 * waxOff}px) scale(${lerp(1, 0.7, waxOff)})`
     } else {
       nodes.flap.style.transform = `rotateX(${Math.min(1, sealT) * 180}deg)`
-      nodes.flap.style.opacity = String(sealT > 0.78 ? 1 - ramp(sealT, 0.78, 0.94) : 1)
-      nodes.closed.style.opacity = String(ramp(sealT, 0.62, 0.9))
-      if (sealT < 0.74) {
+      if (sealT < 0.9) {
         nodes.wax.style.opacity = '0'
-        nodes.wax.style.transform = 'translate(-50%, -50%) scale(.72)'
+        nodes.wax.style.transform = 'translate(-50%, -50%) scale(.7)'
       } else {
-        const stamp = Math.max(0, springAt(((sealT - 0.74) / 0.26) * 280, SPRING.press))
-        const squashY = stamp < 0.62 ? lerp(1.34, 0.84, stamp / 0.62) : lerp(0.84, 1, (stamp - 0.62) / 0.38)
-        const squashX = stamp < 0.62 ? lerp(1.02, 1.1, stamp / 0.62) : lerp(1.1, 1, (stamp - 0.62) / 0.38)
-        nodes.wax.style.opacity = String(Math.min(1, (sealT - 0.74) / 0.08))
+        const stamp = Math.max(0, springAt(((sealT - 0.9) / 0.1) * 220, SPRING.press))
+        const squashY = stamp < 0.62 ? lerp(1.28, 0.86, stamp / 0.62) : lerp(0.86, 1, (stamp - 0.62) / 0.38)
+        const squashX = stamp < 0.62 ? lerp(1, 1.08, stamp / 0.62) : lerp(1.08, 1, (stamp - 0.62) / 0.38)
+        nodes.wax.style.opacity = '1'
         nodes.wax.style.transform = `translate(-50%, -50%) scale(${squashX}, ${squashY})`
       }
     }
@@ -305,9 +304,11 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
         const approach = { x: slotCenter.x, y: metalBottom + half + 10 }
         const lift = { x: home.x - 28, y: (home.y + approach.y) / 2 - 18 }
         const peak = { x: (home.x + approach.x) / 2 - 16, y: Math.min(home.y, approach.y) - 28 }
-        const travel = Math.min(1, insertT / 0.78)
-        const into = ramp(insertT, 0.8, 1)
-        const te = travel * travel * (3 - 2 * travel)
+        const wind = ramp(insertT, 0, 0.16)
+        const travel = Math.min(1, Math.max(0, (insertT - 0.16) / 0.62))
+        const into = ramp(insertT, 0.82, 1)
+        const te = travel * travel * travel * (travel * (travel * 6 - 15) + 10)
+        if (wind > 0.2) nodes.mail.classList.add('is-accepting')
         const sample = Math.min(0.98, Math.max(0.02, into > 0 ? 1 : te))
         let cx = cubic(home.x, lift.x, peak.x, approach.x, into > 0 ? 1 : te)
         let cy = cubic(home.y, lift.y, peak.y, approach.y, into > 0 ? 1 : te)
@@ -319,6 +320,10 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
         const visibleW = visible ? (visible[2] - visible[0]) : 0.84
         const endScale = Math.min(0.28, (mouth.width * 0.92) / Math.max(1, visibleW * restW))
         let scale = lerp(1, approachScale, te)
+        if (wind < 1 && travel <= 0) {
+          cy = home.y + Math.sin(wind * Math.PI) * 12
+          scale = lerp(1, 0.97, wind)
+        }
         if (into > 0) {
           cx = lerp(approach.x, slotCenter.x, into)
           cy = lerp(approach.y, slotCenter.y, into)
@@ -328,6 +333,7 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
             nodes.mail.dataset.fed = '1'
             nodes.mail.classList.add('is-fed')
           }
+          if (into > 0.72) nodes.mail.classList.add('is-shut')
         }
         nodes.env.style.zIndex = into > 0.02 ? '2' : '6'
         nodes.env.style.transformOrigin = 'center center'
@@ -433,7 +439,7 @@ export function resetDelivery(env: HTMLElement, flap: HTMLElement, paper: HTMLEl
   if (copy) copy.style.opacity = ''
   const letter = env.closest('.letter-station')
   const mail = letter?.querySelector<HTMLElement>('.desk-mailbox')
-  if (mail) { mail.classList.remove('is-fed'); delete mail.dataset.fed }
+  if (mail) { mail.classList.remove('is-fed', 'is-accepting', 'is-shut'); delete mail.dataset.fed }
   const stack = letter?.querySelector<HTMLElement>('.sheet-stack')
   if (stack) stack.style.opacity = ''
   const hint = letter?.querySelector<HTMLElement>('.paper-hint')

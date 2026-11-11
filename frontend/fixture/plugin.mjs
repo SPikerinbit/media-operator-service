@@ -59,6 +59,7 @@ const settings = {
     { site: 'douyin', platform: '抖音', logged_in: false, logging_in: false },
     { site: 'xiaohongshu', platform: '小红书', logged_in: false, logging_in: false },
     { site: 'bilibili', platform: 'B 站', logged_in: false, logging_in: false },
+    { site: 'weread', platform: '微信读书', logged_in: false, logging_in: false },
   ],
 }
 
@@ -109,7 +110,9 @@ export function fixturePlugin() {
         if (path === '/desktop/video-defaults' && req.method === 'GET') return send(res, 200, { output: null, subtitle_style: null })
         if (path === '/desktop/video-defaults' && req.method === 'PUT') return send(res, 200, await readBody(req))
         if (path === '/desktop/resources') return send(res, 200, { models: [{ name: 'small', available: true, size: 5e8, download: {} }], checks: [], free_bytes: 2e10 })
-        if (path === '/desktop/resources/check') return send(res, 200, { models: [], checks: [{ label: 'ffmpeg', ready: true }], free_bytes: 2e10 })
+        if (path === '/desktop/resources/check') return send(res, 200, { models: [], checks: [{ label: 'NVIDIA / GPU 推理', ready: false }, { label: 'FFmpeg', ready: true }], free_bytes: 2e10 })
+        if (path.startsWith('/desktop/resources/models/') && req.method === 'POST') return send(res, 200, { models: [{ name: path.split('/').pop(), available: true, size: 5e8, download: { running: false, percent: 100, message: '本地模型已准备好' } }] })
+        if (path === '/desktop/deepseek/test' && req.method === 'POST') return send(res, 200, { ok: true, model: 'deepseek-chat' })
         if (path === '/desktop/sites') return send(res, 200, { sites: settings.site_logins })
         if (path.startsWith('/desktop/sites/')) return send(res, 200, settings.site_logins[0])
         if (path === '/desktop/inbox/deliveries' && req.method === 'POST') {
