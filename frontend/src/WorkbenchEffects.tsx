@@ -165,6 +165,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
   const parkedRef = useRef(parked)
   const activeRef = useRef(active)
   const arrivedRef = useRef(arrived)
+  const landedAt = useRef(0)
   const markRef = useRef(mark)
   const reducedRef = useRef(false)
   const paint = useRef<(now: number) => boolean>(() => false)
@@ -179,6 +180,8 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
   parkedRef.current = parked
   activeRef.current = Boolean(active)
   arrivedRef.current = arrived
+  if (arrived && status === 'running' && landedAt.current === 0) landedAt.current = performance.now()
+  if (!arrived) landedAt.current = 0
   markRef.current = mark
   const reduced = useReducedMotion()
   reducedRef.current = Boolean(reduced)
@@ -258,13 +261,17 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
       if (!running && !decorative) shown = goal.current
       if (goal.current < displayed.current && !running) shown = goal.current
       displayed.current = shown
-      const visual = !arrivedRef.current ? 0 : shown
+      const land = landedAt.current ? Math.min(1, (now - landedAt.current) / 620) : (arrivedRef.current ? 1 : 0)
+      const visual = !arrivedRef.current ? 0 : statusRef.current === 'running' ? shown * land : shown
       const layoutKey = host.clientWidth + 'x' + host.clientHeight
       const paperChanged = Math.abs(visual - painted.current) > 0.001 || host.dataset.layout !== layoutKey
       const local = layoutOf(machine, host)
       let edgeViewport = 0
       if (lane === 'publish') {
         const pose = burnPaper(local, spec, arrivedRef.current ? 1 - visual : 1)
+        const drop = local.height * 0.07
+        pose.y += drop
+        pose.edgeY += drop
         const hostBox = host.getBoundingClientRect()
         const rim = anchorPixels(local, spec.brazier.anchors.rim, spec.brazier.size)
         edgeViewport = hostBox.top + rim.y * (hostBox.height / Math.max(1, host.clientHeight))

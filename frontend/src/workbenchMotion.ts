@@ -6,11 +6,11 @@ const srcOf = (base: string, name: string) => `${base}workbench/${name}.webp`
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches
 
 export const DELIVERY_PHASES = [
-  { id: 'fold', ms: 720 },
-  { id: 'tuck', ms: 380 },
-  { id: 'seal', ms: 520 },
-  { id: 'insert', ms: 760 },
-  { id: 'route', ms: 460 },
+  { id: 'fold', ms: 980 },
+  { id: 'tuck', ms: 420 },
+  { id: 'seal', ms: 560 },
+  { id: 'insert', ms: 980 },
+  { id: 'route', ms: 480 },
 ] as const
 
 export type DeliveryPhase = (typeof DELIVERY_PHASES)[number]['id']
@@ -33,18 +33,32 @@ type DeliveryNodes = {
 type Point = { x: number; y: number }
 
 function phaseOf(u: number): DeliveryPhase {
-  if (u < 0.28) return 'fold'
-  if (u < 0.42) return 'tuck'
-  if (u < 0.62) return 'seal'
-  if (u < 0.84) return 'insert'
+  if (u < 0.32) return 'fold'
+  if (u < 0.46) return 'tuck'
+  if (u < 0.64) return 'seal'
+  if (u < 0.86) return 'insert'
   return 'route'
 }
 
-function foldAngle(elapsed: number, delay: number, dur: number) {
-  const t = Math.min(1, Math.max(0, (elapsed - delay) / dur))
-  const eased = t * t * (3 - 2 * t)
-  const settle = springAt(Math.max(0, elapsed - delay - dur * 0.62), SPRING.soft)
-  return eased * 168 + Math.max(0, settle - 1) * 10
+/** Swing to the edge, hold the foreshortened pose, then lay the panel down. */
+function foldAngle(elapsed: number, delay: number) {
+  const e = elapsed - delay
+  if (e <= 0) return 0
+  if (e < 140) return (e / 140) * 72
+  if (e < 280) return 72 + ((e - 140) / 140) * 34
+  if (e < 460) return 106 + ((e - 280) / 180) * 66
+  const s = Math.min(1, (e - 460) / 160)
+  return 172 + Math.max(0, springAt(s * 220, SPRING.press) - 1) * 5
+}
+
+function cubic(a: number, b: number, c: number, d: number, t: number) {
+  const u = 1 - t
+  return u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d
+}
+
+function cubicTan(a: number, b: number, c: number, d: number, t: number) {
+  const u = 1 - t
+  return 3 * u * u * (b - a) + 6 * u * t * (c - b) + 3 * t * t * (d - c)
 }
 
 function quad(a: number, b: number, c: number, t: number) {
@@ -105,6 +119,8 @@ function castShadow() {
 function buildFold(lines: string[], width: number, height: number) {
   const sheet = document.createElement('div')
   sheet.className = 'fold-sheet'
+  const cam = document.createElement('div')
+  cam.className = 'fold-cam'
   const stage = document.createElement('div')
   stage.className = 'fold-stage'
   const chunks = [lines.slice(0, 3), lines.slice(3, 5), lines.slice(5, 8)]
@@ -148,8 +164,9 @@ function buildFold(lines: string[], width: number, height: number) {
   hingeMid.append(creaseMid, mid, hingeBot)
   stage.style.height = height + 'px'
   stage.append(top, hingeMid)
-  sheet.append(stage)
-  return { sheet, hingeMid, hingeBot }
+  cam.append(stage)
+  sheet.append(cam)
+  return { sheet, stage, hingeMid, hingeBot, creaseMid, creaseBot }
 }
 
 /** Fold, tuck, seal, insert, and route as one continuous gesture. */
@@ -173,9 +190,12 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
   const originY = homeRect?.top || 0
   pin(flight, originX, originY, sheetW, sheetH)
   flight.style.transformOrigin = '0 0'
-  flight.style.perspective = '1200px'
+  flight.style.willChange = 'auto'
+  flight.style.perspective = ''
   const source = (nodes.sheet?.closest('.sheet-stack') as HTMLElement | null) || nodes.sheet || null
+  const hint = nodes.sheet?.closest('.writing-paper')?.querySelector<HTMLElement>('.paper-hint') || null
   if (source) source.style.opacity = '0'
+  if (hint) hint.style.opacity = '0'
   const shade = castShadow()
   shade.dataset.lane = lane
   document.body.append(shade)
@@ -188,6 +208,7 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
   const raise = Math.max(0, originY + sheetH - (window.innerHeight - 28))
   const finish = () => {
     if (source) source.style.opacity = ''
+    if (hint) hint.style.opacity = ''
     flight.remove()
     shade.remove()
     route?.remove()
@@ -198,13 +219,22 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
     const phase = phaseOf(u)
     if (phase !== announced) { announced = phase; onPhase(phase) }
     const elapsed = now - started
-    const tuckT = ramp(u, 0.26, 0.44)
-    const sealT = ramp(u, 0.42, 0.62)
-    const insertT = ramp(u, 0.66, 0.94)
-    const fold1 = foldAngle(elapsed, 40, 460)
-    const fold2 = foldAngle(elapsed, 420, 480)
+    const tuckT = ramp(u, 0.32, 0.48)
+    const sealT = ramp(u, 0.46, 0.64)
+    const insertT = ramp(u, 0.66, 0.96)
+    const openT = ramp(elapsed, 40, 240)
+    const fold1 = foldAngle(elapsed, 280)
+    const fold2 = foldAngle(elapsed, 500)
+    const tiltIn = ramp(elapsed, 0, 180)
+    built.stage.style.transform = `rotateX(${tiltIn * 26}deg) rotateY(${tiltIn * -18}deg)`
     built.hingeBot.style.transform = `rotateX(${fold1}deg)`
     built.hingeMid.style.transform = `rotateX(${fold2}deg)`
+    const crease = (el: HTMLElement, angle: number) => {
+      const edge = Math.sin(Math.min(180, Math.max(0, angle)) * Math.PI / 180)
+      el.style.opacity = String(0.15 + edge * 0.85)
+    }
+    crease(built.creaseBot, fold1)
+    crease(built.creaseMid, fold2)
     const present = ramp(elapsed / 240, 0, 1)
     const yLift = raise * present
     const envBox = nodes.env.getBoundingClientRect()
@@ -240,58 +270,67 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
       flight.style.zIndex = '40'
       flight.style.transform = `translate3d(${originX}px, ${originY - yLift}px, 0) scale(${tuckScale})`
     }
-    flight.style.opacity = String(tuckT > 0.92 ? 1 - ramp(sealT, 0.05, 0.35) : 1)
+    flight.style.opacity = String(tuckT > 0.92 ? 1 - ramp(sealT, 0.02, 0.28) : 1)
     nodes.copy.style.opacity = '0'
-    const swinging = sealT > 0.08 && sealT < 0.74
-    nodes.flap.style.transform = `rotateX(${Math.min(1, sealT) * 180}deg)`
-    nodes.flap.style.opacity = String(sealT > 0.82 ? 1 - ramp(sealT, 0.82, 0.96) : 1)
-    nodes.closed.style.opacity = String(ramp(sealT, 0.7, 0.92))
-    if (swinging) {
-      nodes.wax.style.opacity = '0'
-      nodes.wax.style.transform = 'translate(-50%, -50%) scale(1)'
-    } else if (sealT >= 0.74) {
-      const stamp = Math.max(0, springAt(((sealT - 0.74) / 0.26) * 280, SPRING.press))
-      const squashY = stamp < 0.62 ? lerp(1.34, 0.84, stamp / 0.62) : lerp(0.84, 1, (stamp - 0.62) / 0.38)
-      const squashX = stamp < 0.62 ? lerp(1.02, 1.1, stamp / 0.62) : lerp(1.1, 1, (stamp - 0.62) / 0.38)
-      nodes.wax.style.opacity = String(Math.min(1, (sealT - 0.74) / 0.08))
-      nodes.wax.style.transform = `translate(-50%, -50%) scale(${squashX}, ${squashY})`
+    if (sealT < 0.02) {
+      const waxOff = ramp(elapsed, 20, 130)
+      nodes.flap.style.transform = 'rotateX(0deg)'
+      nodes.flap.style.opacity = String(openT)
+      nodes.closed.style.opacity = String(1 - openT)
+      nodes.wax.style.opacity = String(1 - waxOff)
+      nodes.wax.style.transform = `translate(-50%, -50%) translateY(${-12 * waxOff}px) scale(${lerp(1, 0.72, waxOff)})`
     } else {
-      nodes.wax.style.opacity = '1'
-      nodes.wax.style.transform = 'translate(-50%, -50%) scale(1)'
+      nodes.flap.style.transform = `rotateX(${Math.min(1, sealT) * 180}deg)`
+      nodes.flap.style.opacity = String(sealT > 0.78 ? 1 - ramp(sealT, 0.78, 0.94) : 1)
+      nodes.closed.style.opacity = String(ramp(sealT, 0.62, 0.9))
+      if (sealT < 0.74) {
+        nodes.wax.style.opacity = '0'
+        nodes.wax.style.transform = 'translate(-50%, -50%) scale(.72)'
+      } else {
+        const stamp = Math.max(0, springAt(((sealT - 0.74) / 0.26) * 280, SPRING.press))
+        const squashY = stamp < 0.62 ? lerp(1.34, 0.84, stamp / 0.62) : lerp(0.84, 1, (stamp - 0.62) / 0.38)
+        const squashX = stamp < 0.62 ? lerp(1.02, 1.1, stamp / 0.62) : lerp(1.1, 1, (stamp - 0.62) / 0.38)
+        nodes.wax.style.opacity = String(Math.min(1, (sealT - 0.74) / 0.08))
+        nodes.wax.style.transform = `translate(-50%, -50%) scale(${squashX}, ${squashY})`
+      }
     }
     if (insertT > 0 && mail.width > 2) {
       const slot = manifest.mailbox.anchors.slotFront
       if (slot) {
         const mouth = normBox(mail, slot, manifest.mailbox.size)
         const slotCenter = { x: mouth.left + mouth.width / 2, y: mouth.top + mouth.height * 0.35 }
-        const approach = { x: slotCenter.x - 6, y: slotCenter.y + mouth.height + 28 }
-        const ctrl = { x: (home.x + approach.x) / 2 - 48, y: Math.min(home.y, approach.y) - 86 }
-        const travel = Math.min(1, insertT / 0.66)
-        const into = ramp(insertT, 0.6, 1)
-        const eased = travel * travel * (3 - 2 * travel)
-        let cx = quad(home.x, ctrl.x, approach.x, eased)
-        let cy = quad(home.y, ctrl.y, approach.y, eased)
-        const tx = quadTan(home.x, ctrl.x, approach.x, Math.min(0.96, Math.max(0.04, eased)))
-        const ty = quadTan(home.y, ctrl.y, approach.y, Math.min(0.96, Math.max(0.04, eased)))
-        let tilt = Math.max(-18, Math.min(12, Math.atan2(ty, tx) * 180 / Math.PI * 0.2))
+        const approach = { x: slotCenter.x + 8, y: slotCenter.y + 36 }
+        const lift = { x: home.x - 72, y: home.y - 64 }
+        const peak = { x: slotCenter.x - 28, y: slotCenter.y - 130 }
+        const travel = Math.min(1, insertT / 0.7)
+        const into = ramp(insertT, 0.68, 1)
+        const te = travel * travel * (3 - 2 * travel)
+        const sample = Math.min(0.98, Math.max(0.02, into > 0 ? 1 : te))
+        let cx = cubic(home.x, lift.x, peak.x, approach.x, into > 0 ? 1 : te)
+        let cy = cubic(home.y, lift.y, peak.y, approach.y, into > 0 ? 1 : te)
+        const tx = cubicTan(home.x, lift.x, peak.x, approach.x, sample)
+        const ty = cubicTan(home.y, lift.y, peak.y, approach.y, sample)
+        let tilt = Math.atan2(ty, tx) * 180 / Math.PI
+        tilt = Math.max(-36, Math.min(28, tilt * 0.5))
         const visible = manifest.envelope.visible_bounds
         const visibleW = visible ? (visible[2] - visible[0]) : 0.84
         const endScale = Math.min(0.32, (mouth.width * 0.92) / Math.max(1, visibleW * restW))
-        let scale = lerp(1, Math.max(endScale, 0.42), eased)
+        const depth = Math.sin(Math.PI * Math.min(1, into > 0 ? 1 : te))
+        let scale = lerp(1, 1.16, depth)
         if (into > 0) {
           cx = lerp(approach.x, slotCenter.x, into)
           cy = lerp(approach.y, slotCenter.y - 2, into)
-          scale = lerp(Math.max(endScale, 0.42), endScale, into)
-          tilt = lerp(tilt, -3, into)
+          scale = lerp(1.04, endScale, into)
+          tilt = lerp(tilt, -6, into)
           if (!nodes.mail.dataset.fed) {
             nodes.mail.dataset.fed = '1'
             nodes.mail.classList.add('is-fed')
           }
         }
-        nodes.env.style.zIndex = into > 0.04 ? '2' : '6'
+        nodes.env.style.zIndex = into > 0.28 ? '2' : '6'
         nodes.env.style.transformOrigin = 'center center'
         nodes.env.style.transform = `translate3d(${cx - home.x}px, ${cy - home.y}px, 0) scale(${scale}) rotate(${tilt}deg)`
-        if (into > 0.08) {
+        if (into > 0.42) {
           const s = Math.max(0.05, scale)
           const top = Math.max(0, (mouth.top - cy) / s + restH / 2 - 4 / s)
           const bottom = Math.max(0, restH - ((mouth.top + mouth.height - cy) / s + restH / 2) - 3 / s)
@@ -302,10 +341,9 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
             : ''
         } else nodes.env.style.clipPath = ''
         nodes.env.style.opacity = String(1 - ramp(insertT, 0.94, 1))
-        const chordY = lerp(home.y, approach.y, eased)
-        const lift = Math.max(0, chordY - cy)
-        shade.style.opacity = String(0.5 * (1 - into) * Math.max(0.25, 1 - lift / 160))
-        shade.style.transform = `translate3d(${cx - restW * scale * 0.22 + 10}px, ${chordY + restH * 0.12}px, 0) scale(${Math.max(0.35, scale) * (1 + lift / 90)}, ${0.55 + lift / 220})`
+        const groundY = Math.max(home.y, cy) + restH * 0.08
+        shade.style.opacity = String(0.28 * (1 - into))
+        shade.style.transform = `translate3d(${cx - 28}px, ${groundY}px, 0) scale(${0.7 + depth * 0.5}, 0.6)`
         const exit = manifest.mailbox.anchors.exit
         if (u > 0.88 && exit) {
           const side = shell?.querySelector<HTMLElement>(`[data-mail-slot="${lane}"]`)
@@ -378,6 +416,7 @@ export function resetDelivery(env: HTMLElement, flap: HTMLElement, paper: HTMLEl
   env.style.clipPath = ''
   env.style.opacity = ''
   flap.style.transform = ''
+  flap.style.opacity = ''
   paper.style.display = ''
   paper.style.visibility = 'hidden'
   paper.style.opacity = ''
@@ -395,6 +434,8 @@ export function resetDelivery(env: HTMLElement, flap: HTMLElement, paper: HTMLEl
   if (mail) { mail.classList.remove('is-fed'); delete mail.dataset.fed }
   const stack = letter?.querySelector<HTMLElement>('.sheet-stack')
   if (stack) stack.style.opacity = ''
+  const hint = letter?.querySelector<HTMLElement>('.paper-hint')
+  if (hint) hint.style.opacity = ''
   const lane = letter?.classList.contains('notes') ? 'notes' : 'publish'
   document.querySelectorAll('.fold-sheet,.routing-letter,.slot-letter,.cast-shadow').forEach(node => {
     if ((node as HTMLElement).dataset.lane === lane) node.remove()
@@ -512,6 +553,9 @@ export function flyTaskPaper(from: DOMRect, to: () => Point | null, title: strin
   card.dataset.lane = 'task'
   card.setAttribute('aria-hidden', 'true')
   card.textContent = title
+  const lip = document.createElement('i')
+  lip.className = 'burn-lip'
+  card.append(lip)
   const shade = castShadow()
   shade.dataset.lane = 'task'
   document.body.append(card, shade)
@@ -521,7 +565,6 @@ export function flyTaskPaper(from: DOMRect, to: () => Point | null, title: strin
   card.style.opacity = '0'
   card.style.transformOrigin = 'center center'
   const started = performance.now()
-  const anticipate = 170
   let host: HTMLElement | null = null
   let told = false
   let cancel = () => {}
@@ -531,62 +574,57 @@ export function flyTaskPaper(from: DOMRect, to: () => Point | null, title: strin
       const dest = to()
       if (!dest) { clear(); if (!told) { told = true; resolve() }; return false }
       const elapsed = now - started
-      const ant = Math.min(1, elapsed / anticipate)
-      const antEase = ant * ant * (3 - 2 * ant)
-      if (elapsed < anticipate) {
-        const y = from.top + lerp(12, -16, antEase)
-        card.style.opacity = String(antEase)
-        card.style.transform = `translate3d(${from.left}px, ${y}px, 0) scale(${lerp(0.92, 1, antEase)}) rotate(${lerp(3, -7, antEase)}deg)`
-        shade.style.opacity = String(0.32 * antEase)
-        shade.style.transform = `translate3d(${from.left + 8}px, ${from.bottom - 6}px, 0) scale(${lerp(0.7, 1.05, antEase)}, .8)`
-        return true
-      }
-      const travel = Math.min(1, (elapsed - anticipate) / 860)
-      const slow = travel * travel * (3 - 2 * travel)
-      const resist = 1 - Math.pow(1 - travel, 2.6)
-      const along = slow * 0.4 + resist * 0.6
+      const travel = Math.min(1, elapsed / 1100)
+      const te = travel * travel * (3 - 2 * travel)
+      const fadeIn = ramp(elapsed, 0, 140)
       const sx = from.left + w0 / 2
-      const sy = from.top + h0 / 2 - 16
-      const arc = Math.sin(Math.PI * along) * 64 * (1 - along * 0.15)
-      const sway = Math.sin(along * Math.PI * 2.4) * 12 * (1 - along)
-      const flutter = Math.sin(along * 16) * 7 * (1 - along * 0.65)
-      const x = lerp(sx, dest.x, along) + sway
-      const y = lerp(sy, dest.y, along) - arc
-      const rot = lerp(-8, 5, along) + flutter
-      const sink = ramp(along, 0.64, 1)
-      if (!host && sink > 0) host = liveProcess()
-      if (sink > 0.02 && host) {
+      const sy = from.top + h0 / 2
+      const end = { x: dest.x, y: dest.y + 42 }
+      const c1 = { x: sx + (end.x - sx) * 0.2, y: sy - 78 }
+      const c2 = { x: sx + (end.x - sx) * 0.78, y: Math.min(sy, end.y) - 110 }
+      const tx = cubicTan(sx, c1.x, c2.x, end.x, Math.min(0.98, Math.max(0.02, te)))
+      const ty = cubicTan(sy, c1.y, c2.y, end.y, Math.min(0.98, Math.max(0.02, te)))
+      const len = Math.hypot(tx, ty) || 1
+      const sway = Math.sin(te * Math.PI * 2.1) * 16 * (1 - te * 0.35)
+      const x = cubic(sx, c1.x, c2.x, end.x, te) + (-ty / len) * sway
+      const y = cubic(sy, c1.y, c2.y, end.y, te) + (tx / len) * sway
+      const rot = Math.max(-22, Math.min(18, Math.atan2(ty, tx) * 180 / Math.PI * 0.18)) + Math.sin(te * 9) * 4 * (1 - te)
+      if (!host) host = liveProcess()
+      const sink = ramp(te, 0.58, 0.92)
+      const burn = ramp(te, 0.72, 1)
+      let scaleX = lerp(1, 140 / w0, te)
+      let scaleY = lerp(1, 96 / h0, te)
+      if (sink > 0.04 && host) {
         const front = host.querySelector('.process-machine.foreground')
         if (card.parentElement !== host) {
           if (front) host.insertBefore(card, front)
           else host.append(card)
         }
         const box = host.getBoundingClientRect()
-        const scaleX = lerp(1, (box.width * 0.46) / w0, along)
-        const scaleY = lerp(1, (box.height * 0.42) / h0, along)
-        const drop = sink * 22
+        scaleX = lerp(scaleX, (box.width * 0.46) / w0, sink)
+        scaleY = lerp(scaleY, (box.height * 0.5) / h0, sink)
         card.style.position = 'absolute'
         card.style.zIndex = '3'
         card.style.left = '0'
         card.style.top = '0'
         card.style.transformOrigin = 'center center'
-        card.style.transform = `translate3d(${x - box.left - w0 / 2}px, ${y - box.top + drop - h0 / 2}px, 0) scale(${scaleX}, ${scaleY}) rotate(${rot * (1 - sink)}deg)`
+        card.style.transform = `translate3d(${x - box.left - w0 / 2}px, ${y - box.top - h0 / 2}px, 0) scale(${scaleX}, ${scaleY}) rotate(${rot * (1 - sink)}deg)`
       } else {
         if (card.parentElement !== document.body) document.body.append(card)
         card.style.position = 'fixed'
         card.style.zIndex = '60'
         card.style.transformOrigin = 'center center'
-        const scaleX = lerp(1, 140 / w0, along)
-        const scaleY = lerp(1, 92 / h0, along)
-        card.style.transform = `perspective(900px) translate3d(${x - w0 / 2}px, ${y - h0 / 2}px, 0) scale(${scaleX}, ${scaleY}) rotate(${rot}deg)`
+        card.style.transform = `translate3d(${x - w0 / 2}px, ${y - h0 / 2}px, 0) scale(${scaleX}, ${scaleY}) rotate(${rot}deg)`
       }
-      const fade = ramp(along, 0.8, 1)
-      card.style.opacity = String((elapsed < anticipate + 40 ? antEase : 1) * (1 - fade))
-      card.classList.toggle('is-ember', along > 0.7)
-      const floorY = lerp(from.bottom, dest.y + 18, along)
-      shade.style.opacity = String(0.42 * (1 - fade) * Math.max(0.2, 1 - arc / 120))
-      shade.style.transform = `translate3d(${x - 34 + 8}px, ${floorY}px, 0) scale(${0.8 + arc / 70}, ${0.55 + arc / 180})`
-      if (!told && along > 0.78) { told = true; resolve() }
+      lip.style.opacity = String(Math.min(1, burn * 1.6))
+      lip.style.bottom = `${burn * 42}%`
+      card.style.clipPath = burn > 0.03 ? `inset(0 0 ${burn * 42}% 0)` : ''
+      const fade = ramp(burn, 0.45, 1)
+      card.style.opacity = String(fadeIn * (1 - fade))
+      card.classList.toggle('is-ember', burn > 0.08)
+      shade.style.opacity = String(0.3 * fadeIn * (1 - sink) * (1 - fade))
+      shade.style.transform = `translate3d(${x - 30}px, ${Math.max(sy, y) + 10}px, 0) scale(${0.8 + Math.sin(Math.PI * te) * 0.4}, .6)`
+      if (!told && te > 0.74) { told = true; resolve() }
       if (fade < 1) return true
       clear()
       return false

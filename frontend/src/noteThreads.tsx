@@ -7,12 +7,11 @@ type Live = ThreadEnd & { born: number; index: number }
 
 function curve(a: ThreadEnd, bias: number, settle: number) {
   const dx = a.x2 - a.x1
-  const sag = (Math.min(54, Math.abs(dx) * 0.16 + 22) + Math.max(0, settle - 1) * 10) * bias
-  const yMid = (a.y1 + a.y2) / 2
-  const c1x = a.x1 + dx * 0.32
-  const c2x = a.x1 + dx * 0.68
-  const c1y = yMid + sag
-  const c2y = yMid + sag * 0.82
+  const sag = (Math.min(36, Math.abs(dx) * 0.12 + 14) + Math.max(0, settle - 1) * 6) * bias
+  const c1x = a.x1 + dx * 0.42
+  const c2x = a.x2 - dx * 0.34
+  const c1y = a.y1 + sag * 0.25
+  const c2y = a.y2 + sag * 0.2
   return `M ${a.x1.toFixed(1)} ${a.y1.toFixed(1)} C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${a.x2.toFixed(1)} ${a.y2.toFixed(1)}`
 }
 

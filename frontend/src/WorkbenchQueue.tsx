@@ -261,11 +261,17 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     const draw=()=>{
       const box=host.getBoundingClientRect()
       const paths=links.flatMap(link=>{
-        const strip=host.querySelector(`[data-card-id="${link.id}"]`)?.getBoundingClientRect()
-        const slip=host.querySelector(`[data-slip-id="${link.id}"]`)?.getBoundingClientRect()
+        const stripEl=host.querySelector(`[data-card-id="${link.id}"]`)
+        const slipEl=host.querySelector(`[data-slip-id="${link.id}"]`)
+        const strip=stripEl?.getBoundingClientRect()
+        const slip=slipEl?.getBoundingClientRect()
         if(!strip||!slip||strip.width<2||slip.width<2)return []
         if(strip.bottom<box.top||strip.top>box.bottom||slip.bottom<box.top||slip.top>box.bottom)return []
-        const x1=strip.right-box.left,y1=strip.top+strip.height/2-box.top,x2=slip.left-box.left,y2=slip.top+slip.height/2-box.top
+        const claim=slipEl?.querySelector('.slip-body')?.getBoundingClientRect()
+        const x1=strip.right-box.left-1
+        const y1=strip.top+strip.height*0.5-box.top
+        const x2=slip.left-box.left
+        const y2=(claim&&claim.height>2?claim.top+Math.min(11,claim.height*0.35):slip.top+12)-box.top
         return [{ id: link.id, x1, y1, x2, y2, hot: link.id === activeCard }]
       })
       setThreads(paths)
