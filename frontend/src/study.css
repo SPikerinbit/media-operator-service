@@ -100,7 +100,8 @@
 .notes-completion .shred-lever { position: absolute; left: 12px; bottom: 16px; z-index: 6; }
 .workspace.is-decking { overflow: hidden; }
 .is-deck-in, .is-deck-out { will-change: transform, opacity; backface-visibility: hidden; }
-.is-deck-out { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+.is-deck-in, .is-deck-out { background: #e7eef2; }
+.is-deck-out { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
 .home-view.is-parked, .lane-view.is-parked, .settings-view.is-parked {
   position: absolute; inset: 0; opacity: 0; pointer-events: none; z-index: 0;
   transform: translate3d(0, 0, 0); contain: layout paint;
@@ -116,20 +117,18 @@
 .workspace[data-motion="book"] .is-deck-in { animation: book-in 760ms var(--mass) both; transform-origin: left center; }
 .workspace[data-motion="book"] .is-deck-out { animation: drawer-out 160ms linear forwards; }
 @keyframes drawer-in {
-  0% { opacity: 0; transform: translate3d(92px, 0, 0); }
-  16% { opacity: 1; transform: translate3d(54px, 0, 0); }
-  72% { opacity: 1; transform: translate3d(-8px, 0, 0); }
+  0% { opacity: 1; transform: translate3d(108%, 0, 0); }
+  70% { opacity: 1; transform: translate3d(-12px, 0, 0); }
   100% { opacity: 1; transform: none; }
 }
 @keyframes drawer-in-back {
-  0% { opacity: 0; transform: translate3d(-92px, 0, 0); }
-  16% { opacity: 1; transform: translate3d(-54px, 0, 0); }
-  72% { opacity: 1; transform: translate3d(8px, 0, 0); }
+  0% { opacity: 1; transform: translate3d(-108%, 0, 0); }
+  70% { opacity: 1; transform: translate3d(12px, 0, 0); }
   100% { opacity: 1; transform: none; }
 }
-@keyframes drawer-out { to { opacity: 0; transform: translate3d(-64px, 0, 0); } }
+@keyframes drawer-out { to { opacity: 1; transform: translate3d(-108%, 0, 0); } }
 .workspace[data-dir="-1"] .is-deck-out { animation-name: drawer-out-back; }
-@keyframes drawer-out-back { to { opacity: 0; transform: translate3d(64px, 0, 0); } }
+@keyframes drawer-out-back { to { opacity: 1; transform: translate3d(108%, 0, 0); } }
 @keyframes book-in {
   0% { opacity: 0; transform: perspective(1400px) rotateY(-46deg); }
   24% { opacity: 1; transform: perspective(1400px) rotateY(-28deg); }
@@ -139,6 +138,15 @@
 
 .mailroom, .workbench-queue { background: transparent; box-shadow: none; margin: 0; }
 .mailroom { padding: 22px 36px 16px; }
+.mailroom-heading, .two-mailboxes { width: min(1120px, 100%); margin-inline: auto; }
+.incoming-list { position: relative; }
+.incoming-list footer { margin-top: auto; display: flex; align-items: flex-end; justify-content: space-between; min-height: 108px; }
+.incoming-letter strong { white-space: normal; overflow: visible; }
+.preview-wait {
+  min-height: 140px; border-radius: 8px; color: #d5e0e6; display: grid; place-items: center;
+  background: linear-gradient(165deg, rgba(255,255,255,.16), transparent 28%), linear-gradient(180deg, #243038, #10161a);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 0 0 7px #cbbfa6, 3px 6px 10px rgba(36,52,68,.16);
+}
 @media (max-height: 820px) {
   .mailroom { padding: 12px 28px 8px; }
   .mailroom-heading h1 { font-size: 24px; }
@@ -409,8 +417,8 @@
 }
 .letter-insert { inset: 0; overflow: visible; background: transparent; }
 .delivery-envelope { perspective: none; }
-.delivery-apparatus .envelope-flap { opacity: 1; transform: rotateX(180deg); }
-.delivery-apparatus .flap-closed { opacity: 0; }
+.delivery-apparatus .envelope-flap { opacity: 0; }
+.delivery-apparatus .flap-closed { opacity: 1; }
 .envelope-flap .flap-lining { display: none; }
 .envelope-flap img { backface-visibility: visible; }
 .delivery-envelope::after {
@@ -587,10 +595,10 @@
 .onboarding-sheet p { margin: 0 0 16px; color: #4d5e68; line-height: 1.6; }
 
 .slot-flap {
-  position: absolute; left: 22%; width: 56%; top: 46%; height: 16px; z-index: 6;
-  transform-origin: center top; border-radius: 0 0 2px 2px;
-  background: linear-gradient(180deg, #c5ced4, #6d7a84 55%, #4e5962);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.65), 0 2px 2px rgba(20,28,34,.25);
+  position: absolute; left: 17%; width: 64%; top: 37.5%; height: 22px; z-index: 8;
+  transform-origin: center top; border-radius: 1px;
+  background: linear-gradient(180deg, #d5dee4, #7d8b96 40%, #3e4a52);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.8), 0 3px 4px rgba(20,28,34,.28);
 }
 .desk-mailbox { perspective: 500px; }
 .desk-mailbox.is-accepting .slot-flap { transform: rotateX(-68deg); transition: transform 280ms var(--spring); }

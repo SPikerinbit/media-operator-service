@@ -77,9 +77,9 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const lineRects = useRef<Record<string, DOMRect>>({})
   const mailBox = span(manifest.mailbox.visible_bounds, [0.08398, 0.22266, 0.91504, 0.79102])
   const envBox = span(manifest.envelope.visible_bounds, [0.07617, 0.3877, 0.9209, 0.85156])
-  const mailVisible = tight ? 112 : compact ? 136 : 160
-  const envVisible = tight ? 200 : compact ? 240 : 280
-  const stackGap = tight ? 14 : compact ? 20 : 24
+  const mailVisible = tight ? 156 : compact ? 188 : 220
+  const envVisible = tight ? 250 : compact ? 290 : 330
+  const stackGap = tight ? 4 : compact ? 6 : 8
   const mailSize = mailVisible / mailBox.w
   const envSize = envVisible / envBox.w
   const flapTop = 0.102
