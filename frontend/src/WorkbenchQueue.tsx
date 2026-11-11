@@ -6,7 +6,7 @@ import { Modal, Button } from './ui'
 import { Presence, usePresented } from './presence'
 import { NoteThreads, type ThreadEnd } from './noteThreads'
 import { TranscriptView } from './TranscriptView'
-import { ContactShadow, CoverArt, DeskProjector, PaperProcess, Prop, asset } from './WorkbenchEffects'
+import { CoverArt, DeskProjector, PaperProcess, Prop, asset } from './WorkbenchEffects'
 import { anchorPixels, currentManifest, useWorkbenchManifest, woodLanding } from './workbenchAnchors'
 import { flyTaskPaper, flyTrashSheets, glideWood, mouthOf } from './workbenchMotion'
 import { entryLabel, optionsOf, reuseMark, sections, stageLabels, type InboxState, type Lane, type LetterEntry, type LetterGroup } from './workbenchState'
@@ -271,9 +271,18 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
       setThreads(paths)
     }
     draw()
+    const hover=(event: Event)=>{
+      const target=event.target instanceof Element?event.target:null
+      const node=target?.closest<HTMLElement>('[data-card-id],[data-slip-id]')
+      const raw=node?.dataset.cardId||node?.dataset.slipId
+      if(!raw)return
+      const id=Number(raw)
+      setActiveCard(current=>current===id?current:id)
+    }
     host.addEventListener('scroll',draw,true)
+    host.addEventListener('mouseover',hover)
     window.addEventListener('resize',draw)
-    return()=>{host.removeEventListener('scroll',draw,true);window.removeEventListener('resize',draw)}
+    return()=>{host.removeEventListener('scroll',draw,true);host.removeEventListener('mouseover',hover);window.removeEventListener('resize',draw)}
   },[links,entry?.id,activeCard])
   const ready=entries.filter(e=>e.group_id===group?.id&&e.status==='ready')
   const rows=visible.slice()
@@ -294,7 +303,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
           </button>
           <button type="button" className="row-delete" aria-label={'删除 '+entryLabel(e)} disabled={!e.deletable||pending||holding.some(item=>item.entry.id===e.id)} onClick={()=>void action(()=>removeIds([e.id]))}>删除</button>
         </div>})}{!rows.length&&<div className="queue-empty"><p>{entries.length?'没有匹配的来信':'这里还没有来信'}</p></div>}</div>
-        <footer><span>{entries.length} 封来信</span><div className="desk-trash" ref={trashRef}><ContactShadow name="trash"/><Prop name="trash" layer="body"/><Prop name="trash" layer="front" className="trash-front"/></div></footer>
+        <footer><span>{entries.length} 封来信</span><div className="desk-trash" ref={trashRef}><Prop name="trash" layer="body"/><Prop name="trash" layer="front" className="trash-front"/></div></footer>
       </aside>
       <section className={'selected-letter thin-scroll'+(swap?' is-'+swap:'')} aria-label="当前来信">
       {!entry?<div className="workbench-empty"><Prop name={lane==='publish'?'brazier':'shredder'} layer="beauty"/><h2>{lane==='publish'?'火盆已就位':'碎纸机已就位'}</h2><p>从首页投递第一封信。</p></div>:<>
@@ -306,7 +315,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
             <img className="wood-shadow" src={asset('wood-'+i+'-shadow')} alt="" /><img ref={el=>{woodImg.current[s.id]=el}} data-id={s.id} className="wood-piece" src={asset('wood-'+i+'-light-beauty')} alt="" /><strong>{s.label}</strong><small>{prepared.includes(s.id)?'已备齐，可重新编辑':s.summary}</small>
           </button>)}</div>
           <div className="hearth">
-            <div className="preparation-scene"><Presence open={Boolean(confirm)}>{confirm&&<form ref={slipRef} className={'ignition-slip'+(entering?' is-entering':'')} onSubmit={event=>{event.preventDefault();void ignite()}}><h3>确认开始处理</h3><p>将处理{perItem?'当前稿件':`本次投递中 ${ready.length} 条稿件`}，完成字幕与成片后提交 B 站。</p><p>本次使用已备齐的输出、字幕样式、投稿信息和翻译上下文；单条设置优先。</p><label className="check"><input type="checkbox" checked={rights} disabled={entering} onChange={e=>setRights(e.target.checked)}/>我已确认素材使用权限及本次投稿信息</label><div className="toolbar"><Button type="button" variant="secondary" onClick={()=>setConfirm(null)} disabled={entering}>返回检查</Button><Button type="submit" disabled={!rights||entering}>确认并点火</Button></div></form>}</Presence><div className="fuel-brazier" ref={brazierRef}><ContactShadow name="brazier"/><Prop name="brazier"/><Prop name="brazier" layer="front" className="foreground"/></div><p>{prepared.length===4?'四类设置已备齐，可以开始处理。':'选择木块修改设置，或直接使用当前设置。'}</p></div>
+            <div className="preparation-scene"><Presence open={Boolean(confirm)}>{confirm&&<form ref={slipRef} className={'ignition-slip'+(entering?' is-entering':'')} onSubmit={event=>{event.preventDefault();void ignite()}}><h3>确认开始处理</h3><p>将处理{perItem?'当前稿件':`本次投递中 ${ready.length} 条稿件`}，完成字幕与成片后提交 B 站。</p><p>本次使用已备齐的输出、字幕样式、投稿信息和翻译上下文；单条设置优先。</p><label className="check"><input type="checkbox" checked={rights} disabled={entering} onChange={e=>setRights(e.target.checked)}/>我已确认素材使用权限及本次投稿信息</label><div className="toolbar"><Button type="button" variant="secondary" onClick={()=>setConfirm(null)} disabled={entering}>返回检查</Button><Button type="submit" disabled={!rights||entering}>确认并点火</Button></div></form>}</Presence><div className="fuel-brazier" ref={brazierRef}><Prop name="brazier"/><Prop name="brazier" layer="front" className="foreground"/></div><p>{prepared.length===4?'四类设置已备齐，可以开始处理。':'选择木块修改设置，或直接使用当前设置。'}</p></div>
             <Presence open={Boolean(section)}>{section&&<div className="setting-letter"><div className="setting-letter-head"><h3>{sections.find(s=>s.id===section)?.label}</h3><button type="button" className="text-action" disabled={pending} onClick={()=>void action(async()=>{await save(group,[...new Set([...prepared,section])]);setSection(null)})}>保存并放入火盆</button></div>
             <div className="settings-and-preview"><Inspector options={effective} change={change} settings={settings} row={row} rowLabel={entryLabel(entry)} perItem={perItem} onScope={setPerItem} reset={restoreInheritance} section={section} onSection={setSection} only={section}
               defaultsReady={Boolean(defaults)} savingDefault={savingDefault} onSaveDefault={kind=>void saveDefault(kind)} onResetDefault={kind=>change(kind==='output'?{...effective,...outputDefaults(savedVideoOptions(defaults))}:{...effective,subtitle_style:savedVideoOptions(defaults).subtitle_style})}/>

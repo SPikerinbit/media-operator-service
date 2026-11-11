@@ -1,4 +1,4 @@
-import { anchorPixels, atlasPosition, currentManifest, foldPaperTarget, normBox, type WorkbenchManifest } from './workbenchAnchors'
+import { anchorPixels, atlasPosition, currentManifest, normBox, type WorkbenchManifest } from './workbenchAnchors'
 import { bindFrame } from './workbenchScheduler'
 import { lerp, ramp, springAt, springSettled, SPRING } from './motionSystem'
 
@@ -6,11 +6,11 @@ const srcOf = (base: string, name: string) => `${base}workbench/${name}.webp`
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches
 
 export const DELIVERY_PHASES = [
-  { id: 'fold', ms: 550 },
-  { id: 'tuck', ms: 300 },
-  { id: 'seal', ms: 350 },
-  { id: 'insert', ms: 450 },
-  { id: 'route', ms: 400 },
+  { id: 'fold', ms: 720 },
+  { id: 'tuck', ms: 380 },
+  { id: 'seal', ms: 520 },
+  { id: 'insert', ms: 760 },
+  { id: 'route', ms: 460 },
 ] as const
 
 export type DeliveryPhase = (typeof DELIVERY_PHASES)[number]['id']
@@ -33,11 +33,38 @@ type DeliveryNodes = {
 type Point = { x: number; y: number }
 
 function phaseOf(u: number): DeliveryPhase {
-  if (u < 0.22) return 'fold'
+  if (u < 0.28) return 'fold'
   if (u < 0.42) return 'tuck'
-  if (u < 0.6) return 'seal'
-  if (u < 0.8) return 'insert'
+  if (u < 0.62) return 'seal'
+  if (u < 0.84) return 'insert'
   return 'route'
+}
+
+function foldAngle(elapsed: number, delay: number, dur: number) {
+  const t = Math.min(1, Math.max(0, (elapsed - delay) / dur))
+  const eased = t * t * (3 - 2 * t)
+  const settle = springAt(Math.max(0, elapsed - delay - dur * 0.62), SPRING.soft)
+  return eased * 168 + Math.max(0, settle - 1) * 10
+}
+
+function quad(a: number, b: number, c: number, t: number) {
+  const u = 1 - t
+  return u * u * a + 2 * u * t * b + t * t * c
+}
+
+function quadTan(a: number, b: number, c: number, t: number) {
+  return 2 * (1 - t) * (b - a) + 2 * t * (c - b)
+}
+
+function liveProcess() {
+  const hosts = document.querySelectorAll<HTMLElement>('.paper-process')
+  for (const host of hosts) {
+    const view = host.closest('.lane-view, .home-view')
+    if (!view || view.classList.contains('is-parked')) continue
+    const box = host.getBoundingClientRect()
+    if (box.width > 2 && box.height > 2) return host
+  }
+  return null
 }
 
 function ruledSheet(lines: string[], width: number, height: number) {
@@ -67,6 +94,64 @@ function pin(el: HTMLElement, x: number, y: number, w: number, h: number) {
   el.style.transform = `translate3d(${x}px, ${y}px, 0)`
 }
 
+function castShadow() {
+  const shade = document.createElement('div')
+  shade.className = 'cast-shadow'
+  shade.setAttribute('aria-hidden', 'true')
+  return shade
+}
+
+/** Three stacked panels. Bottom folds up first, then the doubled sheet folds over the top. */
+function buildFold(lines: string[], width: number, height: number) {
+  const sheet = document.createElement('div')
+  sheet.className = 'fold-sheet'
+  const stage = document.createElement('div')
+  stage.className = 'fold-stage'
+  const chunks = [lines.slice(0, 3), lines.slice(3, 5), lines.slice(5, 8)]
+  const panelOf = (chunk: string[]) => {
+    const panel = document.createElement('div')
+    panel.className = 'fold-panel'
+    const face = document.createElement('div')
+    face.className = 'fold-face'
+    chunk.forEach(text => {
+      const row = document.createElement('div')
+      row.className = 'flyer-line'
+      row.textContent = text
+      face.append(row)
+    })
+    const edge = document.createElement('i')
+    edge.className = 'fold-thickness'
+    face.append(edge)
+    const back = document.createElement('div')
+    back.className = 'fold-backface'
+    panel.append(face, back)
+    return panel
+  }
+  const third = height / 3
+  const top = panelOf(chunks[0])
+  top.classList.add('is-top')
+  top.style.height = third + 'px'
+  const hingeMid = document.createElement('div')
+  hingeMid.className = 'fold-hinge mid'
+  hingeMid.style.top = third + 'px'
+  hingeMid.style.height = third + 'px'
+  const creaseMid = document.createElement('i')
+  creaseMid.className = 'fold-crease-line'
+  const mid = panelOf(chunks[1])
+  const hingeBot = document.createElement('div')
+  hingeBot.className = 'fold-hinge bot'
+  hingeBot.style.height = third + 'px'
+  const creaseBot = document.createElement('i')
+  creaseBot.className = 'fold-crease-line'
+  const bot = panelOf(chunks[2])
+  hingeBot.append(creaseBot, bot)
+  hingeMid.append(creaseMid, mid, hingeBot)
+  stage.style.height = height + 'px'
+  stage.append(top, hingeMid)
+  sheet.append(stage)
+  return { sheet, hingeMid, hingeBot }
+}
+
 /** Fold, tuck, seal, insert, and route as one continuous gesture. */
 export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, base: string, onPhase: (phase: DeliveryPhase) => void, onDone?: () => void) {
   if (reducedMotion()) { onDone?.(); return () => {} }
@@ -79,37 +164,49 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
   const lane = nodes.root.classList.contains('notes') ? 'notes' : 'publish'
   const sheetW = homeRect?.width || 400
   const sheetH = homeRect?.height || 220
-  const foldedH = Math.max(72, sheetH / 3)
-  const flight = document.createElement('div')
-  flight.className = 'fold-sheet'
+  const built = buildFold(lines.slice(0, 8), sheetW, sheetH)
+  const flight = built.sheet
   flight.dataset.lane = lane
   flight.setAttribute('aria-hidden', 'true')
-  const face = ruledSheet(lines.slice(0, 7), sheetW, sheetH)
-  const bend = document.createElement('div')
-  bend.className = 'fold-bend'
-  const crease = document.createElement('div')
-  crease.className = 'fold-crease'
-  flight.append(face, bend, crease)
   document.body.append(flight)
   const originX = homeRect?.left || 0
   const originY = homeRect?.top || 0
   pin(flight, originX, originY, sheetW, sheetH)
-  flight.style.transformOrigin = '50% 0%'
+  flight.style.transformOrigin = '0 0'
+  flight.style.perspective = '1200px'
+  const source = (nodes.sheet?.closest('.sheet-stack') as HTMLElement | null) || nodes.sheet || null
+  if (source) source.style.opacity = '0'
+  const shade = castShadow()
+  shade.dataset.lane = lane
+  document.body.append(shade)
   let route: HTMLElement | null = null
   const restW = nodes.env.offsetWidth
   const restH = nodes.env.offsetHeight
   const home = nodes.env.dataset.home
     ? JSON.parse(nodes.env.dataset.home) as Point
-    : { x: originX, y: originY }
+    : { x: originX + sheetW / 2, y: originY }
+  const raise = Math.max(0, originY + sheetH - (window.innerHeight - 28))
+  const finish = () => {
+    if (source) source.style.opacity = ''
+    flight.remove()
+    shade.remove()
+    route?.remove()
+  }
   const tick = (now: number) => {
     if (stopped) return false
     const u = Math.min(1, (now - started) / DELIVERY_MS)
     const phase = phaseOf(u)
     if (phase !== announced) { announced = phase; onPhase(phase) }
-    const foldT = ramp(u, 0, 0.36)
-    const tuckT = ramp(u, 0.2, 0.5)
-    const sealT = ramp(u, 0.38, 0.66)
-    const insertT = ramp(u, 0.56, 0.88)
+    const elapsed = now - started
+    const tuckT = ramp(u, 0.26, 0.44)
+    const sealT = ramp(u, 0.42, 0.62)
+    const insertT = ramp(u, 0.66, 0.94)
+    const fold1 = foldAngle(elapsed, 40, 460)
+    const fold2 = foldAngle(elapsed, 420, 480)
+    built.hingeBot.style.transform = `rotateX(${fold1}deg)`
+    built.hingeMid.style.transform = `rotateX(${fold2}deg)`
+    const present = ramp(elapsed / 240, 0, 1)
+    const yLift = raise * present
     const envBox = nodes.env.getBoundingClientRect()
     const mail = nodes.mail.getBoundingClientRect()
     const pocket = manifest.envelope.anchors.pocket
@@ -119,59 +216,98 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
       w: pocket[2] * envBox.width,
       h: pocket[3] * envBox.height,
     } : null
-    const sideGap = pocketBox ? Math.max(6, (pocketBox.w - sheetW) / 2) : 6
-    const destX = pocketBox ? pocketBox.x + sideGap : envBox.left
-    const destY = pocketBox ? pocketBox.y + 8 : envBox.top + envBox.height * 0.45
+    const sideGap = pocketBox ? Math.max(4, (pocketBox.w - sheetW * 0.92) / 2) : 8
+    const destX = pocketBox ? pocketBox.x + sideGap : envBox.left + envBox.width * 0.12
+    const destY = pocketBox ? pocketBox.y + pocketBox.h * 0.15 : envBox.top + envBox.height * 0.5
     const x = lerp(originX, destX, tuckT)
-    const y = lerp(originY, destY, tuckT) - foldT * (1 - tuckT) * 14
-    const scaleY = lerp(1, foldedH / sheetH, foldT)
-    const lift = foldT * (1 - tuckT) * 26
-    flight.style.transformOrigin = '50% 0%'
-    flight.style.transform = `perspective(1100px) translate3d(${x}px, ${y - lift}px, 0) rotateX(${foldT * 74}deg) scaleY(${scaleY})`
-    crease.style.opacity = String(Math.min(1, foldT * 1.4) * (1 - tuckT))
-    crease.style.transform = `scaleX(${0.4 + foldT * 0.6})`
-    flight.style.opacity = String(1 - ramp(u, 0.42, 0.56))
-    const bendAtlas = manifest['paper-bend']
-    if (bendAtlas) {
-      const frame = Math.min(bendAtlas.frames - 1, Math.round(foldT * (bendAtlas.frames - 1)))
-      const pos = atlasPosition(frame, bendAtlas.columns, bendAtlas.rows)
-      const atlasName = (bendAtlas.atlas || 'paper-bend-light-atlas.webp').replace(/\.webp$/, '')
-      bend.style.backgroundImage = `url(${srcOf(base, atlasName)})`
-      bend.style.backgroundSize = `${bendAtlas.columns * 100}% ${bendAtlas.rows * 100}%`
-      bend.style.backgroundPosition = `${pos.x}% ${pos.y}%`
-      bend.style.opacity = String(Math.min(1, foldT * 1.2) * (1 - ramp(u, 0.4, 0.52)))
-    }
-    const target = foldPaperTarget({ left: 0, top: 0, width: nodes.env.offsetWidth, height: nodes.env.offsetHeight }, manifest, foldT, tuckT)
-    const fold = manifest['paper-fold']
-    if (target && fold) {
-      const pos = atlasPosition(target.frame, fold.columns, fold.rows)
+    const y = lerp(originY - yLift, destY, tuckT)
+    const tuckScale = lerp(1, pocketBox ? Math.min(0.9, (pocketBox.w * 0.82) / sheetW) : 0.68, tuckT)
+    flight.style.transformOrigin = '0 0'
+    if (tuckT > 0.08) {
       nodes.paper.style.visibility = 'visible'
-      nodes.paper.style.backgroundImage = `url(${srcOf(base, 'paper-fold-light-atlas')})`
-      nodes.paper.style.backgroundSize = `${fold.columns * 100}% ${fold.rows * 100}%`
-      nodes.paper.style.backgroundPosition = `${pos.x}% ${pos.y}%`
-      nodes.paper.style.opacity = String(ramp(u, 0.28, 0.48))
+      nodes.paper.style.overflow = 'visible'
+      nodes.paper.style.inset = '0'
+      if (flight.parentElement !== nodes.paper) nodes.paper.append(flight)
+      flight.style.visibility = 'visible'
+      flight.style.position = 'absolute'
+      flight.style.zIndex = '1'
+      flight.style.left = '0'
+      flight.style.top = '0'
+      flight.style.transform = `translate3d(${x - envBox.left}px, ${y - envBox.top}px, 0) scale(${tuckScale})`
+    } else {
+      if (flight.parentElement !== document.body) document.body.append(flight)
+      flight.style.position = 'fixed'
+      flight.style.zIndex = '40'
+      flight.style.transform = `translate3d(${originX}px, ${originY - yLift}px, 0) scale(${tuckScale})`
     }
-    nodes.flap.style.transform = `rotateX(${sealT * 180}deg)`
-    nodes.closed.style.opacity = String(ramp(u, 0.5, 0.68))
-    nodes.wax.style.transform = `translate(-50%, -50%) translateY(${(1 - sealT) * -6}px) scale(${lerp(1.05, 1, sealT)})`
+    flight.style.opacity = String(tuckT > 0.92 ? 1 - ramp(sealT, 0.05, 0.35) : 1)
+    nodes.copy.style.opacity = '0'
+    const swinging = sealT > 0.08 && sealT < 0.74
+    nodes.flap.style.transform = `rotateX(${Math.min(1, sealT) * 180}deg)`
+    nodes.flap.style.opacity = String(sealT > 0.82 ? 1 - ramp(sealT, 0.82, 0.96) : 1)
+    nodes.closed.style.opacity = String(ramp(sealT, 0.7, 0.92))
+    if (swinging) {
+      nodes.wax.style.opacity = '0'
+      nodes.wax.style.transform = 'translate(-50%, -50%) scale(1)'
+    } else if (sealT >= 0.74) {
+      const stamp = Math.max(0, springAt(((sealT - 0.74) / 0.26) * 280, SPRING.press))
+      const squashY = stamp < 0.62 ? lerp(1.34, 0.84, stamp / 0.62) : lerp(0.84, 1, (stamp - 0.62) / 0.38)
+      const squashX = stamp < 0.62 ? lerp(1.02, 1.1, stamp / 0.62) : lerp(1.1, 1, (stamp - 0.62) / 0.38)
+      nodes.wax.style.opacity = String(Math.min(1, (sealT - 0.74) / 0.08))
+      nodes.wax.style.transform = `translate(-50%, -50%) scale(${squashX}, ${squashY})`
+    } else {
+      nodes.wax.style.opacity = '1'
+      nodes.wax.style.transform = 'translate(-50%, -50%) scale(1)'
+    }
     if (insertT > 0 && mail.width > 2) {
       const slot = manifest.mailbox.anchors.slotFront
       if (slot) {
         const mouth = normBox(mail, slot, manifest.mailbox.size)
-        const slotCenter = { x: mouth.left + mouth.width / 2, y: mouth.top + mouth.height * 0.55 }
+        const slotCenter = { x: mouth.left + mouth.width / 2, y: mouth.top + mouth.height * 0.35 }
+        const approach = { x: slotCenter.x - 6, y: slotCenter.y + mouth.height + 28 }
+        const ctrl = { x: (home.x + approach.x) / 2 - 48, y: Math.min(home.y, approach.y) - 86 }
+        const travel = Math.min(1, insertT / 0.66)
+        const into = ramp(insertT, 0.6, 1)
+        const eased = travel * travel * (3 - 2 * travel)
+        let cx = quad(home.x, ctrl.x, approach.x, eased)
+        let cy = quad(home.y, ctrl.y, approach.y, eased)
+        const tx = quadTan(home.x, ctrl.x, approach.x, Math.min(0.96, Math.max(0.04, eased)))
+        const ty = quadTan(home.y, ctrl.y, approach.y, Math.min(0.96, Math.max(0.04, eased)))
+        let tilt = Math.max(-18, Math.min(12, Math.atan2(ty, tx) * 180 / Math.PI * 0.2))
         const visible = manifest.envelope.visible_bounds
         const visibleW = visible ? (visible[2] - visible[0]) : 0.84
-        const endScale = Math.min(0.28, (mouth.width * 0.9) / Math.max(1, visibleW * restW))
-        const bow = Math.sin(Math.PI * insertT) * 28
-        const center = { x: lerp(home.x, slotCenter.x, insertT), y: lerp(home.y, slotCenter.y, insertT) - bow }
-        const scale = lerp(1, endScale, insertT)
-        nodes.env.style.zIndex = '2'
+        const endScale = Math.min(0.32, (mouth.width * 0.92) / Math.max(1, visibleW * restW))
+        let scale = lerp(1, Math.max(endScale, 0.42), eased)
+        if (into > 0) {
+          cx = lerp(approach.x, slotCenter.x, into)
+          cy = lerp(approach.y, slotCenter.y - 2, into)
+          scale = lerp(Math.max(endScale, 0.42), endScale, into)
+          tilt = lerp(tilt, -3, into)
+          if (!nodes.mail.dataset.fed) {
+            nodes.mail.dataset.fed = '1'
+            nodes.mail.classList.add('is-fed')
+          }
+        }
+        nodes.env.style.zIndex = into > 0.04 ? '2' : '6'
         nodes.env.style.transformOrigin = 'center center'
-        nodes.env.style.transform = `translate3d(${center.x - home.x}px, ${center.y - home.y}px, 0) scale(${scale})`
-        nodes.env.style.clipPath = ''
-        nodes.env.style.opacity = String(1 - ramp(u, 0.9, 1))
+        nodes.env.style.transform = `translate3d(${cx - home.x}px, ${cy - home.y}px, 0) scale(${scale}) rotate(${tilt}deg)`
+        if (into > 0.08) {
+          const s = Math.max(0.05, scale)
+          const top = Math.max(0, (mouth.top - cy) / s + restH / 2 - 4 / s)
+          const bottom = Math.max(0, restH - ((mouth.top + mouth.height - cy) / s + restH / 2) - 3 / s)
+          const left = Math.max(0, (mouth.left - cx) / s + restW / 2 - 2 / s)
+          const right = Math.max(0, restW - ((mouth.left + mouth.width - cx) / s + restW / 2) - 2 / s)
+          nodes.env.style.clipPath = top + bottom < restH - 1 && left + right < restW - 1
+            ? `inset(${top}px ${right}px ${bottom}px ${left}px)`
+            : ''
+        } else nodes.env.style.clipPath = ''
+        nodes.env.style.opacity = String(1 - ramp(insertT, 0.94, 1))
+        const chordY = lerp(home.y, approach.y, eased)
+        const lift = Math.max(0, chordY - cy)
+        shade.style.opacity = String(0.5 * (1 - into) * Math.max(0.25, 1 - lift / 160))
+        shade.style.transform = `translate3d(${cx - restW * scale * 0.22 + 10}px, ${chordY + restH * 0.12}px, 0) scale(${Math.max(0.35, scale) * (1 + lift / 90)}, ${0.55 + lift / 220})`
         const exit = manifest.mailbox.anchors.exit
-        if (u > 0.74 && exit) {
+        if (u > 0.88 && exit) {
           const side = shell?.querySelector<HTMLElement>(`[data-mail-slot="${lane}"]`)
           const sideBox = side?.getBoundingClientRect()
           const exitPoint = { x: mail.left + exit[0] * mail.width, y: mail.top + exit[1] * mail.height }
@@ -188,10 +324,11 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
             document.body.append(route)
             pin(route, 0, 0, 36, 24)
           }
-          const local = Math.min(1, (u - 0.74) / 0.26)
-          const p = springAt(local * 640, SPRING.mass)
-          const into = Math.max(0, (p - 0.55) / 0.45)
-          if (side && into > 0.02 && route.parentElement !== side) side.append(route)
+          const local = Math.min(1, (u - 0.88) / 0.12)
+          const p = Math.min(1.04, Math.max(0, springAt(local * 520, SPRING.mass)))
+          const along = Math.min(1, p)
+          const slotIn = Math.max(0, (along - 0.62) / 0.38)
+          if (side && slotIn > 0.04 && route.parentElement !== side) side.append(route)
           if (route.parentElement === side && sideBox) {
             route.style.position = 'absolute'
             route.style.left = '0'
@@ -200,26 +337,29 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
             route.style.height = '18px'
             route.style.margin = '0'
             route.style.transformOrigin = 'center top'
-            route.style.transform = `translate3d(${sideBox.width / 2 - 17}px, ${lerp(4, -20, into)}px, 0) scale(${lerp(0.85, 0.55, into)})`
+            route.style.transform = `translate3d(${sideBox.width / 2 - 17}px, ${lerp(2, -22, slotIn)}px, 0) scale(${lerp(0.9, 0.5, slotIn)})`
             route.style.opacity = '1'
           } else {
-            const arc = p > 0 && p < 1 ? Math.sin(Math.PI * Math.min(1, p)) * 34 : 0
-            const rx = lerp(exitPoint.x, dest.x, Math.min(1, p)) - 18
-            const ry = lerp(exitPoint.y, dest.y, Math.min(1, p)) - 12 - arc
-            route.style.transform = `translate3d(${rx}px, ${ry}px, 0) rotate(${lerp(-6, 2, Math.min(1, p))}deg)`
+            const midX = (exitPoint.x + dest.x) / 2 - 20
+            const midY = Math.min(exitPoint.y, dest.y) - 48
+            const rx = quad(exitPoint.x, midX, dest.x, along) - 18
+            const ry = quad(exitPoint.y, midY, dest.y, along) - 12
+            const rdx = quadTan(exitPoint.x, midX, dest.x, Math.min(0.96, Math.max(0.04, along)))
+            const rdy = quadTan(exitPoint.y, midY, dest.y, Math.min(0.96, Math.max(0.04, along)))
+            const rtilt = Math.max(-14, Math.min(10, Math.atan2(rdy, rdx) * 8))
+            route.style.transform = `translate3d(${rx}px, ${ry}px, 0) rotate(${rtilt}deg)`
             route.style.opacity = '1'
           }
         }
       }
-    }
+    } else shade.style.opacity = '0'
     if (u < 1) return true
-    flight.remove()
-    route?.remove()
+    finish()
     onDone?.()
     return false
   }
   const cancel = bindFrame('delivery:' + lane + ':send', tick)
-  return () => { stopped = true; cancel(); flight.remove(); route?.remove() }
+  return () => { stopped = true; cancel(); finish() }
 }
 
 export function resetDelivery(env: HTMLElement, flap: HTMLElement, paper: HTMLElement, closed: HTMLElement, wax: HTMLElement) {
@@ -246,8 +386,17 @@ export function resetDelivery(env: HTMLElement, flap: HTMLElement, paper: HTMLEl
   wax.style.left = ''
   wax.style.top = ''
   wax.style.transform = ''
-  const lane = env.closest('.letter-station')?.classList.contains('notes') ? 'notes' : 'publish'
-  document.querySelectorAll('.fold-sheet,.routing-letter,.slot-letter').forEach(node => {
+  paper.style.inset = ''
+  paper.style.overflow = ''
+  const copy = paper.querySelector<HTMLElement>('.letter-insert-copy')
+  if (copy) copy.style.opacity = ''
+  const letter = env.closest('.letter-station')
+  const mail = letter?.querySelector<HTMLElement>('.desk-mailbox')
+  if (mail) { mail.classList.remove('is-fed'); delete mail.dataset.fed }
+  const stack = letter?.querySelector<HTMLElement>('.sheet-stack')
+  if (stack) stack.style.opacity = ''
+  const lane = letter?.classList.contains('notes') ? 'notes' : 'publish'
+  document.querySelectorAll('.fold-sheet,.routing-letter,.slot-letter,.cast-shadow').forEach(node => {
     if ((node as HTMLElement).dataset.lane === lane) node.remove()
   })
 }
@@ -360,46 +509,91 @@ export function flyTaskPaper(from: DOMRect, to: () => Point | null, title: strin
   if (from.width < 2) return Object.assign(Promise.resolve(), { cancel: () => {} })
   const card = document.createElement('div')
   card.className = 'task-paper-flight'
+  card.dataset.lane = 'task'
   card.setAttribute('aria-hidden', 'true')
   card.textContent = title
-  document.body.append(card)
+  const shade = castShadow()
+  shade.dataset.lane = 'task'
+  document.body.append(card, shade)
   const w0 = Math.max(from.width, 88)
   const h0 = Math.max(from.height, 36)
   pin(card, from.left, from.top, w0, h0)
-  let sx = from.left + from.width / 2
-  let sy = from.top + from.height / 2
-  let started = performance.now()
-  let prev: Point | null = null
+  card.style.opacity = '0'
+  card.style.transformOrigin = 'center center'
+  const started = performance.now()
+  const anticipate = 170
+  let host: HTMLElement | null = null
+  let told = false
   let cancel = () => {}
+  const clear = () => { card.remove(); shade.remove() }
   const promise = new Promise<void>(resolve => {
     const tick = (now: number) => {
       const dest = to()
-      if (!dest) { card.remove(); resolve(); return false }
-      if (prev && Math.hypot(dest.x - prev.x, dest.y - prev.y) > 12) {
-        const current = card.getBoundingClientRect()
-        sx = current.left + current.width / 2
-        sy = current.top + current.height / 2
-        started = now
+      if (!dest) { clear(); if (!told) { told = true; resolve() }; return false }
+      const elapsed = now - started
+      const ant = Math.min(1, elapsed / anticipate)
+      const antEase = ant * ant * (3 - 2 * ant)
+      if (elapsed < anticipate) {
+        const y = from.top + lerp(12, -16, antEase)
+        card.style.opacity = String(antEase)
+        card.style.transform = `translate3d(${from.left}px, ${y}px, 0) scale(${lerp(0.92, 1, antEase)}) rotate(${lerp(3, -7, antEase)}deg)`
+        shade.style.opacity = String(0.32 * antEase)
+        shade.style.transform = `translate3d(${from.left + 8}px, ${from.bottom - 6}px, 0) scale(${lerp(0.7, 1.05, antEase)}, .8)`
+        return true
       }
-      prev = dest
-      const p = springAt(now - started, SPRING.mass)
-      const along = Math.min(1, Math.max(0, p))
-      const arc = along > 0 && along < 1 ? Math.sin(Math.PI * along) * 54 : 0
-      const x = lerp(sx, dest.x, p)
-      const y = lerp(sy, dest.y, p) - arc
-      const scaleX = lerp(1, 132 / w0, along)
-      const scaleY = lerp(1, 86 / h0, along)
-      const rot = lerp(-8, 4, along) + (p > 1 ? (p - 1) * -12 : 0)
-      card.style.transform = `perspective(800px) translate3d(${x - w0 / 2}px, ${y - h0 / 2}px, 0) scale(${scaleX}, ${scaleY}) rotate(${rot}deg) rotateX(${along * 18}deg)`
-      card.style.opacity = springSettled(now - started, SPRING.mass) ? String(Math.max(0, 1 - (now - started - 720) / 220)) : '1'
-      if (!springSettled(now - started, SPRING.mass) || now - started < 920) return true
-      card.remove()
-      resolve()
+      const travel = Math.min(1, (elapsed - anticipate) / 860)
+      const slow = travel * travel * (3 - 2 * travel)
+      const resist = 1 - Math.pow(1 - travel, 2.6)
+      const along = slow * 0.4 + resist * 0.6
+      const sx = from.left + w0 / 2
+      const sy = from.top + h0 / 2 - 16
+      const arc = Math.sin(Math.PI * along) * 64 * (1 - along * 0.15)
+      const sway = Math.sin(along * Math.PI * 2.4) * 12 * (1 - along)
+      const flutter = Math.sin(along * 16) * 7 * (1 - along * 0.65)
+      const x = lerp(sx, dest.x, along) + sway
+      const y = lerp(sy, dest.y, along) - arc
+      const rot = lerp(-8, 5, along) + flutter
+      const sink = ramp(along, 0.64, 1)
+      if (!host && sink > 0) host = liveProcess()
+      if (sink > 0.02 && host) {
+        const front = host.querySelector('.process-machine.foreground')
+        if (card.parentElement !== host) {
+          if (front) host.insertBefore(card, front)
+          else host.append(card)
+        }
+        const box = host.getBoundingClientRect()
+        const scaleX = lerp(1, (box.width * 0.46) / w0, along)
+        const scaleY = lerp(1, (box.height * 0.42) / h0, along)
+        const drop = sink * 22
+        card.style.position = 'absolute'
+        card.style.zIndex = '3'
+        card.style.left = '0'
+        card.style.top = '0'
+        card.style.transformOrigin = 'center center'
+        card.style.transform = `translate3d(${x - box.left - w0 / 2}px, ${y - box.top + drop - h0 / 2}px, 0) scale(${scaleX}, ${scaleY}) rotate(${rot * (1 - sink)}deg)`
+      } else {
+        if (card.parentElement !== document.body) document.body.append(card)
+        card.style.position = 'fixed'
+        card.style.zIndex = '60'
+        card.style.transformOrigin = 'center center'
+        const scaleX = lerp(1, 140 / w0, along)
+        const scaleY = lerp(1, 92 / h0, along)
+        card.style.transform = `perspective(900px) translate3d(${x - w0 / 2}px, ${y - h0 / 2}px, 0) scale(${scaleX}, ${scaleY}) rotate(${rot}deg)`
+      }
+      const fade = ramp(along, 0.8, 1)
+      card.style.opacity = String((elapsed < anticipate + 40 ? antEase : 1) * (1 - fade))
+      card.classList.toggle('is-ember', along > 0.7)
+      const floorY = lerp(from.bottom, dest.y + 18, along)
+      shade.style.opacity = String(0.42 * (1 - fade) * Math.max(0.2, 1 - arc / 120))
+      shade.style.transform = `translate3d(${x - 34 + 8}px, ${floorY}px, 0) scale(${0.8 + arc / 70}, ${0.55 + arc / 180})`
+      if (!told && along > 0.78) { told = true; resolve() }
+      if (fade < 1) return true
+      clear()
       return false
     }
     cancel = bindFrame('arrive:' + key, tick)
   })
-  return Object.assign(promise, { cancel: () => { cancel(); card.remove() } })
+  return Object.assign(promise, { cancel: () => { cancel(); clear() } })
 }
 
 export function flyTrashSheets(from: { rect: DOMRect; title: string }[], mouth: () => { x: number; y: number; width: number; height: number } | null) {

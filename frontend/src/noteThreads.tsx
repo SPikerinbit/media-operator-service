@@ -1,51 +1,109 @@
 import { useEffect, useRef } from 'react'
+import { springAt, SPRING } from './motionSystem'
 
 export type ThreadEnd = { id: number; x1: number; y1: number; x2: number; y2: number; hot: boolean }
 
-function sag(a: ThreadEnd, t = 1) {
+type Live = ThreadEnd & { born: number; index: number }
+
+function curve(a: ThreadEnd, bias: number, settle: number) {
   const dx = a.x2 - a.x1
-  const drop = Math.min(22, Math.abs(dx) * 0.08 + 6) * t
-  const mx = a.x1 + dx * 0.5
-  const my = (a.y1 + a.y2) / 2 + drop
-  return `M ${a.x1.toFixed(1)} ${a.y1.toFixed(1)} Q ${mx.toFixed(1)} ${my.toFixed(1)} ${a.x2.toFixed(1)} ${a.y2.toFixed(1)}`
+  const sag = (Math.min(54, Math.abs(dx) * 0.16 + 22) + Math.max(0, settle - 1) * 10) * bias
+  const yMid = (a.y1 + a.y2) / 2
+  const c1x = a.x1 + dx * 0.32
+  const c2x = a.x1 + dx * 0.68
+  const c1y = yMid + sag
+  const c2y = yMid + sag * 0.82
+  return `M ${a.x1.toFixed(1)} ${a.y1.toFixed(1)} C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${a.x2.toFixed(1)} ${a.y2.toFixed(1)}`
 }
 
-/** Cotton thread pinned between a shred and a note, eased when the ends move. */
+/** Hang most threads. When two links would cross, send one above and one below. */
+function biases(list: ThreadEnd[]) {
+  const bias = new Map<number, number>()
+  for (const thread of list) bias.set(thread.id, 1)
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = list[i]
+      const b = list[j]
+      if ((a.y1 - b.y1) * (a.y2 - b.y2) >= 0) continue
+      if (a.y1 < b.y1) { bias.set(a.id, -0.55); bias.set(b.id, 1.25) }
+      else { bias.set(b.id, -0.55); bias.set(a.id, 1.25) }
+    }
+  }
+  return bias
+}
+
+/** Cotton thread pinned between a shred and a note. Draw-in is staggered and springy. */
 export function NoteThreads({ threads }: { threads: ThreadEnd[] }) {
   const svg = useRef<SVGSVGElement>(null)
-  const live = useRef(new Map<number, ThreadEnd & { draw: number }>())
+  const live = useRef(new Map<number, Live>())
   const props = useRef(threads)
   props.current = threads
   useEffect(() => {
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
     let frame = 0
-    const step = () => {
+    const step = (now: number) => {
       const root = svg.current
       const want = props.current
       const seen = new Set<number>()
+      const bias = biases(want)
+      const desk = root?.closest('.notes-completion')
       if (root) {
-        for (const next of want) {
+        desk?.querySelectorAll('.shred-strip.is-linked, .viewpoint-slip.is-linked').forEach(node => node.classList.remove('is-linked'))
+        want.forEach((next, index) => {
           seen.add(next.id)
           let cur = live.current.get(next.id)
-          if (!cur) cur = { ...next, draw: 0 }
-          const k = 0.16
+          if (!cur) cur = { ...next, born: now, index }
+          const k = 0.18
           cur.x1 += (next.x1 - cur.x1) * k
           cur.y1 += (next.y1 - cur.y1) * k
           cur.x2 += (next.x2 - cur.x2) * k
           cur.y2 += (next.y2 - cur.y2) * k
           cur.hot = next.hot
-          cur.draw = Math.min(1, cur.draw + 0.035)
+          cur.index = index
           live.current.set(next.id, cur)
-          const d = sag(cur, cur.draw)
+          const sprung = reduced ? 1 : springAt(Math.max(0, now - cur.born - index * 90), SPRING.soft)
+          const shown = Math.max(0, Math.min(1.06, sprung))
+          const d = curve(cur, bias.get(next.id) || 1, shown)
           const shadow = root.querySelector<SVGPathElement>(`[data-shadow="${next.id}"]`)
           const line = root.querySelector<SVGPathElement>(`[data-thread="${next.id}"]`)
-          const a = root.querySelector<SVGCircleElement>(`[data-pin="a-${next.id}"]`)
-          const b = root.querySelector<SVGCircleElement>(`[data-pin="b-${next.id}"]`)
+          const twist = root.querySelector<SVGPathElement>(`[data-twist="${next.id}"]`)
+          const pins = root.querySelectorAll<SVGCircleElement>(`[data-pin="a-${next.id}"], [data-pin="a-knot-${next.id}"], [data-pin="b-${next.id}"], [data-pin="b-knot-${next.id}"]`)
           shadow?.setAttribute('d', d)
           line?.setAttribute('d', d)
+          twist?.setAttribute('d', d)
           line?.classList.toggle('is-hot', cur.hot)
-          if (a) { a.setAttribute('cx', String(cur.x1)); a.setAttribute('cy', String(cur.y1)); a.classList.toggle('is-hot', cur.hot) }
-          if (b) { b.setAttribute('cx', String(cur.x2)); b.setAttribute('cy', String(cur.y2)); b.classList.toggle('is-hot', cur.hot) }
-        }
+          twist?.classList.toggle('is-hot', cur.hot)
+          const paint = (path: SVGPathElement | null) => {
+            if (!path) return
+            const length = path.getTotalLength()
+            const offset = length * (1 - Math.min(1, shown))
+            path.style.strokeDasharray = `${length}`
+            path.style.strokeDashoffset = `${offset}`
+          }
+          paint(line)
+          if (twist) {
+            if (shown < 0.98) {
+              const length = line?.getTotalLength() || twist.getTotalLength()
+              twist.style.strokeDasharray = `${length}`
+              twist.style.strokeDashoffset = `${length * (1 - Math.min(1, shown))}`
+            } else {
+              twist.style.strokeDasharray = ''
+              twist.style.strokeDashoffset = ''
+            }
+          }
+          if (shadow) shadow.style.opacity = String(Math.min(1, shown))
+          pins.forEach(pin => {
+            const end = pin.dataset.pin?.startsWith('a-')
+            pin.setAttribute('cx', String(end ? cur.x1 : cur.x2))
+            pin.setAttribute('cy', String(end ? cur.y1 : cur.y2))
+            pin.classList.toggle('is-hot', cur.hot)
+            pin.style.opacity = String(shown > 0.08 ? 1 : 0)
+          })
+          if (cur.hot && desk) {
+            desk.querySelector(`[data-card-id="${next.id}"]`)?.classList.add('is-linked')
+            desk.querySelector(`[data-slip-id="${next.id}"]`)?.classList.add('is-linked')
+          }
+        })
         for (const id of [...live.current.keys()]) if (!seen.has(id)) live.current.delete(id)
       }
       frame = requestAnimationFrame(step)
@@ -57,8 +115,11 @@ export function NoteThreads({ threads }: { threads: ThreadEnd[] }) {
     {threads.map(thread => <g key={thread.id}>
       <path data-shadow={thread.id} className="thread-shadow" />
       <path data-thread={thread.id} className={'thread' + (thread.hot ? ' is-hot' : '')} />
-      <circle data-pin={'a-' + thread.id} r="3.2" className={'thread-pin' + (thread.hot ? ' is-hot' : '')} />
-      <circle data-pin={'b-' + thread.id} r="3.2" className={'thread-pin' + (thread.hot ? ' is-hot' : '')} />
+      <path data-twist={thread.id} className={'thread-twist' + (thread.hot ? ' is-hot' : '')} />
+      <circle data-pin={'a-' + thread.id} r="3.4" className={'thread-pin' + (thread.hot ? ' is-hot' : '')} />
+      <circle data-pin={'a-knot-' + thread.id} r="1.4" className="thread-knot" />
+      <circle data-pin={'b-' + thread.id} r="3.4" className={'thread-pin' + (thread.hot ? ' is-hot' : '')} />
+      <circle data-pin={'b-knot-' + thread.id} r="1.4" className="thread-knot" />
     </g>)}
   </svg>
 }

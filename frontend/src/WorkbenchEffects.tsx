@@ -375,8 +375,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
   }, [active, progress, status, arrived, parked, replaySmoke, lane, title, frameKey])
 
   const showStrips = lane === 'notes' && arrived && (status === 'succeeded' || progress >= 92) && links.length > 0
-  return <div ref={root} className={'paper-process ' + lane} data-mark={mark}>
-    <ContactShadow name={lane === 'publish' ? 'brazier' : 'shredder'} />
+  return <div ref={root} className={'paper-process ' + lane} data-mark={mark} data-arrived={arrived ? '1' : '0'}>
     <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} className="process-machine" />
     {lane === 'publish' && box && [0, 1, 2, 3].map(index => {
       const land = woodLanding(box, manifest, index)

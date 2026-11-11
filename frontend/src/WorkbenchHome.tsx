@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useReducedMotion } from 'motion/react'
 import { errorMessage, request } from './api'
-import { ContactShadow, Prop, asset } from './WorkbenchEffects'
+import { Prop, asset } from './WorkbenchEffects'
 import { currentManifest, flapOrigin, useWorkbenchManifest } from './workbenchAnchors'
 import { launchTear, playDelivery, playPageTurn, resetDelivery, type DeliveryPhase } from './workbenchMotion'
 import { useMediaQuery } from './ui'
@@ -45,8 +45,9 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const [turning, setTurning] = useState(false)
   const [arrived, setArrived] = useState(false)
   const [leavingId, setLeavingId] = useState('')
-  const short = useMediaQuery('(max-height: 780px)')
-  const pageSize = short ? 4 : 5
+  const tight = useMediaQuery('(max-height: 700px)')
+  const compact = useMediaQuery('(max-height: 820px)')
+  const pageSize = tight ? 3 : compact ? 4 : 5
   const manifest = useWorkbenchManifest()
   const reduced = useReducedMotion()
   const root = useRef<HTMLElement>(null)
@@ -74,12 +75,17 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const lineRects = useRef<Record<string, DOMRect>>({})
   const mailBox = span(manifest.mailbox.visible_bounds, [0.08398, 0.22266, 0.91504, 0.79102])
   const envBox = span(manifest.envelope.visible_bounds, [0.07617, 0.3877, 0.9209, 0.85156])
-  const mailVisible = 176
-  const envVisible = 340
+  const mailVisible = tight ? 112 : compact ? 136 : 160
+  const envVisible = tight ? 200 : compact ? 240 : 280
+  const stackGap = tight ? 14 : compact ? 20 : 24
   const mailSize = mailVisible / mailBox.w
   const envSize = envVisible / envBox.w
-  const paperTuck = 20
-  const envTuck = -(envBox.y * envSize) + 108
+  const flapTop = 0.102
+  const envTuck = -(flapTop * envSize) + stackGap
+  const mailTop = mailBox.y * mailSize
+  const mailBot = (1 - mailBox.bottom) * mailSize
+  const envBot = (1 - 0.852) * envSize
+  const paperW = tight ? 300 : compact ? 360 : 400
 
   useEffect(() => {
     const stored = { lines: trimLines(draft.lines, draft.caretId), returned: draft.returned, caretId: draft.caretId }
@@ -268,11 +274,10 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     return () => window.clearTimeout(timer)
   }, [draft.returned.length])
 
-    return <section ref={root} className={'letter-station ' + lane + (short ? ' is-short' : '')} data-phase={phase === 'identifying' ? 'identify' : phase} aria-label={title + '信箱'} style={{ '--hinge-x': origin[0], '--hinge-y': origin[1], '--plaque-x': manifest.mailbox.anchors.plaque[0], '--plaque-y': manifest.mailbox.anchors.plaque[1], '--seal-x': seal[0], '--seal-y': seal[1], '--lines': pageSize, '--mail-box': mailSize + 'px', '--env-box': envSize + 'px', '--paper-w': '420px', '--paper-tuck': paperTuck + 'px', '--env-tuck': envTuck + 'px' } as React.CSSProperties}>
+    return <section ref={root} className={'letter-station ' + lane + (tight ? ' is-tight' : compact ? ' is-short' : '')} data-phase={phase === 'identifying' ? 'identify' : phase} aria-label={title + '信箱'} style={{ '--hinge-x': origin[0], '--hinge-y': origin[1], '--plaque-x': manifest.mailbox.anchors.plaque[0], '--plaque-y': manifest.mailbox.anchors.plaque[1], '--seal-x': seal[0], '--seal-y': seal[1], '--lines': pageSize, '--mail-box': mailSize + 'px', '--env-box': envSize + 'px', '--paper-w': paperW + 'px', '--env-tuck': envTuck + 'px', '--mail-top': mailTop + 'px', '--mail-bot': mailBot + 'px', '--env-bot': envBot + 'px', '--stack-gap': stackGap + 'px' } as React.CSSProperties}>
     <header className="station-heading"><h2>{title}</h2><p>{lane === 'publish' ? '投递后再设置。' : '投递后自动整理。'}</p></header>
     <div className="delivery-apparatus">
       <div className="desk-mailbox" ref={mailRef}>
-        <ContactShadow name="mailbox" />
         <Prop name="mailbox" layer="body" className="mailbox-body" />
         <Prop name="mailbox" layer="slot-back" className="mailbox-slot" />
         <div className="slot-window" data-slot-window />
