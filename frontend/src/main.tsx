@@ -34,7 +34,7 @@ function App(){
       return <button type="button" className="nav-item" key={id} aria-label={label} aria-current={view===id?'page':undefined} onClick={()=>show(id)}>
         {id==='home'?<Home size={20} aria-hidden="true"/>:id==='settings'?<Settings2 size={20} aria-hidden="true"/>:<span className="sidebar-mail-slot" data-mail-slot={id} aria-hidden="true"><i/></span>}
         <span>{label}</span>{count>0&&<small className="nav-count">{count}</small>}</button>
-    })}</nav><small className="sidebar-version">0.5.0</small></aside>
+    })}</nav><small className="sidebar-version">{__APP_VERSION__}</small></aside>
     <main id="workspace" className="workspace" data-view={view} tabIndex={-1}><div className="workspace-content">
       {(error||inbox.error)&&<div className="notice error" role="alert">{error||inbox.error}<button type="button" onClick={()=>void inbox.refresh()}>重新连接</button></div>}
       <div className="home-view" hidden={view!=='home'}><WorkbenchHome data={inbox.data} active={view==='home'} onOpen={show}/></div>

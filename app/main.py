@@ -29,6 +29,8 @@ from fastapi.responses import FileResponse, PlainTextResponse, Response, Redirec
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.version import VERSION
+
 APP_NAME = "media-operator-service"
 DESKTOP = os.getenv("MEDIA_DESKTOP") == "1"
 WINDOW_FLAGS = subprocess.CREATE_NO_WINDOW if DESKTOP and os.name == "nt" else 0
@@ -173,7 +175,7 @@ BILI_UPLOAD_TIMEOUT_SECONDS = max(300, int(os.getenv("BILI_UPLOAD_TIMEOUT_SECOND
 BILI_PROXY = os.getenv("BILI_PROXY", "").strip()
 BILI_UPLOAD_SEMAPHORE = threading.BoundedSemaphore(BILI_UPLOAD_CONCURRENCY)
 
-app = FastAPI(title=APP_NAME, version="1.1.0")
+app = FastAPI(title=APP_NAME, version=VERSION)
 executor = ThreadPoolExecutor(max_workers=WORKER_CONCURRENCY)
 batch_executor = ThreadPoolExecutor(max_workers=BATCH_WORKER_MAX_CONCURRENCY)
 state_lock = threading.Lock()

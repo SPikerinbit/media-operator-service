@@ -1,3 +1,5 @@
+> 历史记录，不是当前版本的状态。这是 0.3.0 交付时的验证笔记。开头的 GATE: FAIL 来自一套面向宣传页的外部检查，和当时的固定高度工作台需求冲突；笔记里写明了这一点。现行说明见 [README](../../README.md) 与 [桌面快速开始](../DESKTOP_QUICKSTART.md)。
+
 GATE: FAIL 20 (round 1 of 3)
 
 # Media Operator 0.3.0 验证记录
