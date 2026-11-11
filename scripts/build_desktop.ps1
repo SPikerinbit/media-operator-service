@@ -133,7 +133,8 @@ if (Test-Path -LiteralPath $extraNotices) {
     Get-ChildItem -LiteralPath $extraNotices -File -Filter "*.txt" | Copy-Item -Destination $licenses
 }
 
-& $InnoCompiler "/DMediaDist=$application" "/DMediaOutput=$OutputDir" "/DWebViewSetup=$webview" (Join-Path $root "packaging\MediaOperator.iss")
+$version = (Get-Content -LiteralPath (Join-Path $root "VERSION") -Raw).Trim()
+& $InnoCompiler "/DAppVersion=$version" "/DMediaDist=$application" "/DMediaOutput=$OutputDir" "/DWebViewSetup=$webview" (Join-Path $root "packaging\MediaOperator.iss")
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed" }
 
 $installer = Join-Path $OutputDir "MediaOperatorSetup.exe"

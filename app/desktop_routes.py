@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app import desktop_config as config, desktop_gpu as gpu, desktop_jobs as jobs, desktop_models, knowledge, obsidian
 from app import main as media
+from app.version import VERSION
 from app import desktop_sources, share_text, site_profiles
 
 router = APIRouter(prefix="/desktop")
@@ -518,7 +519,7 @@ class Export(BaseModel):
 def diagnostics():
     return {
         "application": "Media Operator Desktop",
-        "version": "0.5.0",
+        "version": VERSION,
         "platform": os.name,
         "ffmpeg_available": Path(media.FFMPEG_BIN).is_file(),
         "yt_dlp_available": Path(media.YT_DLP_BIN).is_file(),
