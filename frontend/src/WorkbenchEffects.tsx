@@ -261,8 +261,12 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
       if (!running && !decorative) shown = goal.current
       if (goal.current < displayed.current && !running) shown = goal.current
       displayed.current = shown
-      const land = landedAt.current ? Math.min(1, (now - landedAt.current) / 620) : (arrivedRef.current ? 1 : 0)
-      const visual = !arrivedRef.current ? 0 : statusRef.current === 'running' ? shown * land : shown
+      const since = landedAt.current ? now - landedAt.current : 0
+      const intro = landedAt.current ? Math.min(1, since / 700) : (arrivedRef.current ? 1 : 0)
+      const ash = landedAt.current && statusRef.current === 'running' ? Math.max(0, Math.min(1, (since - 760) / 1500)) : 0
+      const visual = !arrivedRef.current ? 0 : statusRef.current === 'running' ? Math.min(1, shown * intro + (1 - shown) * ash) : shown
+      const sheet = canvas.current
+      if (lane === 'publish' && sheet) sheet.style.opacity = arrivedRef.current ? String(1 - ash * 0.92) : ''
       const layoutKey = host.clientWidth + 'x' + host.clientHeight
       const paperChanged = Math.abs(visual - painted.current) > 0.001 || host.dataset.layout !== layoutKey
       const local = layoutOf(machine, host)
@@ -352,7 +356,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
       host.dataset.draws = String(draws.current)
       host.dataset.live = decorative && arrivedRef.current ? '1' : '0'
       const flameLive = lane === 'publish' && running && arrivedRef.current && !away && !reducedRef.current
-      return Boolean(decorative || flameLive || smoking)
+      return Boolean(decorative || flameLive || smoking || (ash > 0 && ash < 1))
     }
     paint.current = draw
     const job = 'paper:' + (frameKey || lane + ':' + title) + ':burn'
@@ -393,7 +397,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
     })}
     <canvas ref={canvas} className="process-paper" aria-hidden="true" />
     {lane === 'publish' && <canvas ref={fireNode} className="flame-layer" aria-hidden="true" />}
-    {showStrips && <div className="shred-strips" style={tray ? { left: tray.left, top: tray.top + 8, width: tray.width, right: 'auto', bottom: 'auto' } : undefined}>{links.slice(0, 8).map(link => <button type="button" key={link.id} className="shred-strip" data-card-id={link.id} data-refs={link.refs.join(' ')} style={{ backgroundImage: textures[link.id] ? `url(${textures[link.id]})` : undefined, height: 28 + (link.id % 5) * 6 }} onClick={() => onStrip?.(link)} aria-label={'碎纸 ' + link.id} />)}</div>}
+    {showStrips && <div className="strip-tray" style={tray ? { left: tray.left, top: tray.top + 18, width: tray.width } : undefined}>{links.slice(0, 8).map(link => <button type="button" key={link.id} className="shred-strip" data-card-id={link.id} data-refs={link.refs.join(' ')} style={{ backgroundImage: textures[link.id] ? `url(${textures[link.id]})` : undefined }} onClick={() => onStrip?.(link)} aria-label={'碎纸 ' + link.id} />)}</div>}
     <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} layer="front" className="process-machine foreground" />
   </div>
 }
@@ -419,6 +423,17 @@ export function CoverArt({ cover, video }: { cover?: string; video?: string }) {
     return () => { el.src = '' }
   }, [cover, video])
   return frame ? <img src={frame} alt="" /> : null
+}
+
+export function DeskTV({ url }: { url?: string }) {
+  return <div className="desk-tv" aria-label={url ? '成片' : '成片预留'}>
+    <div className="tv-bezel">
+      <div className="tv-screen">
+        {url ? <video src={url} controls playsInline preload="metadata" /> : <span>成片将在这里放映</span>}
+      </div>
+      <i className="tv-foot" />
+    </div>
+  </div>
 }
 
 export function DeskProjector({ url }: { url?: string }) {

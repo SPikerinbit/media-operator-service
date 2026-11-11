@@ -6,7 +6,7 @@ import { Modal, Button } from './ui'
 import { Presence, usePresented } from './presence'
 import { NoteThreads, type ThreadEnd } from './noteThreads'
 import { TranscriptView } from './TranscriptView'
-import { CoverArt, DeskProjector, PaperProcess, Prop, asset } from './WorkbenchEffects'
+import { CoverArt, DeskTV, PaperProcess, Prop, asset } from './WorkbenchEffects'
 import { anchorPixels, currentManifest, useWorkbenchManifest, woodLanding } from './workbenchAnchors'
 import { flyTaskPaper, flyTrashSheets, glideWood, mouthOf } from './workbenchMotion'
 import { entryLabel, optionsOf, reuseMark, sections, stageLabels, type InboxState, type Lane, type LetterEntry, type LetterGroup } from './workbenchState'
@@ -147,8 +147,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     if(removed.length)setSettled(list=>list.filter(id=>next.includes(id)))
     if(!added.length&&!removed.length)return
     const host=brazierRef.current
-    const image=host?.querySelector('.prop:not(.foreground)')
-    const box=image instanceof HTMLElement?image.getBoundingClientRect():brazierBox?.image||null
+    const box=host?.getBoundingClientRect()||brazierBox?.image||null
     const stagger=added.length>1?(1000-450)/(added.length-1):0
     ;[...added,...removed].forEach((id,index)=>{
       const order=Math.max(0,sections.findIndex(item=>item.id===id))
@@ -157,11 +156,24 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
       if(!img||!hole)return
       if(!box){img.style.position='';img.style.left='';img.style.top='';img.style.transform='';if(added.includes(id))setSettled(list=>[...new Set([...list,id])]);return}
       const land=woodLanding(box,currentManifest(),order)
+      const bowlX=box.left+box.width*0.5+(order-1.5)*16
+      const bowlY=box.top+box.height*0.62
       const from={x:img.getBoundingClientRect().left+img.getBoundingClientRect().width/2,y:img.getBoundingClientRect().top+img.getBoundingClientRect().height/2,width:img.getBoundingClientRect().width||120,height:img.getBoundingClientRect().height||80,rot:0}
-      const to=added.includes(id)?{x:land.x,y:land.y,width:120,height:80,rot:land.rot}:{x:hole.left+hole.width/2,y:hole.top+40,width:120,height:80,rot:0}
+      const to=added.includes(id)?{x:bowlX,y:bowlY,width:86,height:54,rot:land.rot}:{x:hole.left+hole.width/2,y:hole.top+40,width:86,height:54,rot:0}
       const delay=added.includes(id)?index*stagger:0
       window.setTimeout(()=>void glideWood(img,from,to).then(()=>{
-        if(added.includes(id))setSettled(list=>[...new Set([...list,id])])
+        if(added.includes(id)){
+          const front=host?.querySelector('.foreground')
+          if(host&&front&&img.parentElement!==host)host.insertBefore(img,front)
+          img.style.position='absolute'
+          img.style.left=(42+(order*8))+'%'
+          img.style.top='58%'
+          img.style.width='86px'
+          img.style.height='54px'
+          img.style.transform=`translate(-50%,-50%) rotate(${land.rot}deg)`
+          img.style.zIndex='2'
+          setSettled(list=>[...new Set([...list,id])])
+        }
         else{img.dataset.parked='';img.style.position='';img.style.left='';img.style.top='';img.style.width='';img.style.height='';img.style.transform='';img.style.filter='';img.style.zIndex=''}
       }),delay)
     })
@@ -172,7 +184,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     if(!box)return
     settled.forEach(id=>{
       const img=woodImg.current[id]
-      if(!img||img.style.position==='fixed')return
+      if(!img||img.style.position==='fixed'||img.style.position==='absolute')return
       const order=Math.max(0,sections.findIndex(item=>item.id===id))
       const land=woodLanding(box,currentManifest(),order)
       img.style.position='fixed';img.style.width='120px';img.style.height='80px'
@@ -259,8 +271,9 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     const host=deskRef.current
     if(!host)return
     const draw=()=>{
-      const box=host.getBoundingClientRect()
-      const paths=links.flatMap(link=>{
+        const box=host.getBoundingClientRect()
+        const origin=host.querySelector('.notes-links')?.getBoundingClientRect()||box
+        const paths=links.flatMap(link=>{
         const stripEl=host.querySelector(`[data-card-id="${link.id}"]`)
         const slipEl=host.querySelector(`[data-slip-id="${link.id}"]`)
         const strip=stripEl?.getBoundingClientRect()
@@ -268,15 +281,21 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
         if(!strip||!slip||strip.width<2||slip.width<2)return []
         if(strip.bottom<box.top||strip.top>box.bottom||slip.bottom<box.top||slip.top>box.bottom)return []
         const claim=slipEl?.querySelector('.slip-body')?.getBoundingClientRect()
-        const x1=strip.right-box.left-1
-        const y1=strip.top+strip.height*0.5-box.top
-        const x2=slip.left-box.left
-        const y2=(claim&&claim.height>2?claim.top+Math.min(11,claim.height*0.35):slip.top+12)-box.top
+        const x1=strip.left+strip.width*0.5-origin.left
+        const y1=strip.bottom-origin.top-4
+        const x2=slip.left-origin.left+2
+        const y2=(claim&&claim.height>2?claim.top+claim.height*0.5:slip.top+14)-origin.top
         return [{ id: link.id, x1, y1, x2, y2, hot: link.id === activeCard }]
       })
       setThreads(paths)
     }
     draw()
+    const tray=host.querySelector('.strip-tray')
+    const watch=new MutationObserver(draw)
+    if(tray)watch.observe(tray,{attributes:true,attributeFilter:['style']})
+    let frames=0
+    const pump=()=>{draw();if(frames++<40)requestAnimationFrame(pump)}
+    pump()
     const hover=(event: Event)=>{
       const target=event.target instanceof Element?event.target:null
       const node=target?.closest<HTMLElement>('[data-card-id],[data-slip-id]')
@@ -288,7 +307,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     host.addEventListener('scroll',draw,true)
     host.addEventListener('mouseover',hover)
     window.addEventListener('resize',draw)
-    return()=>{host.removeEventListener('scroll',draw,true);host.removeEventListener('mouseover',hover);window.removeEventListener('resize',draw)}
+    return()=>{watch.disconnect();host.removeEventListener('scroll',draw,true);host.removeEventListener('mouseover',hover);window.removeEventListener('resize',draw)}
   },[links,entry?.id,activeCard])
   const ready=entries.filter(e=>e.group_id===group?.id&&e.status==='ready')
   const rows=visible.slice()
@@ -335,17 +354,19 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
             <TranscriptView key={transcript} id={transcript} settings={settings} translationUrl={entry.result?.translated_srt_url} onSettings={onSettings} variant="desk" highlightCard={activeCard} onActivateCard={card=>{setActiveCard(card.id);if(card.refs[0])locateRef.current(card.refs[0])}} onVisibleCards={setLinks} onReady={api=>{locateRef.current=api.locate}}/>
             <NoteThreads threads={threads}/>
           </div>:<div className="task-scene">
-            <div className="task-stage">
-              <PaperProcess key={entry.id+':'+(entry.run||1)} frameKey={entry.id+':'+(entry.run||1)} lane={lane} progress={entry.progress_known?entry.progress:0} progressKnown={entry.progress_known!==false} status={entry.status} title={entryLabel(entry)} mark={reuseMark(entry)} active={active} arrived={arrived} replaySmoke={smoke} parked={entry.message.includes('等待已有任务完成可共享步骤')}/>
-              <Presence open={Boolean(lane==='publish'&&entry.status==='succeeded'&&manuscriptLink(entry))}>{lane==='publish'&&entry&&entry.status==='succeeded'&&manuscriptLink(entry)&&<button type="button" className="success-card" onClick={()=>window.open(manuscriptLink(entry),'_blank','noopener')}><CoverArt cover={entry.result?.cover} video={entry.result?.final_video_url}/><strong>{entry.result?.upload_title||entryLabel(entry)}</strong><small>投稿成功，等待审核</small></button>}</Presence>
+            <div className="task-column">
+              {lane==='publish'&&<DeskTV url={entry.status==='succeeded'?entry.result?.final_video_url:undefined}/>}
+              <div className="task-stage">
+                <PaperProcess key={entry.id+':'+(entry.run||1)} frameKey={entry.id+':'+(entry.run||1)} lane={lane} progress={entry.progress_known?entry.progress:0} progressKnown={entry.progress_known!==false} status={entry.status} title={entryLabel(entry)} mark={reuseMark(entry)} active={active} arrived={arrived} replaySmoke={smoke} parked={entry.message.includes('等待已有任务完成可共享步骤')}/>
+                <Presence open={Boolean(lane==='publish'&&entry.status==='succeeded'&&manuscriptLink(entry))}>{lane==='publish'&&entry&&entry.status==='succeeded'&&manuscriptLink(entry)&&<button type="button" className="success-card" onClick={()=>window.open(manuscriptLink(entry),'_blank','noopener')}><CoverArt cover={entry.result?.cover} video={entry.result?.final_video_url}/><strong>{entry.result?.upload_title||entryLabel(entry)}</strong><small>投稿成功，等待审核</small></button>}</Presence>
+              </div>
             </div>
-            {lane==='publish'&&entry.status==='succeeded'&&entry.result?.final_video_url&&<DeskProjector url={entry.result.final_video_url}/>}
             <div className="process-description" role="status">
-              <strong>{entry.status==='succeeded'&&lane==='publish'&&manuscriptLink(entry)?'投稿成功，等待审核':stageLabels[entry.stage||'']||stateLabels[entry.status]}</strong>
+              <strong className="stage-line">{entry.status==='succeeded'&&lane==='publish'&&manuscriptLink(entry)?'投稿成功，等待审核':stageLabels[entry.stage||'']||stateLabels[entry.status]}</strong>
               <span className="progress-number">{entry.progress_known?Math.round(entry.progress)+'%':'等待'}</span>
-              <p>{(entry.summary||[]).slice(0,2).join(' ')||stateLabels[entry.status]}</p>
+              <p className="stage-copy">{(entry.summary||[]).slice(0,2).join(' ')||stateLabels[entry.status]}</p>
               <button type="button" className="text-action" onClick={()=>setLogOpen(open=>!open)}>查看详情</button>
-              <Presence open={logOpen}><EntryLog id={entry.id}/></Presence>
+              <div className="log-slot">{logOpen&&<EntryLog id={entry.id}/>}</div>
             </div>
           </div>}
           {reuse.length>0&&<div className="reuse-banner"><Prop name={reuseMark(entry)==='cut'?'paper-cut':'paper-charred'} layer="beauty" className="reuse-sheet"/><p className="reuse-note">已复用{[...new Set(reuse.map(r=>({download:'源媒体',transcribe:'字幕',translate:'译文',burn:'成片'}[r.stage]||r.stage)))].join('、')}，继续{lane==='publish'?'成片与投稿':'整理笔记'}。</p></div>}

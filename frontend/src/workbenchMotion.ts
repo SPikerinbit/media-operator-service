@@ -299,11 +299,14 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
       if (slot) {
         const mouth = normBox(mail, slot, manifest.mailbox.size)
         const slotCenter = { x: mouth.left + mouth.width / 2, y: mouth.top + mouth.height * 0.35 }
-        const approach = { x: slotCenter.x + 8, y: slotCenter.y + 36 }
-        const lift = { x: home.x - 72, y: home.y - 64 }
-        const peak = { x: slotCenter.x - 28, y: slotCenter.y - 130 }
-        const travel = Math.min(1, insertT / 0.7)
-        const into = ramp(insertT, 0.68, 1)
+        const metalBottom = mail.top + mail.height * 0.8
+        const approachScale = 0.42
+        const half = restH * approachScale * 0.5
+        const approach = { x: slotCenter.x, y: metalBottom + half + 10 }
+        const lift = { x: home.x - 28, y: (home.y + approach.y) / 2 - 18 }
+        const peak = { x: (home.x + approach.x) / 2 - 16, y: Math.min(home.y, approach.y) - 28 }
+        const travel = Math.min(1, insertT / 0.78)
+        const into = ramp(insertT, 0.8, 1)
         const te = travel * travel * (3 - 2 * travel)
         const sample = Math.min(0.98, Math.max(0.02, into > 0 ? 1 : te))
         let cx = cubic(home.x, lift.x, peak.x, approach.x, into > 0 ? 1 : te)
@@ -311,26 +314,25 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
         const tx = cubicTan(home.x, lift.x, peak.x, approach.x, sample)
         const ty = cubicTan(home.y, lift.y, peak.y, approach.y, sample)
         let tilt = Math.atan2(ty, tx) * 180 / Math.PI
-        tilt = Math.max(-36, Math.min(28, tilt * 0.5))
+        tilt = Math.max(-18, Math.min(14, tilt * 0.35))
         const visible = manifest.envelope.visible_bounds
         const visibleW = visible ? (visible[2] - visible[0]) : 0.84
-        const endScale = Math.min(0.32, (mouth.width * 0.92) / Math.max(1, visibleW * restW))
-        const depth = Math.sin(Math.PI * Math.min(1, into > 0 ? 1 : te))
-        let scale = lerp(1, 1.16, depth)
+        const endScale = Math.min(0.28, (mouth.width * 0.92) / Math.max(1, visibleW * restW))
+        let scale = lerp(1, approachScale, te)
         if (into > 0) {
           cx = lerp(approach.x, slotCenter.x, into)
-          cy = lerp(approach.y, slotCenter.y - 2, into)
-          scale = lerp(1.04, endScale, into)
-          tilt = lerp(tilt, -6, into)
+          cy = lerp(approach.y, slotCenter.y, into)
+          scale = lerp(approachScale, endScale, into)
+          tilt = lerp(tilt, 0, into)
           if (!nodes.mail.dataset.fed) {
             nodes.mail.dataset.fed = '1'
             nodes.mail.classList.add('is-fed')
           }
         }
-        nodes.env.style.zIndex = into > 0.28 ? '2' : '6'
+        nodes.env.style.zIndex = into > 0.02 ? '2' : '6'
         nodes.env.style.transformOrigin = 'center center'
         nodes.env.style.transform = `translate3d(${cx - home.x}px, ${cy - home.y}px, 0) scale(${scale}) rotate(${tilt}deg)`
-        if (into > 0.42) {
+        if (into > 0.02) {
           const s = Math.max(0.05, scale)
           const top = Math.max(0, (mouth.top - cy) / s + restH / 2 - 4 / s)
           const bottom = Math.max(0, restH - ((mouth.top + mouth.height - cy) / s + restH / 2) - 3 / s)
@@ -343,7 +345,7 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
         nodes.env.style.opacity = String(1 - ramp(insertT, 0.94, 1))
         const groundY = Math.max(home.y, cy) + restH * 0.08
         shade.style.opacity = String(0.28 * (1 - into))
-        shade.style.transform = `translate3d(${cx - 28}px, ${groundY}px, 0) scale(${0.7 + depth * 0.5}, 0.6)`
+        shade.style.transform = `translate3d(${cx - 28}px, ${groundY}px, 0) scale(${0.55 + (1 - scale) * 0.2}, 0.55)`
         const exit = manifest.mailbox.anchors.exit
         if (u > 0.88 && exit) {
           const side = shell?.querySelector<HTMLElement>(`[data-mail-slot="${lane}"]`)
@@ -665,19 +667,29 @@ export function flyTrashSheets(from: { rect: DOMRect; title: string }[], mouth: 
         started = now
       }
       prev = hole
-      const p = springAt(now - started, SPRING.soft)
-      const travel = Math.min(1, Math.max(0, p))
-      const sink = ramp(travel, 0.62, 1)
+      const elapsed = now - started
+      const crumple = Math.min(1, elapsed / 280)
+      const flight = Math.min(1, Math.max(0, (elapsed - 260) / 620))
+      const ease = flight * flight * (3 - 2 * flight)
+      const bin = document.querySelector<HTMLElement>('.desk-trash')
+      if (flight > 0.82 && bin && !bin.dataset.fed) {
+        bin.dataset.fed = '1'
+        bin.classList.add('is-fed')
+        window.setTimeout(() => { bin.classList.remove('is-fed'); delete bin.dataset.fed }, 480)
+      }
       nodes.forEach((node, index) => {
-        const arc = travel > 0 && travel < 1 ? Math.sin(Math.PI * travel) * 16 : 0
-        const x = lerp(node.x, hole.x, travel) + index * 8
-        const y = lerp(node.y, hole.y, travel) + sink * (hole.height * 0.35) - arc
-        node.el.style.transform = `translate3d(${x - node.w / 2}px, ${y - node.h / 2}px, 0) rotateX(${sink * 22}deg)`
-        node.el.style.transformOrigin = 'center top'
-        node.el.style.clipPath = sink > 0.02 ? `inset(${sink * 100}% 0 0 0)` : ''
-        node.el.style.opacity = String(1 - ramp(sink, 0.72, 1))
+        const ball = crumple
+        const arc = Math.sin(Math.PI * ease) * 54
+        const x = lerp(node.x, hole.x, ease) + index * 6
+        const y = lerp(node.y, hole.y, ease) - arc
+        const size = lerp(1, 0.28, ball)
+        node.el.style.borderRadius = `${ball * 40}px`
+        node.el.style.transform = `translate3d(${x - node.w / 2}px, ${y - node.h / 2}px, 0) scale(${size}) rotate(${ball * 18 + ease * -12}deg)`
+        node.el.style.transformOrigin = 'center center'
+        node.el.style.clipPath = ''
+        node.el.style.opacity = String(flight < 0.02 ? 1 : 1 - ramp(ease, 0.86, 1))
       })
-      if (!springSettled(now - started)) return true
+      if (elapsed < 980) return true
       nodes.forEach(node => node.el.remove())
       resolve()
       return false
