@@ -27,10 +27,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - name: Install test dependencies
         run: python -m pip install -r requirements-dev.txt
-      - name: Test
-        run: python -m pytest -q
+      - name: Build the desktop UI the Windows tests open
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      # The desktop fixture mounts its session middleware on the shared app.
+      # Run it in its own process so the headless checks still see a plain API.
+      - name: Desktop tests
+        run: python -m pytest -q tests/test_desktop.py
+      - name: Cross-platform tests
+        run: python -m pytest -q tests/test_headless_api.py tests/test_version.py tests/test_workbench.py
 
   frontend:
     runs-on: ubuntu-latest
