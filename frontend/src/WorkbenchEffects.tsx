@@ -47,19 +47,20 @@ function drawSmoke(ctx: CanvasRenderingContext2D, x: number, y: number, t: numbe
 }
 
 type Fragment = { row: number; column: number; born: number; ash: boolean }
+const SMOKE_MS = 1600
 export function PaperProcess({ lane, stage, progress, progressKnown = true, status, title, mark = 'clean', active = true,
-  parked = false, arrived = true, links = [], replaySmoke = false, onStrip, frameKey = '', paperId = frameKey,
+  parked = false, arrived = true, links = [], replaySmoke = 0, onSmoked, onStrip, frameKey = '', paperId = frameKey,
   processRef, logs = [0, 1, 2, 3], showPaper = true }: {
   lane: Lane; stage?: string; progress: number; progressKnown?: boolean; status: string; title: string; mark?: PaperMark
-  active?: boolean; parked?: boolean; arrived?: boolean; links?: StripLink[]; replaySmoke?: boolean
-  onStrip?: (link: StripLink) => void; frameKey?: string; paperId?: string
+  active?: boolean; parked?: boolean; arrived?: boolean; links?: StripLink[]; replaySmoke?: number
+  onSmoked?: () => void; onStrip?: (link: StripLink) => void; frameKey?: string; paperId?: string
   processRef?: React.RefObject<PaperProcessHandle | null>; logs?: number[]; showPaper?: boolean
 }) {
   const canvas = useRef<HTMLCanvasElement>(null), fireNode = useRef<HTMLCanvasElement>(null), root = useRef<HTMLDivElement>(null)
   const flame = useRef<PetalFlame | null>(null), paint = useRef<(now: number, force?: boolean) => boolean>(() => false)
   const reduced = Boolean(useReducedMotion())
-  const live = useRef({progress, progressKnown, status, active, parked, arrived, replaySmoke, reduced, showPaper})
-  live.current = {progress, progressKnown, status, active, parked, arrived, replaySmoke, reduced, showPaper}
+  const live = useRef({progress, progressKnown, status, active, parked, arrived, replaySmoke, reduced, showPaper, onSmoked})
+  live.current = {progress, progressKnown, status, active, parked, arrived, replaySmoke, reduced, showPaper, onSmoked}
   const surface = paperSurface(paperId, title, mark), paper = useRef(surface)
   paper.current = surface
   const [box, setBox] = useState<Box | null>(null)
@@ -81,7 +82,8 @@ export function PaperProcess({ lane, stage, progress, progressKnown = true, stat
     const node = canvas.current, host = root.current
     if (!node || !host) return
     const context = node.getContext('2d')!
-    let last = performance.now(), smokeStart = 0, completeSeen = live.current.status === 'succeeded', replaySeen = false
+    let last = performance.now(), smokeStart = 0, replayToken = 0
+    let pendingSuccess = live.current.status !== 'succeeded'
     let lastDraw = '', wasAway = !live.current.active || document.hidden
     const resize = () => {
       const dpr = Math.min(devicePixelRatio || 1, 2)
@@ -116,11 +118,12 @@ export function PaperProcess({ lane, stage, progress, progressKnown = true, stat
       }
       emitted.current = Math.max(emitted.current, row)
       fragments.current = fragments.current.filter(f => now - f.born < 1150)
-      if (state.status === 'succeeded' && !completeSeen && visual === 1) {
-        completeSeen = true; smokeStart = now
+      if (pendingSuccess && state.status === 'succeeded' && visual === 1) {
+        pendingSuccess = false; smokeStart = now; replayToken = state.replaySmoke; state.onSmoked?.()
+      } else if (!pendingSuccess && state.replaySmoke && state.replaySmoke !== replayToken) {
+        replayToken = state.replaySmoke; smokeStart = now
       }
-      if (state.replaySmoke && !replaySeen) { replaySeen = true; smokeStart = now }
-      const smoking = lane === 'publish' && smokeStart > 0 && now - smokeStart < 1000
+      const smoking = lane === 'publish' && smokeStart > 0 && now - smokeStart < SMOKE_MS
       const pose = scenePaper(lane, local, 1 - visual)
       const drawKey = [visual.toFixed(5), state.arrived, state.showPaper, node.width, node.height, mark].join(':')
       if (force || drawKey !== lastDraw || fragments.current.length || smoking || transient) {
@@ -164,7 +167,7 @@ export function PaperProcess({ lane, stage, progress, progressKnown = true, stat
             context.restore()
           }
         }
-        if (smoking && 'edgeY' in pose) drawSmoke(context, pose.edgeX, pose.edgeY, (now - smokeStart) / 1000)
+        if (smoking && 'edgeY' in pose) drawSmoke(context, pose.edgeX, pose.edgeY, (now - smokeStart) / SMOKE_MS)
         lastDraw = drawKey
         transient = fragments.current.length > 0 || smoking
       }
@@ -177,7 +180,7 @@ export function PaperProcess({ lane, stage, progress, progressKnown = true, stat
         }
         fire.style.transform = `translate3d(${mouth.cx - width / 2}px,${mouth.cy - height * .8}px,0)`
         const lit = state.status === 'running' && state.arrived
-        flame.current.set({intensity: lit ? .85 : smoking ? .25 : 0, loop: !state.reduced && (lit || smoking), reduced: state.reduced, hidden: !lit && !smoking})
+        flame.current.set({intensity: lit ? .85 : 0, loop: !state.reduced && lit, reduced: state.reduced, hidden: !lit})
       }
       host.dataset.shown = visual.toFixed(4); host.dataset.emitted = String(emitted.current)
       host.dataset.fragments = String(fragments.current.length)

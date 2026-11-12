@@ -300,6 +300,34 @@ def fixed_canvas_filter(width: int, height: int) -> str:
     )
 
 
+_burn_hwaccels_cache: set[str] | None = None
+
+
+def burn_ffmpeg_hwaccels() -> set[str]:
+    """Hardware methods of the burn ffmpeg, which may differ from FFMPEG_BIN."""
+    global _burn_hwaccels_cache
+    if _burn_hwaccels_cache is not None:
+        return _burn_hwaccels_cache
+    try:
+        completed = subprocess.run(
+            [FFMPEG_BURN_BIN, "-hide_banner", "-hwaccels"],
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=WINDOW_FLAGS,
+        )
+        text = f"{completed.stdout}\n{completed.stderr}"
+    except Exception:
+        text = ""
+    names: set[str] = set()
+    for line in text.splitlines():
+        value = line.strip().lower()
+        if value and re.fullmatch(r"[a-z0-9_]+", value):
+            names.add(value)
+    _burn_hwaccels_cache = names
+    return _burn_hwaccels_cache
+
+
 def burn_subtitle(
     job_id: str,
     source_path: Path,
@@ -380,14 +408,16 @@ def burn_subtitle(
     if ratio_filter:
         video_filters.append(ratio_filter)
     video_filters.append(subtitle_filter)
-    def build_ffmpeg_burn_cmd(encoder: str) -> list[str]:
+    def build_ffmpeg_burn_cmd(encoder: str, *, cuda_decode: bool = False) -> list[str]:
+        filters = ["hwdownload,format=nv12", *video_filters] if cuda_decode else video_filters
         return [
             FFMPEG_BURN_BIN if encoder == "nvenc" else FFMPEG_BIN,
             "-y",
+            *(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"] if cuda_decode else []),
             "-i",
             str(source_path),
             "-vf",
-            ",".join(video_filters),
+            ",".join(filters),
             *ffmpeg_video_encoder_args(encoder),
             "-c:a",
             "aac" if DESKTOP else "copy",
@@ -413,16 +443,42 @@ def burn_subtitle(
 
     actual_encoder = selected_encoder
     fallback_error = ""
+    decode = "cpu"
+    decode_fallback_error = ""
+    use_cuda_decode = actual_encoder == "nvenc" and "cuda" in burn_ffmpeg_hwaccels()
     if progress_callback:
         progress_callback(10, "NVIDIA NVENC 编码" if actual_encoder == "nvenc" else "CPU 编码", None)
     try:
-        run_command_streaming(
-            build_ffmpeg_burn_cmd(actual_encoder),
-            cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
-            log_dir=job_dir(job_id),
-            log_name=f"ffmpeg-burn-{actual_encoder}",
-            on_stdout_line=handle_ffmpeg_progress,
-        )
+        if use_cuda_decode:
+            try:
+                run_command_streaming(
+                    build_ffmpeg_burn_cmd(actual_encoder, cuda_decode=True),
+                    cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
+                    log_dir=job_dir(job_id),
+                    log_name=f"ffmpeg-burn-{actual_encoder}",
+                    on_stdout_line=handle_ffmpeg_progress,
+                )
+                decode = "cuda"
+            except Exception as exc:
+                decode_fallback_error = str(exc)
+                decode = "cpu"
+                if progress_callback:
+                    progress_callback(12, "显卡解码失败，改用软件解码", decode_fallback_error[:500])
+                run_command_streaming(
+                    build_ffmpeg_burn_cmd(actual_encoder, cuda_decode=False),
+                    cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
+                    log_dir=job_dir(job_id),
+                    log_name=f"ffmpeg-burn-{actual_encoder}",
+                    on_stdout_line=handle_ffmpeg_progress,
+                )
+        else:
+            run_command_streaming(
+                build_ffmpeg_burn_cmd(actual_encoder),
+                cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
+                log_dir=job_dir(job_id),
+                log_name=f"ffmpeg-burn-{actual_encoder}",
+                on_stdout_line=handle_ffmpeg_progress,
+            )
     except Exception as exc:
         if actual_encoder != "nvenc":
             raise
@@ -450,6 +506,8 @@ def burn_subtitle(
                 "nvenc_preset": FFMPEG_NVENC_PRESET,
                 "nvenc_tune": FFMPEG_NVENC_TUNE,
                 "nvenc_cq": FFMPEG_NVENC_CQ,
+                "decode": decode,
+                "decode_fallback_error": decode_fallback_error,
                 "fallback_error": fallback_error,
                 "filters": video_filters,
             },

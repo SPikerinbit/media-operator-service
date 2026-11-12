@@ -9,7 +9,8 @@ datas = [(str(root / "app" / "static"), "app/static"), (str(root / "VERSION"), "
 binaries = []
 hiddenimports = ["uvicorn.logging", "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
                  "uvicorn.protocols.websockets.auto", "uvicorn.lifespan.on", "clr",
-                 "keyring.backends.Windows", "win32ctypes.pywin32.win32cred"]
+                 "keyring.backends.Windows", "win32ctypes.pywin32.win32cred",
+                 "app.desktop_bilibili"]
 for package in ("webview", "faster_whisper", "ctranslate2", "bilibili_api"):
     data, libs, imports = collect_all(package, include_py_files=False)
     datas += data

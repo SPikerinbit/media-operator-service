@@ -66,7 +66,9 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   const [links,setLinks]=useState<{id:number;refs:number[]}[]>([])
   const [activeCard,setActiveCard]=useState<number|null>(null)
   const [arrived,setArrived]=useState(true)
-  const [smoke,setSmoke]=useState(false)
+  const [smokeFor,setSmokeFor]=useState<{id:string;nonce:number}|null>(null)
+  const smokeNonce=useRef(0)
+  const smoked=useRef(new Set<string>())
   const [holding,setHolding]=useState<{entry:LetterEntry;index:number}[]>([])
   const played=useRef(new Set<string>())
   const flightRef=useRef<(() => void)|null>(null)
@@ -272,7 +274,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   function acceptPaper(){if(armed.current){armed.current.accepted=true;setStartVersion(n=>n+1)}}
   useEffect(()=>{
     const generation=++flightGeneration.current
-    flightRef.current?.();flightRef.current=null;armed.current=null;setArrived(true);setSmoke(false)
+    flightRef.current?.();flightRef.current=null;armed.current=null;setArrived(true)
     return()=>{if(flightGeneration.current===generation)flightGeneration.current++;flightRef.current?.();flightRef.current=null}
   },[entry?.id,active])
   useLayoutEffect(()=>{
@@ -286,7 +288,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     flightRef.current?.();setArrived(false)
     const land=()=>{if(generation!==flightGeneration.current)return;flushSync(()=>setArrived(true));flightRef.current=null}
     if(entry.status==='succeeded'){
-      setArrived(true);setSmoke(true);return
+      setArrived(true);return
     }
     const flight=flyProcessPaper(launch.from,()=>processRef.current?.key===key?processRef.current:null,key,land)
     flightRef.current=flight.cancel
@@ -308,7 +310,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
         {picked.length>0&&<button type="button" className="batch-delete" onClick={()=>void action(()=>removeIds(picked))}>删除所选 {picked.length} 封</button>}
         <div className="incoming-scroll thin-scroll">{rows.map(e=>{const detail=['identifying','starting','queued','running','failed','blocked'].includes(e.status)?(e.summary?.[0]||''):'';return <div className={'incoming-letter '+(pickedEntry?.id===e.id?'selected':'')+(holding.some(item=>item.entry.id===e.id)&&!entries.some(item=>item.id===e.id)?' is-removing':'')} data-entry-id={e.id} key={e.id}>
           <label className="check"><input type="checkbox" aria-label={'选择 '+entryLabel(e)} checked={picked.includes(e.id)} disabled={!e.deletable||holding.some(item=>item.entry.id===e.id)} onChange={()=>setPicked(list=>list.includes(e.id)?list.filter(id=>id!==e.id):[...list,e.id])}/></label>
-          <button type="button" className="incoming-open" onClick={()=>{setSelected(e.id);setListOpen(false)}} aria-pressed={pickedEntry?.id===e.id}>
+          <button type="button" className="incoming-open" onClick={()=>{setSelected(e.id);setListOpen(false);if(lane==='publish'&&e.status==='succeeded'){const key=executionKey(e);if(!smoked.current.has(key)){smoked.current.add(key);smokeNonce.current+=1;setSmokeFor({id:e.id,nonce:smokeNonce.current})}}}} aria-pressed={pickedEntry?.id===e.id}>
             <span className={'mini-paper '+e.status} style={{'--remaining':`${100-(workKnown(e)?workProgress(e):0)}%`} as React.CSSProperties}/><span><strong>{entryLabel(e)}</strong><small>{e.platform||'来信'} <span>{lane==='notes'&&e.status==='ready'?'待确认档位':stateLabels[e.status]}</span></small>{detail&&!detail.includes('已完成')&&<small className="row-note">{detail}</small>}</span>
           </button>
           <button type="button" className="row-delete" aria-label={'删除 '+entryLabel(e)} disabled={!e.deletable||pending||holding.some(item=>item.entry.id===e.id)} onClick={()=>void action(()=>removeIds([e.id]))}>删除</button>
@@ -324,7 +326,8 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
             <div className="publish-scene" ref={brazierRef}>
               <PaperProcess frameKey={executionKey(entry)} paperId={entry.id} processRef={processRef} lane="publish"
                 stage={entry.stage} progress={workProgress(entry)} progressKnown={workKnown(entry)} status={entry.status}
-                title={entryLabel(entry)} mark={reuseMark(entry)} active={active} arrived={arrived} replaySmoke={smoke}
+                title={entryLabel(entry)} mark={reuseMark(entry)} active={active} arrived={arrived} replaySmoke={smokeFor?.id===entry.id?smokeFor.nonce:0}
+                onSmoked={()=>smoked.current.add(executionKey(entry))}
                 showPaper={!configurable} logs={configurable?sections.flatMap((s,i)=>settled.includes(s.id)?[i]:[]):[0,1,2,3]}
                 parked={entry.waiting_for_shared??entry.message.includes('等待已有任务完成可共享步骤')}/>
             </div>

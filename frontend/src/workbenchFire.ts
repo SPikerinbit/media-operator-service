@@ -126,23 +126,49 @@ export function mountPetalFlame(canvas: HTMLCanvasElement): PetalFlame {
     raf = 0
   }
 
+  function ease(now: number) {
+    const dt = last ? Math.min(50, now - last) : 16
+    last = now
+    const step = visual.reduced ? 1 : 1 - Math.exp(-dt / 180)
+    shown += (visual.intensity - shown) * step
+    if (Math.abs(visual.intensity - shown) < 0.004) shown = visual.intensity
+  }
+
+  function keep() {
+    return !disposed && !visual.hidden && ((visual.loop && !visual.reduced) || shown !== visual.intensity)
+  }
+
+  function tick(now: number) {
+    raf = 0
+    if (disposed || !ctx) return
+    if (visual.hidden) {
+      shown = 0
+      ctx.clearRect(0, 0, cssWidth, cssHeight)
+      return
+    }
+    ease(now)
+    paint(now)
+    if (keep()) raf = requestAnimationFrame(tick)
+  }
+
+  function start() {
+    if (!raf && !disposed) raf = requestAnimationFrame(tick)
+  }
+
   applySize()
   return {
     set(next) {
       visual = next
       if (disposed || !ctx) return
-      const now = performance.now()
-      const dt = last ? Math.min(50, now - last) : 16
-      last = now
       if (next.hidden) {
         shown = 0
+        last = 0
+        stop()
         ctx.clearRect(0, 0, cssWidth, cssHeight)
         return
       }
-      const ease = next.reduced ? 1 : 1 - Math.exp(-dt / 180)
-      shown += (next.intensity - shown) * ease
-      if (Math.abs(next.intensity - shown) < 0.004) shown = next.intensity
-      paint(now)
+      if (next.loop && !next.reduced) start()
+      else { stop(); ease(performance.now()); paint(performance.now()) }
     },
     resize(width, height) {
       if (width < 2 || height < 2) return
