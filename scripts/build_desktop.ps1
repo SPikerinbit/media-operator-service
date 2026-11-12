@@ -70,6 +70,10 @@ try {
 
 & $PythonExe -m PyInstaller --noconfirm --distpath $dist --workpath (Join-Path $BuildDir "freeze") (Join-Path $root "packaging\media_operator.spec")
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
+# Import the actual frozen runtime before spending time on the installer.
+# --help loads app.main, including VERSION and the dynamically executed stages.
+& (Join-Path $application 'MediaWhisper.exe') --help | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Frozen runtime smoke check failed" }
 
 $frontend = Join-Path $root "app\static\desktop-ui"
 $static = Join-Path $application "_internal\app\static"
@@ -134,6 +138,29 @@ if (Test-Path -LiteralPath $extraNotices) {
 }
 
 $version = (Get-Content -LiteralPath (Join-Path $root "VERSION") -Raw).Trim()
+$sourceFiles = @(& git -C $root ls-files --cached --others --exclude-standard -- app frontend packaging desktop_entry.py VERSION)
+$sourceHashes = @($sourceFiles | Sort-Object -Unique | ForEach-Object {
+    $file = Join-Path $root $_
+    if (Test-Path -LiteralPath $file -PathType Leaf) {
+        [ordered]@{ path = $_; sha256 = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() }
+    }
+})
+$frontendHashes = @(Get-ChildItem -LiteralPath $frontend -Recurse -File | Sort-Object FullName | ForEach-Object {
+    [ordered]@{ path = $_.FullName.Substring($frontend.Length + 1).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+})
+$manifest = [ordered]@{
+    version = $version
+    built_at_utc = [DateTime]::UtcNow.ToString('o')
+    commit = (& git -C $root rev-parse HEAD)
+    source_modified = [bool](& git -C $root status --porcelain)
+    sources = $sourceHashes
+    frontend = $frontendHashes
+    executables = @('MediaOperator.exe', 'MediaWhisper.exe' | ForEach-Object {
+        [ordered]@{ path = $_; sha256 = (Get-FileHash -LiteralPath (Join-Path $application $_) -Algorithm SHA256).Hash.ToLowerInvariant() }
+    })
+}
+$manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $application 'build-manifest.json') -Encoding utf8
+Copy-Item -LiteralPath (Join-Path $application 'build-manifest.json') -Destination (Join-Path $OutputDir 'MediaOperator-build-manifest.json')
 & $InnoCompiler "/DAppVersion=$version" "/DMediaDist=$application" "/DMediaOutput=$OutputDir" "/DWebViewSetup=$webview" (Join-Path $root "packaging\MediaOperator.iss")
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed" }
 

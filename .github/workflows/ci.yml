@@ -16,7 +16,7 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Lint
-        run: ruff check app tests desktop_entry.py
+        run: ruff check .
       - name: Test
         run: python -m pytest -q
 
@@ -39,8 +39,9 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run build
-      # The desktop fixture mounts its session middleware on the shared app.
-      # Run it in its own process so the headless checks still see a plain API.
+      - name: All tests in one process (session isolation)
+        run: python -m pytest -q
+      # Also retain separate-process coverage of both application modes.
       - name: Desktop tests
         run: python -m pytest -q tests/test_desktop.py
       - name: Cross-platform tests

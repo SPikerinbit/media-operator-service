@@ -19,3 +19,13 @@ def test_deepseek_probe_checks_the_saved_key(monkeypatch):
         assert error.status_code == 400
     else:
         raise AssertionError("expected a missing key")
+
+
+def test_guide_completion_is_persisted_independently_of_browser_storage(tmp_path, monkeypatch):
+    config = desktop_routes.config
+    monkeypatch.setattr(config, 'HOME', tmp_path)
+    monkeypatch.setattr(config, 'SETTINGS', tmp_path/'settings.json')
+    monkeypatch.setattr(config, 'credentials', lambda: {key:'' for key in config.CREDENTIALS})
+    desktop_routes.save_settings(desktop_routes.Preferences(onboarding_complete=True))
+    assert config.settings()['onboarding_complete'] is True
+    assert desktop_routes.settings()['onboarding_complete'] is True

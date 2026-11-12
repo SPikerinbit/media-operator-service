@@ -18,7 +18,8 @@ class Credentials:
     def set_password(self,*args):pass
     def delete_password(self,*args):pass
 config.VAULT=Credentials()
-app=desktop.application('http://127.0.0.1:8801','workbench-review')
+port=int(os.environ.get('MEDIA_UI_PORT','8801'))
+app=desktop.application(f'http://127.0.0.1:{port}','workbench-review')
 media.whisper_model_status=lambda *a:{'available':True}
 media.bilibili_configured=lambda:True
 desktop_bilibili.posting_zones=lambda:{201:'知识 / 科学'}
@@ -54,7 +55,15 @@ for route in app.routes:
     if getattr(route,'path','')=='/ui/preview-frame':
         async def preview(request:media.PreviewFrameRequest):return {'preview_image_url':'/static/desktop-ui/workbench/paper-light-beauty.webp'}
         route.dependant.call=preview
+@app.post('/fixture/cards')
+async def fixture_cards(request:Request):
+    values=await request.json()
+    with knowledge.database() as db:
+        for index in range(values.get('count',3)):
+            db.execute("INSERT OR IGNORE INTO card(transcript_id,claim,evidence,example,refs,origin_key,quote_translation) VALUES(?,?,?,?,?,?,?)",
+                       (values['transcript_id'],f'测试观点 {index+1}','仅用于布局复验','','[1]',f'fixture-{index}',''))
+    return {'ok':True}
 @app.post('/fixture/state')
 async def fixture(request:Request):
     values=await request.json();entry=inbox.get_entry(values.pop('id'));inbox.update(entry['id'],**values);return {'ok':True}
-if __name__=='__main__':uvicorn.run(app,host='127.0.0.1',port=8801,access_log=False)
+if __name__=='__main__':uvicorn.run(app,host='127.0.0.1',port=port,access_log=False)

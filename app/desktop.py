@@ -11,7 +11,7 @@ import threading
 import time
 import winreg
 
-from fastapi import Request
+from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse, Response
 import uvicorn
 
@@ -63,7 +63,11 @@ def application(origin, token):
     desktop_routes.sync_credentials()
     desktop_jobs.recover_interrupted()
     workbench_inbox.initialize()
-    app = media.app
+    # A desktop session must never install private routes or middleware on the
+    # shared headless application (including when both run in one test process).
+    app = FastAPI(routes=list(media.app.routes), middleware=list(media.app.user_middleware),
+                  exception_handlers=dict(media.app.exception_handlers),
+                  lifespan=media.app.router.lifespan_context)
     app.include_router(desktop_routes.router)
     app.include_router(workbench_inbox.router)
 
@@ -157,8 +161,35 @@ def window_options(webview):
     screens = webview.screens
     if screens:
         screen = screens[0]
-        width = min(1440, max(1, getattr(screen.frame, "Width", screen.width) - 28))
-        height = min(940, max(1, getattr(screen.frame, "Height", screen.height) - 28))
+        # pywebview consumes logical pixels; Screen.frame is a physical rectangle.
+        # Use the monitor under the cursor, including its taskbar and DPI.
+        from ctypes import wintypes
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("monitor", wintypes.RECT),
+                        ("work", wintypes.RECT), ("flags", wintypes.DWORD)]
+        point = wintypes.POINT()
+        user = ctypes.windll.user32
+        user.GetCursorPos(ctypes.byref(point))
+        user.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        user.MonitorFromPoint.restype = wintypes.HANDLE
+        monitor = user.MonitorFromPoint(point, 2)
+        info = MonitorInfo(cbSize=ctypes.sizeof(MonitorInfo))
+        user.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+        available_width, available_height = screen.width, screen.height
+        if user.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            dpi_x, dpi_y = wintypes.UINT(96), wintypes.UINT(96)
+            try:
+                get_dpi = ctypes.windll.shcore.GetDpiForMonitor
+                get_dpi.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT)]
+                get_dpi(monitor, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y))
+            except OSError:
+                pass
+            available_width = (info.work.right - info.work.left) * 96 / max(96, dpi_x.value)
+            available_height = (info.work.bottom - info.work.top) * 96 / max(96, dpi_y.value)
+            options.update(x=round(info.work.left * 96 / max(96, dpi_x.value) + 14),
+                           y=round(info.work.top * 96 / max(96, dpi_y.value) + 14))
+        width = min(1440, max(1, int(available_width) - 28))
+        height = min(940, max(1, int(available_height) - 28))
         options.update(width=width, height=height, min_size=(min(950, width), min(680, height)))
     return options
 

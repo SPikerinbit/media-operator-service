@@ -59,6 +59,7 @@ const SITES: [string, string, string[]][] = [
   ['抖音', 'url', ['douyin.com', 'iesdouyin.com']],
   ['小红书', 'url', ['xiaohongshu.com', 'xhslink.com', 'xhslink.cn']],
   ['小宇宙', 'url', ['xiaoyuzhoufm.com']],
+  ['微信读书', 'url', ['weread.qq.com']],
 ]
 
 export type ClassifiedLetter = {

@@ -6,6 +6,7 @@ const SITES: [string, string[]][] = [
   ['YouTube', ['youtube.com', 'youtu.be', 'music.youtube.com']],
   ['B 站', ['bilibili.com', 'b23.tv']],
   ['小宇宙', ['xiaoyuzhoufm.com']],
+  ['微信读书', ['weread.qq.com']],
 ]
 
 const URL_PATTERN = /https?:\/\/[^\s<>"'，。；！？、）】》]+/gi

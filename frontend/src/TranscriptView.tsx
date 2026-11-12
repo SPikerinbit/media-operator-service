@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { request, saveAs, timestamp, type Draft, type Publication, type Settings } from './api'
 import { useDraftSession } from './draftSession'
+import { useNotesMode, type NotesMode } from './notesMode'
 import { parseSrt } from './srt'
 import { transcriptSource, useSourceTitles } from './sourceTitles'
 import { Button, Busy, Feedback, Field, Select, useActions } from './ui'
@@ -17,7 +18,8 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
   onReady?: (api: { locate: (cue: number) => void }) => void
 }) {
   const [state, session] = useDraftSession(id)
-  const { doc, edits, saves, selected, expanded, results, busy, activeCue, mode } = state
+  const { doc, edits, saves, selected, expanded, results, busy, activeCue } = state
+  const [mode, setMode] = useNotesMode()
   const [filter, setFilter] = useState('')
   const [cueQuery, setCueQuery] = useState('')
   const [slipPage, setSlipPage] = useState(0)
@@ -63,6 +65,7 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
     if (!settings?.has_ai_key) { onSettings('deepseek'); return }
     session.update({ busy: 'generate' })
     try {
+      await Promise.all(Object.keys(session.get().edits).map(id => session.save(Number(id))))
       const response = await request<{ added: number }>(path + '/generate', 'POST', { send_subtitles: true, mode })
       await session.refresh()
       setNotice({ text: response.added ? '新增 ' + response.added + ' 条观点' : '没有新增观点，已有内容已保留' })
@@ -108,7 +111,11 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
   if (variant === 'desk') {
     const shownCues = doc.cues.filter(cue => !cueQuery || (cue.text + ' ' + (translations.get(cue.number) || '')).toLocaleLowerCase().includes(cueQuery.toLocaleLowerCase()))
     const pages = Math.max(1, Math.ceil(visibleCards.length / 8))
-    return <div className="note-desk">
+    return <div className="note-desk" data-panel={state.panel}>
+      <div className="note-panel-tabs" role="group" aria-label="笔记内容">
+        <button type="button" aria-pressed={state.panel === 'drafts'} onClick={() => session.update({panel:'drafts'})}>观点</button>
+        <button type="button" aria-pressed={state.panel === 'source'} onClick={() => session.update({panel:'source'})}>原文</button>
+      </div>
       <div className="note-slips">
         <div className="note-actions">
           <Button variant="secondary" disabled={Boolean(busy)} onClick={() => perform(generate)}>{busy === 'generate' ? '正在提取' : '提取观点'}</Button>
@@ -160,8 +167,8 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
     <div className="note-chrome">
       <h2>{identity ? titles.label(identity) : doc.title}</h2>
       <div className="note-actions">
-        <Select value={mode} onChange={(value) => session.update({ mode: value as typeof mode })}
-          options={[['curated', '精选关键句'], ['comprehensive', '较完整摘录']]}/>
+        <Select value={mode} onChange={(value) => setMode(value as NotesMode)}
+          options={[['summary', '摘要'], ['curated', '精华观点'], ['comprehensive', '大多数观点']]}/>
         <Button variant="secondary" disabled={Boolean(busy)} onClick={() => perform(generate)}>{busy === 'generate' ? '正在提取' : '提取观点'}</Button>
         <Button variant="secondary" disabled={!doc.cards.length || Boolean(busy)} onClick={() => perform(() => publish(chosen))}>
           {busy === 'publish' ? '正在写入' : '写入 Obsidian'}</Button>

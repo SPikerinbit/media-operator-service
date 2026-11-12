@@ -643,6 +643,7 @@ def transcribe_video(
 
     try:
         job_dir(job_id).mkdir(parents=True, exist_ok=True)
+        cancellation = artifact_path(job_id, "cancel-transcription.requested")
         worker_exe = Path(sys.executable).with_name("MediaWhisper.exe")
         worker = [str(worker_exe)] if DESKTOP and getattr(sys, "frozen", False) else [
             WHISPER_WORKER_PYTHON or sys.executable, "-m", "app.whisper_worker"
@@ -660,15 +661,43 @@ def transcribe_video(
             "--inference-mode",
             mode,
         ]
+        last_activity = time.monotonic()
+        last_heartbeat = last_activity
+        shown_progress = 0
+        phase = "启动转录"
         def handle_whisper_line(line: str) -> None:
-            if not progress_callback:
-                return
+            nonlocal last_activity, shown_progress, phase
             if not line.startswith("WHISPER_PROGRESS\t"):
                 return
             parts = line.split("\t", 2)
             if len(parts) < 3:
                 return
-            progress_callback(clamp_percent(parts[1]), parts[2].strip(), line)
+            last_activity = time.monotonic()
+            shown_progress = max(shown_progress, clamp_percent(parts[1]))
+            phase = parts[2].strip()
+            if progress_callback:
+                device = "NVIDIA GPU" if env and env.get("WHISPER_DEVICE") == "cuda" else "CPU"
+                progress_callback(shown_progress, phase if device in phase else f"{device} · {phase}", line)
+
+        def heartbeat() -> None:
+            nonlocal last_heartbeat
+            if cancellation.exists():
+                raise RuntimeError("转录已取消，可重试恢复；已完成的素材会保留。")
+            elapsed = time.monotonic() - last_activity
+            device = "NVIDIA GPU" if env and env.get("WHISPER_DEVICE") == "cuda" else "CPU"
+            if time.monotonic() - last_heartbeat >= 15:
+                last_heartbeat = time.monotonic()
+                message = f"{device} · {phase} · 最近阶段活动 {int(elapsed)} 秒前"
+                if elapsed >= 60:
+                    message += " · 处理耗时较长，可取消后恢复"
+                artifact_path(job_id, "whisper_heartbeat.json").write_text(json.dumps({
+                    "device": device, "phase": phase, "idle_seconds": round(elapsed), "updated_at": now_iso(),
+                }, ensure_ascii=False), encoding="utf-8")
+                if progress_callback:
+                    progress_callback(shown_progress, message, None)
+            limit = float(os.getenv("MEDIA_WHISPER_IDLE_TIMEOUT", "180" if device == "NVIDIA GPU" else "900"))
+            if elapsed > limit:
+                raise RuntimeError(f"{device} 转录在 {phase} 阶段 {int(elapsed)} 秒没有进展")
 
         if DESKTOP:
             from app.desktop_config import worker_environment
@@ -680,19 +709,26 @@ def transcribe_video(
         try:
             run_command_streaming(
                 cmd, cwd=ROOT_DIR, log_dir=job_dir(job_id), log_name="whisper",
-                on_stdout_line=handle_whisper_line, on_stderr_line=handle_whisper_line, env=env,
+                on_stdout_line=handle_whisper_line, on_stderr_line=handle_whisper_line, env=env, on_tick=heartbeat,
             )
-        except RuntimeError:
-            if mode == "gpu_only" or not env or env.get("WHISPER_DEVICE") != "cuda":
+        except RuntimeError as gpu_error:
+            if cancellation.exists() or not env or env.get("WHISPER_DEVICE") != "cuda":
+                raise
+            artifact_path(job_id, "whisper_gpu_failure.json").write_text(json.dumps({
+                "error": str(gpu_error), "phase": phase, "device": env["WHISPER_DEVICE"],
+                "compute_type": env.get("WHISPER_COMPUTE_TYPE"), "updated_at": now_iso(),
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            if mode == "gpu_only":
                 raise
             if progress_callback:
-                progress_callback(5, "GPU 转录失败，改用 CPU 重试", None)
+                progress_callback(shown_progress, "GPU 转录失败，改用 CPU 重试（已保存 GPU 诊断）", None)
             env["WHISPER_DEVICE"] = "cpu"
             env["WHISPER_COMPUTE_TYPE"] = ""
             env.pop("MEDIA_GPU_DLL_DIR", None)
+            last_activity = time.monotonic()
             run_command_streaming(
                 cmd, cwd=ROOT_DIR, log_dir=job_dir(job_id), log_name="whisper-cpu",
-                on_stdout_line=handle_whisper_line, on_stderr_line=handle_whisper_line, env=env,
+                on_stdout_line=handle_whisper_line, on_stderr_line=handle_whisper_line, env=env, on_tick=heartbeat,
             )
         path = artifact_path(job_id, "english.srt")
         if not path.exists():
@@ -700,8 +736,10 @@ def transcribe_video(
         return path
     except Exception as exc:
         if DESKTOP:
+            if "转录已取消" in str(exc):
+                raise
             if mode == "gpu_only":
-                raise RuntimeError("严格 GPU 转录失败，任务已停止。请检查 NVIDIA 环境和显存，详情见本地 Whisper 日志。") from exc
+                raise RuntimeError(f"严格 GPU 转录失败，任务已停止：{str(exc)[-800:]}。详情见本地 Whisper 日志。") from exc
             raise RuntimeError("Whisper 转录失败。请在设置中检查本地模型和运行环境，详情见本地 Whisper 日志。") from exc
         if runtime["backend"] == "auto" and whisper_cli:
             output_dir = job_dir(job_id) / "transcript"

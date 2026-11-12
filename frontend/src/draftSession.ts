@@ -6,7 +6,7 @@ type Session = {
   doc: Transcript | null; loading: boolean; error: string; edits: Record<number, Draft>;
   saves: Record<number, SaveState>; selected: number[]; expanded: number | null;
   results: Publication[]; busy: 'generate' | 'publish' | ''; activeCue?: number;
-  follow: boolean; mode: 'curated' | 'comprehensive'; panel: 'source' | 'drafts';
+  follow: boolean; panel: 'source' | 'drafts';
 }
 function createSession(id: number) {
   const storageKey = 'media-operator.pending-drafts.' + id
@@ -20,7 +20,7 @@ function createSession(id: number) {
     }
   } catch { /* The database still holds every previously acknowledged edit. */ }
   let state: Session = {doc:null,loading:true,error:'',edits:{},saves:{},selected:[],expanded:null,
-    results:[],busy:'',follow:false,mode:'curated',panel:'source'}
+    results:[],busy:'',follow:false,panel:'source'}
   state.edits = pending
   state.saves = Object.fromEntries(Object.keys(pending).map((key) => [key,'error']))
   const listeners = new Set<() => void>()

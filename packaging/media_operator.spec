@@ -4,7 +4,8 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 root = Path(SPECPATH).parent
-datas = [(str(root / "app" / "static"), "app/static")]
+datas = [(str(root / "app" / "static"), "app/static"), (str(root / "VERSION"), "."),
+         (str(root / "app" / "stages"), "app/stages")]
 binaries = []
 hiddenimports = ["uvicorn.logging", "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
                  "uvicorn.protocols.websockets.auto", "uvicorn.lifespan.on", "clr",

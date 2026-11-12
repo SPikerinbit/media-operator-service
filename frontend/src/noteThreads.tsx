@@ -31,12 +31,13 @@ function biases(list: ThreadEnd[]) {
 }
 
 /** Cotton thread pinned between a shred and a note. Draw-in is staggered and springy. */
-export function NoteThreads({ threads }: { threads: ThreadEnd[] }) {
+export function NoteThreads({ threads, active=true }: { threads: ThreadEnd[]; active?:boolean }) {
   const svg = useRef<SVGSVGElement>(null)
   const live = useRef(new Map<number, Live>())
   const props = useRef(threads)
   props.current = threads
   useEffect(() => {
+    if(!active)return
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
     let frame = 0
     const step = (now: number) => {
@@ -105,11 +106,15 @@ export function NoteThreads({ threads }: { threads: ThreadEnd[] }) {
         })
         for (const id of [...live.current.keys()]) if (!seen.has(id)) live.current.delete(id)
       }
-      frame = requestAnimationFrame(step)
+      const moving=want.some(next=>{
+        const cur=live.current.get(next.id)
+        return cur&&((!reduced&&now-cur.born<1400)||Math.hypot(cur.x1-next.x1,cur.y1-next.y1,cur.x2-next.x2,cur.y2-next.y2)>.2)
+      })
+      frame = moving ? requestAnimationFrame(step) : 0
     }
     frame = requestAnimationFrame(step)
     return () => cancelAnimationFrame(frame)
-  }, [])
+  }, [threads,active])
   return <svg ref={svg} className="notes-links" aria-hidden="true">
     {threads.map(thread => <g key={thread.id}>
       <path data-shadow={thread.id} className="thread-shadow" />

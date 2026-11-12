@@ -204,13 +204,15 @@ frontend/                      React 工作台，构建到 app/static/desktop-ui
 
 ```bash
 python -m pip install -r requirements-dev.txt
-ruff check app tests desktop_entry.py
+ruff check .
 python -m pytest -q
 ```
 
 `ruff` 只查会在运行时出错的规则，不按风格重写仓库。`tests/test_desktop.py` 只在 Windows 上收集。一条依赖 Windows 路径的工作台测试，在其他系统上会跳过。
 
-GitHub Actions（`.github/workflows/ci.yml`）在 Ubuntu 上跑 ruff、pytest 和 `npm run build`，在 Windows 上先构建桌面界面，再分两次跑桌面测试和其余测试。推送到 `main` 或 `dev`，以及拉取请求，都会触发。
+GitHub Actions（`.github/workflows/ci.yml`）在 Ubuntu 上跑全仓 ruff、pytest 和前端构建；Windows 先构建桌面界面，再运行完整单进程测试检查会话隔离，并保留桌面与其余测试的分进程检查。推送到 `main` 或 `dev`，以及拉取请求，都会触发。
+
+受控浏览器回归可单独运行：先用测试 Python 启动 `tests/workbench_ui_server.py <隔离目录>`，再用安装了 Playwright 的 Python 运行 `tests/verify_workbench_ui.py http://127.0.0.1:8801 <证据目录>`。该服务模拟媒体、模型和投稿，仅证明前端行为；真实服务结果需另行验收。本轮结果见 [0.5.0 复验报告](docs/VALIDATION-0.5.0-20261112.md)。
 
 更短的桌面试用步骤在 [docs/DESKTOP_QUICKSTART.md](docs/DESKTOP_QUICKSTART.md)。
 

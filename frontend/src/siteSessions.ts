@@ -58,6 +58,7 @@ export async function openSiteLogin(site: SiteId, onStatus?: (status: SiteLogin)
 
 export async function logoutSite(site: SiteId) {
   const status = await request<SiteLogin>('/desktop/sites/' + site, 'DELETE')
+  clearSiteSession(site)
   window.dispatchEvent(new CustomEvent('site-login', { detail: status }))
   return status
 }
@@ -68,7 +69,7 @@ export function storeSiteSession(site: LoginSite, sessionId: string) {
 }
 
 export function clearSiteSession(site: SiteId) {
-  delete sessions[site === 'xiaohongshu' ? '小红书' : site === 'bilibili' ? 'B 站' : '抖音']
+  delete sessions[site === 'xiaohongshu' ? '小红书' : site === 'bilibili' ? 'B 站' : site === 'weread' ? '微信读书' : '抖音']
 }
 
 export function loginLabel(detail: { platform?: string; site?: string } | undefined) {
@@ -82,6 +83,6 @@ export function loginLabel(detail: { platform?: string; site?: string } | undefi
 
 export function sessionForSource(url: string) {
   const site = siteOf(url)
-  if (site === '抖音' || site === '小红书') return sessions[site] || ''
+  if (site === '抖音' || site === '小红书' || site === 'B 站' || site === '微信读书') return sessions[site] || ''
   return ''
 }

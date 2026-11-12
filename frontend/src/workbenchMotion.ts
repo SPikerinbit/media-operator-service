@@ -123,18 +123,15 @@ function buildFold(lines: string[], width: number, height: number) {
   cam.className = 'fold-cam'
   const stage = document.createElement('div')
   stage.className = 'fold-stage'
-  const chunks = [lines.slice(0, 3), lines.slice(3, 5), lines.slice(5, 8)]
-  const panelOf = (chunk: string[]) => {
+  const panelOf = (index: number) => {
     const panel = document.createElement('div')
     panel.className = 'fold-panel'
     const face = document.createElement('div')
     face.className = 'fold-face'
-    chunk.forEach(text => {
-      const row = document.createElement('div')
-      row.className = 'flyer-line'
-      row.textContent = text
-      face.append(row)
-    })
+    const surface = ruledSheet(lines, width, height)
+    surface.style.position = 'absolute'
+    surface.style.top = `${-index * height / 3}px`
+    face.append(surface)
     const edge = document.createElement('i')
     edge.className = 'fold-thickness'
     face.append(edge)
@@ -144,7 +141,7 @@ function buildFold(lines: string[], width: number, height: number) {
     return panel
   }
   const third = height / 3
-  const top = panelOf(chunks[0])
+  const top = panelOf(0)
   top.classList.add('is-top')
   top.style.height = third + 'px'
   const hingeMid = document.createElement('div')
@@ -153,13 +150,13 @@ function buildFold(lines: string[], width: number, height: number) {
   hingeMid.style.height = third + 'px'
   const creaseMid = document.createElement('i')
   creaseMid.className = 'fold-crease-line'
-  const mid = panelOf(chunks[1])
+  const mid = panelOf(1)
   const hingeBot = document.createElement('div')
   hingeBot.className = 'fold-hinge bot'
   hingeBot.style.height = third + 'px'
   const creaseBot = document.createElement('i')
   creaseBot.className = 'fold-crease-line'
-  const bot = panelOf(chunks[2])
+  const bot = panelOf(2)
   hingeBot.append(creaseBot, bot)
   hingeMid.append(creaseMid, mid, hingeBot)
   stage.style.height = height + 'px'
@@ -540,7 +537,7 @@ export function glideWood(el: HTMLElement, from: WoodRect, to: WoodRect, _ms = 4
   if (reducedMotion()) {
     parkWood(el, to)
     el.classList.remove('wood-flight')
-    return Promise.resolve()
+    return Object.assign(Promise.resolve(), { cancel: () => {} })
   }
   const started = performance.now()
   pin(el, from.x - from.width / 2, from.y - from.height / 2, from.width, from.height)

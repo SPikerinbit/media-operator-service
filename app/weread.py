@@ -109,6 +109,9 @@ def fetch_book(url, cookie_header, client=None):
     try:
         info = session.post("https://i.weread.qq.com/book/chapterInfos", json={"bookIds": [ident], "synckeys": [0]})
         if info.status_code in {401, 403}:
+            if own:
+                from app.site_profiles import invalidate
+                invalidate('weread')
             raise LoginRequired("微信读书登录已失效")
         info.raise_for_status()
         payload = info.json()
@@ -122,6 +125,9 @@ def fetch_book(url, cookie_header, client=None):
                 params={"bookId": ident},
             )
             if page.status_code in {401, 403}:
+                if own:
+                    from app.site_profiles import invalidate
+                    invalidate('weread')
                 raise LoginRequired("微信读书登录已失效")
             page.raise_for_status()
             body = page.json() if "json" in page.headers.get("content-type", "") else {"content": page.text}

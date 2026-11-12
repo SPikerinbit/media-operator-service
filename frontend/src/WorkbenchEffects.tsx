@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useReducedMotion } from 'motion/react'
-import { advanceProgress, anchorPixels, bowlMouth, burnPaper, currentManifest, shredderPaper, useWorkbenchManifest } from './workbenchAnchors'
+import { advanceProgress, anchorPixels, bowlMouth, burnPaper, currentManifest, shredderPaper, useWorkbenchManifest, woodLanding } from './workbenchAnchors'
 import type { Box } from './workbenchAnchors'
 import type { Lane } from './workbenchState'
 import { bindFrame } from './workbenchScheduler'
@@ -19,6 +19,15 @@ export function ContactShadow({ name }: { name: string }) {
 }
 
 export type StripLink = { id: number; refs: number[] }
+export function BrazierLogs({box, ids=[0,1,2,3]}:{box:Box;ids?:number[]}) {
+  const spec=currentManifest(), mouth=bowlMouth(box,spec)
+  return <div className="bowl-well" data-bowl-well style={{left:mouth.cx-mouth.rx,top:mouth.cy-mouth.ry,width:mouth.rx*2,height:mouth.ry*2}}>
+    {ids.map(index=>{
+      const spot=woodLanding(box,spec,index)
+      return <span key={index} className="task-log" style={{left:spot.x-(mouth.cx-mouth.rx),top:spot.y-(mouth.cy-mouth.ry),width:box.width*.22,height:box.height*.145,transform:`translate(-50%,-50%) rotate(${spot.rot}deg)`}}><img alt="" src={asset(`wood-${index}-light-beauty`)}/></span>
+    })}
+  </div>
+}
 type Mark = 'clean' | 'cut' | 'charred'
 
 function hash(n: number) {
@@ -145,8 +154,6 @@ function layoutOf(el: HTMLElement, origin: HTMLElement): Box {
   return { left: (a.left - b.left) * sx, top: (a.top - b.top) * sy, width: a.width * sx, height: a.height * sy }
 }
 
-type Fallen = { id: number; x: number; length: number; bend: number; born: number }
-
 export function PaperProcess({ lane, progress, progressKnown = true, status, title, mark = 'clean', active = true, parked = false, arrived = true, links = [], replaySmoke = false, onStrip, frameKey = '' }: {
   lane: Lane; progress: number; progressKnown?: boolean; status: string; title: string; mark?: Mark; active?: boolean; parked?: boolean
   arrived?: boolean; links?: StripLink[]; replaySmoke?: boolean; onStrip?: (link: StripLink) => void; frameKey?: string
@@ -172,8 +179,6 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
   const draws = useRef(0)
   const litAt = useRef(0)
   const painted = useRef(-1)
-  const fallen = useRef<Fallen[]>([])
-  const fed = useRef(0)
   progressRef.current = progress
   knownRef.current = progressKnown
   statusRef.current = status
@@ -349,24 +354,6 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
           context.drawImage(paper, pose.x, pose.y, pose.width, pose.height)
           context.restore()
         }
-        const entered = pose.entered
-        if (entered > fed.current + 8 && fallen.current.length < 8) {
-          fed.current = entered
-          fallen.current.push({ id: fallen.current.length, x: (fallen.current.length % 8) / 8, length: 0.55 + hash(fallen.current.length + 3) * 0.4, bend: hash(fallen.current.length) * 10 - 5, born: visual })
-        }
-        if (paperChanged && !links.length) {
-          fallen.current.forEach(strip => {
-            const sw = pose.width / 8
-            const drop = Math.min(1, Math.max(0, (visual - strip.born) * 1.4))
-            const length = (pose.tray.y - pose.output.y) * strip.length * Math.max(drop, state === 'succeeded' ? 1 : drop)
-            const y = state === 'succeeded' ? pose.tray.y - length : pose.output.y + (pose.tray.y - pose.output.y - length) * drop
-            context.save()
-            context.translate(pose.x + strip.x * pose.width + sw / 2, y)
-            context.rotate((strip.bend * Math.PI) / 180)
-            context.drawImage(paper, strip.x * paper.width, 0, paper.width / 8, paper.height, -sw / 2, 0, sw - 2, length)
-            context.restore()
-          })
-        }
         const nextKey = `${Math.round(pose.x)}:${Math.round(pose.tray.y)}:${Math.round(pose.width)}`
         if (nextKey !== trayKey.current) {
           trayKey.current = nextKey
@@ -409,27 +396,21 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
     return bindFrame(job, now => paint.current(now))
   }, [active, progress, status, arrived, parked, replaySmoke, lane, title, frameKey])
 
-  const showStrips = lane === 'notes' && arrived && (status === 'succeeded' || progress >= 92) && links.length > 0
+  const showStrips = lane === 'notes' && arrived && (status === 'succeeded' || progress >= 92)
   const mouth = lane === 'publish' && box ? bowlMouth(box, manifest) : null
   const scraps = showStrips ? [
     ...links.slice(0, 6).map((link, index) => ({ key: 'card-' + link.id, link, index })),
     ...[0, 1, 2, 3, 4].map(index => ({ key: 'scrap-' + index, link: null, index: index + 6 })),
   ] : []
-  return <div ref={root} className={'paper-process ' + lane} data-mark={mark} data-arrived={arrived ? '1' : '0'}>
+  return <div ref={root} className={'paper-process ' + lane} data-mark={mark} data-arrived={arrived ? '1' : '0'} data-burning={lane==='publish'&&status==='running'&&arrived?'1':'0'}>
+    {mouth&&box&&<i className="process-warmth" style={{left:mouth.cx-mouth.rx*1.2,top:box.top+box.height*.78,width:mouth.rx*2.4,height:box.height*.06}}/>}
     <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} className="process-machine" />
-    {mouth && <div className="bowl-well" data-bowl-well style={{ left: mouth.cx - mouth.rx, top: mouth.cy - mouth.ry, width: mouth.rx * 2, height: mouth.ry * 2 }}>
-      {[0, 1, 2, 3].map(index => {
-        const spot = [{ x: '30%', y: '46%', rot: -12 }, { x: '52%', y: '58%', rot: 8 }, { x: '44%', y: '36%', rot: -4 }, { x: '68%', y: '50%', rot: 11 }][index]
-        return <span key={index} className="task-log" style={{ left: spot.x, top: spot.y, transform: `translate(-50%,-50%) rotate(${spot.rot}deg)` }}>
-          <img alt="" src={asset(`wood-${index}-light-beauty`)} />
-        </span>
-      })}
-    </div>}
-    {lane === 'notes' && <><i className="shred-feed" /><i className="shred-out" /></>}
+    {mouth && box && <BrazierLogs box={box}/>}
     <canvas ref={canvas} className="process-paper" aria-hidden="true" />
     {lane === 'publish' && <canvas ref={fireNode} className="flame-layer" aria-hidden="true" />}
     {showStrips && <div className="strip-tray">{scraps.map(scrap => {
-      const style = { transform: `rotate(${[-18, 11, -7, 16, -13, 8, 14, -9, 5, -16, 10][scrap.index]}deg)`, width: [16, 11, 18, 12, 15, 13, 17, 11, 14, 12, 16][scrap.index], height: [10, 14, 9, 13, 11, 12, 9, 15, 10, 13, 9][scrap.index] }
+      const size=[12,10,14,11,13,12,14,10,12,11,13][scrap.index]
+      const style = { transform: `rotate(${[-18, 11, -7, 16, -13, 8, 14, -9, 5, -16, 10][scrap.index]}deg)`, width:size, height:size }
       return scrap.link
         ? <button type="button" key={scrap.key} className="shred-strip" data-card-id={scrap.link.id} data-refs={scrap.link.refs.join(' ')} style={style} onClick={() => onStrip?.(scrap.link!)} aria-label={'碎纸 ' + scrap.link.id} />
         : <i key={scrap.key} className="shred-strip" style={style} />
@@ -462,10 +443,17 @@ export function CoverArt({ cover, video }: { cover?: string; video?: string }) {
 }
 
 export function DeskTV({ url }: { url?: string }) {
+  const [state,setState]=useState<'loading'|'ready'|'error'>('loading')
+  const [attempt,setAttempt]=useState(0)
+  useEffect(()=>{setState('loading');setAttempt(0)},[url])
   return <div className="desk-tv" aria-label={url ? '成片' : '成片预留'}>
     <div className="tv-bezel">
       <div className="tv-screen">
-        {url ? <video src={url} controls playsInline preload="metadata" /> : <span>成片将在这里放映</span>}
+        {url ? <>
+          <video key={url+attempt} src={url} controls playsInline preload="metadata" onLoadedData={()=>setState('ready')} onError={()=>setState('error')}/>
+          {state==='loading'&&<span className="tv-status" role="status">正在载入成片</span>}
+          {state==='error'&&<div className="tv-status" role="alert">成片播放失败<button type="button" onClick={()=>{setState('loading');setAttempt(value=>value+1)}}>重新载入</button></div>}
+        </> : <span>成片将在这里放映</span>}
       </div>
       <i className="tv-foot" />
     </div>

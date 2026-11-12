@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { defaultSites, mergeSites, SiteMark } from './SiteMark'
 import { request, type LocalResources, type Settings, type SiteLogin } from './api'
 import { openSiteLogin, readSites } from './siteSessions'
 
@@ -21,23 +22,29 @@ export function SetupGuide({ settings, onSettings, onClose }: {
   onClose: () => void
 }) {
   const [step, setStep] = useState<Step>('accounts')
-  const [sites, setSites] = useState<SiteLogin[]>([])
+  const [sites, setSites] = useState<SiteLogin[]>(defaultSites)
+  const dialog = useRef<HTMLDialogElement>(null)
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null
+    dialog.current?.showModal()
+    return () => { dialog.current?.close(); if(previous?.isConnected)previous.focus({preventScroll:true}) }
+  }, [])
   const [skipped, setSkipped] = useState<Record<string, boolean>>({})
   const [resources, setResources] = useState<LocalResources | null>(null)
   const [model, setModel] = useState('small')
   const [key, setKey] = useState('')
-  const [modelName, setModelName] = useState(settings?.ai_model || 'deepseek-chat')
+  const [modelName, setModelName] = useState(settings?.ai_model || 'deepseek-flash')
   const [notice, setNotice] = useState('')
   const [leaving, setLeaving] = useState(false)
   function close() {
     if (leaving) return
     setLeaving(true)
-    window.setTimeout(onClose, matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 560)
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) onClose()
   }
   const [busy, setBusy] = useState(false)
   const index = steps.indexOf(step)
 
-  useEffect(() => { void readSites().then(data => setSites(data.sites)).catch(() => {}) }, [])
+  useEffect(() => { void readSites().then(data => setSites(mergeSites(data.sites))).catch(() => {}) }, [])
   useEffect(() => {
     if (step !== 'model') return
     let stop = false
@@ -80,7 +87,7 @@ export function SetupGuide({ settings, onSettings, onClose }: {
     setNotice('')
     try {
       const next = await request<Settings>('/desktop/settings', 'PUT', {
-        ai_model: modelName.trim() || 'deepseek-chat',
+        ai_model: modelName.trim() || 'deepseek-flash',
         secrets: key.trim() ? { TRANSLATE_API_KEY: key.trim() } : {},
       })
       onSettings(next)
@@ -98,8 +105,8 @@ export function SetupGuide({ settings, onSettings, onClose }: {
     setStep(next)
   }
 
-  return <div className={'onboarding' + (leaving ? ' is-leaving' : '')} role="dialog" aria-labelledby="setup-title">
-    <div className={'setup-book' + (step === 'ready' ? ' is-ready' : '')}>
+  return <dialog ref={dialog} className={'onboarding' + (leaving ? ' is-leaving' : '')} aria-labelledby="setup-title" onCancel={event=>{event.preventDefault();close()}}>
+    <div className={'setup-book' + (step === 'ready' ? ' is-ready' : '')} onAnimationEnd={event=>{if(leaving&&event.target===event.currentTarget)onClose()}}>
       <header>
         <h2 id="setup-title">安装清单</h2>
         <p>只准备账号、模型和密钥。用法留到你自己打开书桌时再看。</p>
@@ -112,7 +119,7 @@ export function SetupGuide({ settings, onSettings, onClose }: {
           <h3>登录要用的站点</h3>
           <ul className="setup-accounts">
             {sites.map(site => <li key={site.site}>
-              <span>{site.platform}</span>
+              <SiteMark site={site.site}/><span>{site.platform}</span>
               <em className={site.logged_in ? 'is-stamped' : skipped[site.site] ? 'is-skipped' : ''}>{site.logging_in ? '正在登录' : site.logged_in ? '已登录' : skipped[site.site] ? '已跳过' : '未登录'}</em>
               {!site.logged_in && <button type="button" disabled={busy || site.logging_in} onClick={() => void login(site)}>登录</button>}
               {!site.logged_in && !skipped[site.site] && <button type="button" className="text-action" onClick={() => setSkipped(current => ({ ...current, [site.site]: true }))}>跳过</button>}
@@ -161,5 +168,5 @@ export function SetupGuide({ settings, onSettings, onClose }: {
         <button type="button" className="text-action" onClick={close}>以后再说</button>
       </footer>
     </div>
-  </div>
+  </dialog>
 }

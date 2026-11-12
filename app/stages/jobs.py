@@ -580,6 +580,8 @@ def sync_stage_to_batch(
         ranges = {'download': (0, 15), 'transcribe': (15, 60), 'translate': (60, 80)}
         lower, upper = ranges.get(stage, (0, 80))
         batch_progress = max(current.progress, min(99, round(lower + (upper-lower)*local_progress/100)))
+    if DESKTOP:
+        batch_progress = max(current.progress, batch_progress)
     batch_message = "completed" if is_terminal_upload_success else message
     batch_result = state.result if is_terminal_upload_success else None
     update_batch_item(

@@ -6,11 +6,12 @@ import { Modal, Button } from './ui'
 import { Presence, usePresented } from './presence'
 import { NoteThreads, type ThreadEnd } from './noteThreads'
 import { TranscriptView } from './TranscriptView'
-import { CoverArt, DeskTV, PaperProcess, Prop, asset } from './WorkbenchEffects'
-import { anchorPixels, currentManifest, useWorkbenchManifest } from './workbenchAnchors'
+import { BrazierLogs, CoverArt, DeskTV, PaperProcess, Prop, asset } from './WorkbenchEffects'
+import { anchorPixels, currentManifest, useWorkbenchManifest, woodLanding } from './workbenchAnchors'
 import { flyTaskPaper, flyTrashSheets, glideWood, mouthOf } from './workbenchMotion'
 import { entryLabel, optionsOf, reuseMark, sections, stageLabels, type InboxState, type Lane, type LetterEntry, type LetterGroup } from './workbenchState'
-import { ShredLever, type NotesMode } from './ShredLever'
+import { ShredLever } from './ShredLever'
+import { useNotesMode } from './notesMode'
 
 const stateLabels:Record<string,string>={identifying:'识别中',rejected:'已退回',blocked:'待解决',duplicate:'已在队列',ready:'待设置',starting:'准备中',queued:'排队中',running:'处理中',succeeded:'已完成',failed:'处理暂停',removed:'已移除',cancelled:'已取消'}
 function manuscriptLink(entry?:LetterEntry){const url=entry?.result?.bilibili_url||'';return /^https?:\/\//.test(url)?url:''}
@@ -46,6 +47,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   lane:Lane;data:InboxState;settings:Settings|null;active:boolean;onHome:()=>void;onSettings:(section:'deepseek'|'bilibili'|'obsidian'|'general')=>void;refresh:()=>Promise<void>
 }) {
   const [selected,setSelected]=useState('');const [query,setQuery]=useState('');const [filter,setFilter]=useState('all')
+  const [listOpen,setListOpen]=useState(false)
   const [drafts,setDrafts]=useState<Record<string,Editing>>(restored)
   const [section,setSection]=useState<InspectorSection|null>(null);const [perItem,setPerItem]=useState(false)
   const [notice,setNotice]=useState('');const [pending,setPending]=useState(false);const [confirm,setConfirm]=useState<LetterGroup|null>(null)
@@ -53,9 +55,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   const [brazierBox,setBrazierBox]=useState<{host:DOMRect,image:DOMRect}|null>(null)
   const [entering,setEntering]=useState(false)
   const [settled,setSettled]=useState<string[]>([])
-  const [fresh,setFresh]=useState<string|null>(null)
-  const [notesMode,setNotesMode]=useState<NotesMode>(()=>(localStorage.getItem('workbench-notes-mode') as NotesMode)||'curated')
-  function chooseMode(mode:NotesMode){setNotesMode(mode);localStorage.setItem('workbench-notes-mode',mode)}
+  const [notesMode,chooseMode]=useNotesMode()
   const [defaults,setDefaults]=useState<VideoDefaults|null>(null);const [savingDefault,setSavingDefault]=useState<DefaultGroup|null>(null)
   const [readOriginal,setReadOriginal]=useState(false)
   const [picked,setPicked]=useState<string[]>([])
@@ -95,9 +95,24 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   const previous=useRef(entry?.id)
   const woodRefs=useRef<Record<string,HTMLButtonElement|null>>({})
   const brazierRef=useRef<HTMLDivElement>(null)
+  const ignitionFrom=useRef<DOMRect|null>(null)
   const slipRef=useRef<HTMLFormElement>(null)
   const preparedRef=useRef<string[]>([])
   const groupId=group?.id
+  useLayoutEffect(()=>{
+    if(configurable||!ignitionFrom.current)return
+    const before=ignitionFrom.current
+    ignitionFrom.current=null
+    const node=queueRef.current?.querySelector<HTMLElement>('.paper-process.publish')
+    if(!node||reduced)return
+    const after=node.getBoundingClientRect()
+    if(after.width<2)return
+    const animation=node.animate([
+      {transform:`translate(${before.left-after.left}px,${before.top-after.top}px) scale(${before.width/after.width},${before.height/after.height})`,transformOrigin:'top left'},
+      {transform:'none',transformOrigin:'top left'},
+    ],{duration:520,easing:'cubic-bezier(.18,1.05,.32,1)'})
+    return()=>animation.cancel()
+  },[configurable,reduced])
   useEffect(()=>{if(!selected&&entry)setSelected(entry.id)},[entry?.id,selected])
   useEffect(()=>{localStorage.setItem('workbench-config-drafts',JSON.stringify(drafts))},[drafts])
   useEffect(()=>{if(previous.current!==entry?.id){setSection(null);setPerItem(false);setReadOriginal(false);previous.current=entry?.id}},[entry?.id])
@@ -148,51 +163,60 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     const added=next.filter(id=>!prev.includes(id))
     const removed=prev.filter(id=>!next.includes(id))
     preparedRef.current=next
-    if(!added.length&&!removed.length)return
+    if(!active||reduced||(!added.length&&!removed.length)){setSettled(next);return}
+    let disposed=false
+    const timers:number[]=[]
+    const flights:{cancel:()=>void}[]=[]
+    const temporary:HTMLElement[]=[]
     if(removed.length)setSettled(list=>list.filter(id=>next.includes(id)))
     const host=brazierRef.current
-    const box=host?.getBoundingClientRect()||brazierBox?.image||null
-    const slots=[{x:.36,y:.34,rot:-14},{x:.46,y:.40,rot:8},{x:.42,y:.30,rot:-6},{x:.52,y:.38,rot:12}]
+    const box=host?.querySelector('.prop:not(.foreground)')?.getBoundingClientRect()||brazierBox?.image||null
     const stagger=added.length>1?560:0
     ;[...added,...removed].forEach((id,index)=>{
       const order=Math.max(0,sections.findIndex(item=>item.id===id))
       const source=woodImg.current[id]
-      const slot=slots[order]||slots[0]
       if(!source||!box){if(added.includes(id))setSettled(list=>[...new Set([...list,id])]);return}
       const home=source.getBoundingClientRect()
-      const land={x:box.left+box.width*slot.x,y:box.top+box.height*slot.y,width:210,height:148,rot:slot.rot}
+      const land={...woodLanding(box,currentManifest(),order),width:box.width*.22,height:box.height*.145}
       const button={x:home.left+home.width/2,y:home.top+home.height/2,width:home.width||120,height:home.height||78,rot:0}
       const from=added.includes(id)?button:land
       const to=added.includes(id)?land:button
       const flyer=source.cloneNode(true) as HTMLImageElement
       flyer.className='wood-piece wood-flight'
-      flyer.style.visibility='visible'
+      flyer.style.visibility='hidden'
       document.body.append(flyer)
-      window.setTimeout(()=>void glideWood(flyer,from,to).then(()=>{
+      temporary.push(flyer)
+      timers.push(window.setTimeout(()=>{
+        flyer.style.visibility='visible'
+        const flight=glideWood(flyer,from,to)
+        flights.push(flight)
+        void flight.then(()=>{
+        if(disposed)return
         if(added.includes(id)){
           setSettled(list=>[...new Set([...list,id])])
-          setFresh(id)
           const puff=document.createElement('i')
           puff.className='ash-puff'
           puff.style.left=land.x+'px'
           puff.style.top=land.y+'px'
           document.body.append(puff)
-          window.setTimeout(()=>puff.remove(),680)
-          window.setTimeout(()=>setFresh(current=>current===id?null:current),520)
+          temporary.push(puff)
+          timers.push(window.setTimeout(()=>puff.remove(),680))
         }
         requestAnimationFrame(()=>flyer.remove())
-      }),added.includes(id)?index*stagger:0)
+      })},added.includes(id)?index*stagger:0))
     })
-  },[group,reduced,brazierBox])
+    return()=>{disposed=true;timers.forEach(clearTimeout);flights.forEach(flight=>flight.cancel());temporary.forEach(node=>node.remove())}
+  },[groupId,prepared.join(','),active,reduced,brazierBox?.image.left,brazierBox?.image.top,brazierBox?.image.width])
   async function ignite(){
     if(!confirm||!entry||!rights||entering)return
+    ignitionFrom.current=brazierRef.current?.getBoundingClientRect()||null
     const slip=slipRef.current
     setEntering(true);setNotice('');armed.current=entry.id
     if(slip)slip.classList.add('is-leaving')
     try{
       await request('/desktop/inbox/groups/'+confirm.id+'/start','POST',{revision:confirm.revision,confirmed:true,entry_ids:perItem?[entry.id]:ready.map(item=>item.id)})
       setConfirm(null);setSection(null);await refresh()
-    }catch(e){setNotice(errorMessage(e));armed.current=''}finally{setEntering(false)}
+    }catch(e){setNotice(errorMessage(e));armed.current='';ignitionFrom.current=null}finally{setEntering(false)}
   }
   async function removeIds(ids:string[]){
     const response=await request<{results:RemovalRow[];cancelled:number}>('/desktop/inbox/entries/remove','POST',{ids})
@@ -245,8 +269,11 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     const shell=root?.closest('.workbench-shell')
     const row=root?.querySelector(`[data-entry-id="${entry.id}"] .mini-paper`)?.getBoundingClientRect()
     const slot=shell?.querySelector(`[data-mail-slot="${lane}"]`)?.getBoundingClientRect()
-    const from=row&&row.width>2&&row.bottom>0&&row.top<innerHeight?row:slot
+    let from=row&&row.width>2&&row.bottom>0&&row.top<innerHeight?row:slot
     const machine=root?.querySelector('.paper-process .process-machine')?.getBoundingClientRect()
+    // Feed the visible manuscript inside the work area, below the television.
+    // The list already shows receipt; a wide flying sheet must not cover titles.
+    if(lane==='publish'&&machine)from=new DOMRect(machine.left+8,machine.top+12,78,28)
     if(!from||!machine||reduced){setArrived(true);return}
     const spec=currentManifest()
     setArrived(false)
@@ -287,6 +314,10 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     const tray=host.querySelector('.strip-tray')
     const watch=new MutationObserver(draw)
     if(tray)watch.observe(tray,{attributes:true,attributeFilter:['style']})
+    watch.observe(host,{childList:true,subtree:true})
+    const resize=new ResizeObserver(draw)
+    resize.observe(host)
+    host.querySelectorAll('.note-slips,.note-read,.shredder-station').forEach(node=>resize.observe(node))
     let frames=0
     const pump=()=>{draw();if(frames++<40)requestAnimationFrame(pump)}
     pump()
@@ -301,7 +332,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     host.addEventListener('scroll',draw,true)
     host.addEventListener('mouseover',hover)
     window.addEventListener('resize',draw)
-    return()=>{watch.disconnect();host.removeEventListener('scroll',draw,true);host.removeEventListener('mouseover',hover);window.removeEventListener('resize',draw)}
+    return()=>{watch.disconnect();resize.disconnect();host.removeEventListener('scroll',draw,true);host.removeEventListener('mouseover',hover);window.removeEventListener('resize',draw)}
   },[links,entry?.id,activeCard])
   const ready=entries.filter(e=>e.group_id===group?.id&&e.status==='ready')
   const rows=visible.slice()
@@ -310,14 +341,15 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   const allOn=selectable.length>0&&selectable.every(e=>picked.includes(e.id))
   const overridden=entry&&group&&Object.keys(group.overrides[entry.id]||{}).length>0
   const reuse=entry?.reuse?.filter(r=>r.origin_lane!==lane)||[]
-  return <div className={'workbench-queue '+lane} ref={queueRef}>
+  return <div className={'workbench-queue '+lane+(listOpen?' is-list-open':'')} ref={queueRef}>
     <header className="queue-heading"><div><h1>{lane==='publish'?'投稿工作台':'笔记工作台'}</h1><p>{lane==='publish'?'备齐设置，再点火处理。':'来信自动整理，留下值得记住的内容。'}</p></div><Presence open={Boolean(undo&&Date.now()<undo.until)}>{undo&&Date.now()<undo.until&&<Button variant="secondary" onClick={()=>void action(async()=>{await Promise.all(undo.ids.map(id=>request('/desktop/inbox/entries/'+id+'/undo','POST')));setUndo(null);await refresh()})}>撤销删除</Button>}</Presence></header>
+    <button type="button" className="incoming-toggle" aria-expanded={listOpen} aria-controls={'incoming-'+lane} onClick={()=>setListOpen(open=>!open)}>{listOpen?'收起来信列表':`展开来信列表（${entries.length}）`}</button>
     <div className="queue-desk">
-      <aside className="incoming-list"><div className="incoming-tools"><input type="search" aria-label="搜索来信" placeholder="搜索来信" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="筛选来信状态" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">全部来信</option><option value="waiting">待处理</option><option value="processing">处理中</option><option value="done">已完成</option></select><button type="button" className="batch-delete" disabled={!selectable.length} onClick={()=>setPicked(allOn?picked.filter(id=>!selectable.some(e=>e.id===id)):[...new Set([...picked,...selectable.map(e=>e.id)])])}>{allOn?'取消全选':'全选当前筛选'}</button></div>
+      <aside id={'incoming-'+lane} className="incoming-list"><div className="incoming-tools"><input type="search" aria-label="搜索来信" placeholder="搜索来信" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="筛选来信状态" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">全部来信</option><option value="waiting">待处理</option><option value="processing">处理中</option><option value="done">已完成</option></select><button type="button" className="batch-delete" disabled={!selectable.length} onClick={()=>setPicked(allOn?picked.filter(id=>!selectable.some(e=>e.id===id)):[...new Set([...picked,...selectable.map(e=>e.id)])])}>{allOn?'取消全选':'全选当前筛选'}</button></div>
         {picked.length>0&&<button type="button" className="batch-delete" onClick={()=>void action(()=>removeIds(picked))}>删除所选 {picked.length} 封</button>}
         <div className="incoming-scroll thin-scroll">{rows.map(e=>{const detail=['identifying','starting','queued','running','failed','blocked'].includes(e.status)?(e.summary?.[0]||''):'';return <div className={'incoming-letter '+(pickedEntry?.id===e.id?'selected':'')} data-entry-id={e.id} key={e.id}>
           <label className="check"><input type="checkbox" aria-label={'选择 '+entryLabel(e)} checked={picked.includes(e.id)} disabled={!e.deletable||holding.some(item=>item.entry.id===e.id)} onChange={()=>setPicked(list=>list.includes(e.id)?list.filter(id=>id!==e.id):[...list,e.id])}/></label>
-          <button type="button" className="incoming-open" onClick={()=>setSelected(e.id)} aria-pressed={pickedEntry?.id===e.id}>
+          <button type="button" className="incoming-open" onClick={()=>{setSelected(e.id);setListOpen(false)}} aria-pressed={pickedEntry?.id===e.id}>
             <span className={'mini-paper '+e.status} style={{'--remaining':`${100-(e.progress_known?e.progress:0)}%`} as React.CSSProperties}/><span><strong>{entryLabel(e)}</strong><small>{e.platform||'来信'} <span>{stateLabels[e.status]}</span></small>{detail&&!detail.includes('已完成')&&<small className="row-note">{detail}</small>}</span>
           </button>
           <button type="button" className="row-delete" aria-label={'删除 '+entryLabel(e)} disabled={!e.deletable||pending||holding.some(item=>item.entry.id===e.id)} onClick={()=>void action(()=>removeIds([e.id]))}>删除</button>
@@ -334,7 +366,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
             <img className="wood-shadow" src={asset('wood-'+i+'-shadow')} alt="" /><img ref={el=>{woodImg.current[s.id]=el}} data-id={s.id} className="wood-piece" src={asset('wood-'+i+'-light-beauty')} alt="" /><strong>{s.label}</strong><small>{prepared.includes(s.id)?'已备齐，可重新编辑':s.summary}</small>
           </button>)}</div>
           <div className="hearth">
-            <div className="preparation-scene"><Presence open={Boolean(confirm)}>{confirm&&<form ref={slipRef} className={'ignition-slip'+(entering?' is-entering':'')} onSubmit={event=>{event.preventDefault();void ignite()}}><h3>确认开始处理</h3><p>将处理{perItem?'当前稿件':`本次投递中 ${ready.length} 条稿件`}，完成字幕与成片后提交 B 站。</p><p>本次使用已备齐的输出、字幕样式、投稿信息和翻译上下文；单条设置优先。</p><label className="check"><input type="checkbox" checked={rights} disabled={entering} onChange={e=>setRights(e.target.checked)}/>我已确认素材使用权限及本次投稿信息</label><div className="toolbar"><Button type="button" variant="secondary" onClick={()=>setConfirm(null)} disabled={entering}>返回检查</Button><Button type="submit" disabled={!rights||entering}>确认并点火</Button></div></form>}</Presence><div className="fuel-brazier" ref={brazierRef}><Prop name="brazier"/><div className="bowl-logs" aria-hidden="true">{sections.map((s,i)=>settled.includes(s.id)&&<img key={s.id} className={'bowl-log'+(fresh===s.id?' is-fresh':'')} alt="" src={asset('wood-'+i+'-light-beauty')} style={{left:['40%','50%','46%','58%'][i],top:['44%','48%','42%','46%'][i],['--rot' as string]:`${[-12,8,-4,11][i]}deg`,transform:`translate(-50%,-50%) rotate(${[-12,8,-4,11][i]}deg)`}}/>)}</div><i className="hearth-glow"/><Prop name="brazier" layer="front" className="foreground"/></div><p>{prepared.length===4?'四类设置已备齐，可以开始处理。':'选择木块修改设置，或直接使用当前设置。'}</p></div>
+            <div className="preparation-scene"><Presence open={Boolean(confirm)}>{confirm&&<form ref={slipRef} className={'ignition-slip'+(entering?' is-entering':'')} onSubmit={event=>{event.preventDefault();void ignite()}}><h3>确认开始处理</h3><p>将处理{perItem?'当前稿件':`本次投递中 ${ready.length} 条稿件`}，完成字幕与成片后提交 B 站。</p><p>本次使用已备齐的输出、字幕样式、投稿信息和翻译上下文；单条设置优先。</p><label className="check"><input type="checkbox" checked={rights} disabled={entering} onChange={e=>setRights(e.target.checked)}/>我已确认素材使用权限及本次投稿信息</label><div className="toolbar"><Button type="button" variant="secondary" onClick={()=>setConfirm(null)} disabled={entering}>返回检查</Button><Button type="submit" disabled={!rights||entering}>确认并点火</Button></div></form>}</Presence><div className="fuel-brazier" ref={brazierRef}><Prop name="brazier"/>{brazierBox&&<BrazierLogs box={{left:brazierBox.image.left-brazierBox.host.left,top:brazierBox.image.top-brazierBox.host.top,width:brazierBox.image.width,height:brazierBox.image.height}} ids={sections.flatMap((section,index)=>settled.includes(section.id)?[index]:[])}/>}<i className="hearth-glow"/><Prop name="brazier" layer="front" className="foreground"/></div><p>{prepared.length===4?'四类设置已备齐，可以开始处理。':'选择木块修改设置，或直接使用当前设置。'}</p></div>
             <Presence open={Boolean(section)}>{section&&<div className="setting-letter"><div className="setting-letter-head"><h3>{sections.find(s=>s.id===section)?.label}</h3><button type="button" className="text-action" disabled={pending} onClick={()=>void action(async()=>{await save(group,[...new Set([...prepared,section])]);setSection(null)})}>保存并放入火盆</button></div>
             <div className="settings-and-preview"><Inspector options={effective} change={change} settings={settings} row={row} rowLabel={entryLabel(entry)} perItem={perItem} onScope={setPerItem} reset={restoreInheritance} section={section} onSection={setSection} only={section}
               defaultsReady={Boolean(defaults)} savingDefault={savingDefault} onSaveDefault={kind=>void saveDefault(kind)} onResetDefault={kind=>change(kind==='output'?{...effective,...outputDefaults(savedVideoOptions(defaults))}:{...effective,subtitle_style:savedVideoOptions(defaults).subtitle_style})}/>
@@ -349,7 +381,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
               <ShredLever value={notesMode} locked={running} onChange={chooseMode}/>
             </div>
             <TranscriptView key={transcript} id={transcript} settings={settings} translationUrl={entry.result?.translated_srt_url} onSettings={onSettings} variant="desk" highlightCard={activeCard} onActivateCard={card=>{setActiveCard(card.id);if(card.refs[0])locateRef.current(card.refs[0])}} onVisibleCards={setLinks} onReady={api=>{locateRef.current=api.locate}}/>
-            <NoteThreads threads={threads}/>
+            <NoteThreads threads={threads} active={active}/>
           </div>:<div className="task-scene">
             <div className="task-column">
               {lane==='publish'&&<DeskTV url={entry.status==='succeeded'?entry.result?.final_video_url:undefined}/>}
@@ -364,6 +396,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
               <p className="stage-copy">{(entry.summary||[]).slice(0,2).join(' ')||stateLabels[entry.status]}</p>
               <button type="button" className="text-action" onClick={()=>setLogOpen(open=>!open)}>查看详情</button>
               <div className="log-slot">{logOpen&&<EntryLog id={entry.id}/>}</div>
+              {entry.status==='running'&&entry.stage==='transcribe'&&<Button variant="secondary" disabled={pending} onClick={()=>void action(async()=>{await request('/desktop/inbox/entries/'+entry.id+'/cancel-transcription','POST',{});setNotice('正在停止转录，已完成的素材会保留；停止后可重试恢复。')})}>取消转录</Button>}
             </div>
           </div>}
           {reuse.length>0&&<div className="reuse-banner"><Prop name={reuseMark(entry)==='cut'?'paper-cut':'paper-charred'} layer="beauty" className="reuse-sheet"/><p className="reuse-note">已复用{[...new Set(reuse.map(r=>({download:'源媒体',transcribe:'字幕',translate:'译文',burn:'成片'}[r.stage]||r.stage)))].join('、')}，继续{lane==='publish'?'成片与投稿':'整理笔记'}。</p></div>}

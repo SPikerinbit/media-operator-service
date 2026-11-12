@@ -2,7 +2,7 @@
 from pathlib import Path
 import math
 import random
-from PIL import Image, ImageFilter
+from PIL import Image
 
 OUT = Path(__file__).resolve().parents[1] / "public" / "workbench" / "materials"
 OUT.mkdir(parents=True, exist_ok=True)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import os
 import sys
+import traceback
 
 # Keep handles alive for transitive CUDA DLL loading on Windows.
 _cuda_dll_handles = []
@@ -42,11 +43,22 @@ from app.main import (
 )
 
 
+_progress = 0
+_runtime = {}
+_runtime_path = None
+
+
 def progress(percent: int, message: str) -> None:
-    print(f"WHISPER_PROGRESS\t{max(0, min(100, int(percent)))}\t{message}", flush=True)
+    global _progress
+    _progress = max(_progress, max(0, min(100, int(percent))))
+    _runtime.update(progress=_progress, phase=message)
+    if _runtime_path:
+        _runtime_path.write_text(json.dumps(_runtime, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"WHISPER_PROGRESS\t{_progress}\t{message}", flush=True)
 
 
 def main() -> None:
+    global _runtime_path, _runtime, _progress
     if sys.argv[1:] == ["--check-gpu"]:
         from app.desktop_config import GPU_LIBRARIES
         for dll in GPU_LIBRARIES:
@@ -66,6 +78,9 @@ def main() -> None:
 
     job_dir(args.job_id).mkdir(parents=True, exist_ok=True)
     runtime = resolve_whisper_runtime(args.model)
+    _progress = 0
+    _runtime_path = artifact_path(args.job_id, "whisper_activity.json")
+    _runtime = {**runtime, "requested_inference_mode": args.inference_mode}
     gpu = runtime["device"] == "cuda"
     inference_mode = args.inference_mode
     if inference_mode == "gpu_only" and not gpu:
@@ -187,6 +202,12 @@ def main() -> None:
                     segments, words, info = run_standard_transcription()
                     transcribe_mode = "auto_repair_standard"
     except Exception as exc:
+        _runtime.update(error=str(exc), traceback=traceback.format_exc())
+        progress(_progress, "转录异常，正在保存诊断")
+        # A CUDA failure may poison the native context. Never reuse that model:
+        # let the supervisor retry once in a fresh CPU process instead.
+        if gpu:
+            raise
         if inference_mode in {"batched", "auto_repair"}:
             fallback_error = str(exc)
             progress(36, "batched transcription failed, falling back to standard")

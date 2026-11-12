@@ -4,6 +4,7 @@ import { native, request, saveAs, siteSession, type LocalResources, type Setting
 import { loginUrl, logoutSite, openSiteLogin, readSites, storeSiteSession, type LoginSite, type SiteId } from './siteSessions'
 import { Button, Busy, Disclosure, Feedback, Field, useActions } from './ui'
 import { Inspector, outputDefaults, savedVideoOptions, type VideoDefaults, type VideoOptions, type DefaultGroup, type InspectorSection } from './videoOptions'
+import { defaultSites, mergeSites, SiteMark } from './SiteMark'
 
 const secretsList = [['BILI_SESSDATA','SESSDATA'],['BILI_JCT','bili_jct'],['BILI_BUVID3','buvid3'],
   ['BILI_DEDEUSERID','DedeUserID'],['BILI_AC_TIME_VALUE','ac_time_value']] as const
@@ -22,25 +23,30 @@ function whisperGigabytes(bytes: number) {
 type Category = SettingsSection
 type SaveSection = 'directory'|'deepseek'|'gpu'|'bilibili'|'obsidian'
 
-export function Settings({ current, update, focus, onOpenGuide }: { current: Preferences | null; update: (settings: Preferences) => void; focus?: Category; onOpenGuide?: () => void }) {
+export function Settings({ current, update, focus, onOpenGuide, active=true }: { current: Preferences | null; update: (settings: Preferences) => void; focus?: Category; onOpenGuide?: () => void; active?:boolean }) {
   const [category,setCategory] = useState<Category>(focus || 'general')
   const loginInput = useRef<HTMLInputElement>(null)
   const loginSite = useRef<LoginSite>('抖音')
-  const [sites, setSites] = useState<SiteLogin[]>(() => current?.site_logins?.length ? current.site_logins : [
-    { site: 'douyin', platform: '抖音', logged_in: false, logging_in: false },
-    { site: 'xiaohongshu', platform: '小红书', logged_in: false, logging_in: false },
-  ])
+  const [sites, setSites] = useState<SiteLogin[]>(() => current?.site_logins?.length ? mergeSites(current.site_logins) : defaultSites)
   const rememberSite = (status: SiteLogin) => setSites((list) => list.some((item) => item.site === status.site)
     ? list.map((item) => item.site === status.site ? status : item) : [...list, status])
   useEffect(() => { if (focus) setCategory(focus) }, [focus])
   useEffect(() => {
     let alive = true
-    void readSites().then((data) => { if (alive && data.sites.length) setSites(data.sites) }).catch(() => {})
+    void readSites().then((data) => { if (alive) setSites(mergeSites(data.sites)) }).catch(() => {})
     return () => { alive = false }
   }, [])
+  useEffect(()=>{
+    if(!active||category!=='sites')return
+    let alive=true
+    const refresh=()=>void readSites().then(data=>{if(alive)setSites(mergeSites(data.sites))}).catch(()=>{})
+    refresh()
+    const timer=window.setInterval(refresh,15000)
+    return()=>{alive=false;clearInterval(timer)}
+  },[active,category])
   useEffect(() => {
     if (!current?.site_logins?.length) return
-    setSites((local) => current.site_logins!.map((item) => {
+    setSites((local) => mergeSites(current.site_logins!).map((item) => {
       const previous = local.find((entry) => entry.site === item.site)
       return previous?.logging_in ? previous : item
     }))
@@ -183,18 +189,17 @@ export function Settings({ current, update, focus, onOpenGuide }: { current: Pre
         <p className="muted">在桌面窗口登录。登录完成后会记下该站点的凭据。</p>
         <ul className="account-rows" aria-label="站点登录状态">
           {sites.map((status) => <li key={status.site}>
-            <span className={'account-mark ' + status.site} aria-hidden="true" />
+            <SiteMark site={status.site}/>
             <span className="account-name">{status.platform}</span>
-            <span className={'account-lamp' + (status.logged_in ? ' is-on' : '')}>{status.logging_in ? '正在登录' : status.logged_in ? '已登录' : '未登录'}</span>
+            <span className={'account-lamp' + (status.logged_in ? ' is-on' : '')}>{status.logging_in ? '正在登录' : status.logged_in ? '已保存登录' : status.state==='expired'?'登录已失效':'未登录'}</span>
             {status.logged_in && !status.logging_in
               ? <button type="button" onClick={() => signOut(status.site)}>退出</button>
               : <button type="button" disabled={status.logging_in} onClick={() => signIn(status.site)}>登录</button>}
           </li>)}
         </ul>
-        <Disclosure title="高级 / 导入 Cookie"><p className="muted">也可以导入 Netscape Cookie。一小时内，这份登录供对应站点的链接使用。</p>
+        <Disclosure title="高级 / 导入 Cookie"><p className="muted">导入 Netscape Cookie 后，一小时内的本站链接会使用这份临时会话。它不更改上方的持久登录状态；B 站投稿仍需完整的投稿凭据。</p>
         <div className="toolbar">
-          <Button variant="ghost" size="small" onClick={() => { loginSite.current = '抖音'; loginInput.current?.click() }}>导入抖音 Cookie</Button>
-          <Button variant="ghost" size="small" onClick={() => { loginSite.current = '小红书'; loginInput.current?.click() }}>导入小红书 Cookie</Button>
+          {(Object.keys(loginUrl) as LoginSite[]).map(site=><Button key={site} variant="ghost" size="small" onClick={() => { loginSite.current = site; loginInput.current?.click() }}>导入{site} Cookie</Button>)}
         </div></Disclosure>
         <input ref={loginInput} hidden type="file" accept=".txt,text/plain" aria-label="选择本站 Cookie 文件" onChange={(event) => {
           const file = event.target.files?.[0]

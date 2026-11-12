@@ -249,6 +249,9 @@ def summary_of(entry):
             local = int(((task.get('stage_details') or {}).get(stage) or {}).get('progress') or 0)
             if entry.get('progress_known') and 0 < local < 100:
                 lines.append(f"进度 {entry.get('progress')}%")
+            activity = task.get('progress_detail') or task.get('message') or ''
+            if '最近阶段活动' in activity or 'GPU 转录失败' in activity or 'NVIDIA GPU' in activity or 'CPU ·' in activity:
+                lines = [LABELS.get(stage, '处理中'), clean_line(activity)]
     return [line for line in lines if line][:2]
 
 
@@ -498,9 +501,9 @@ def identify(ident, session_id=''):
         if subtitle:
             probe = {'title': Path(source).name, 'media_type': 'subtitle', 'platform': '字幕文件', 'has_audio': False}
         elif 'weread.qq.com' in (source or '') and entry['lane'] == 'notes':
-            from app import site_profiles, weread
+            from app import weread
             try:
-                book = weread.fetch_book(source, weread.cookie_header(site_profiles.cookie_rows(source) or ''))
+                book = weread.fetch_book(source, weread.cookie_header(desktop_sources.cookies_for(source, session_id) or ''))
             except weread.LoginRequired as error:
                 if alive():
                     update(ident, status='blocked', message=str(error), platform='微信读书', source=source, kind='url')
@@ -695,6 +698,21 @@ def start_group(ident: str, request: Start):
 class Retry(BaseModel):
     upload_checked: bool = False
     session_id: str = Field(default='', max_length=200, exclude=True)
+
+
+@router.post('/entries/{ident}/cancel-transcription')
+def cancel_transcription(ident: str):
+    entry = get_entry(ident)
+    if not entry.get('batch_id') or not entry.get('item_id'):
+        raise HTTPException(409, '当前来信没有可取消的转录')
+    _, item = jobs.batch_item(entry['batch_id'], entry['item_id'])
+    if item.status != 'running' or item.stage != 'transcribe':
+        raise HTTPException(409, '只有正在转录的任务可以取消')
+    job_id = (item.stage_jobs or {}).get('transcribe')
+    if not job_id or not re.fullmatch(r'[a-zA-Z0-9_-]+', job_id):
+        raise HTTPException(409, '转录尚未启动，请稍后重试')
+    media.artifact_path(job_id, 'cancel-transcription.requested').write_text(media.now_iso(), encoding='utf-8')
+    return {'ok': True, 'message': '正在停止转录，完成后可重试恢复'}
 
 
 @router.post('/entries/{ident}/retry')

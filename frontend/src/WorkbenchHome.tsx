@@ -3,7 +3,9 @@ import { useReducedMotion } from 'motion/react'
 import { errorMessage, request } from './api'
 import { Prop, asset } from './WorkbenchEffects'
 import { currentManifest, flapOrigin, useWorkbenchManifest } from './workbenchAnchors'
-import { type NotesMode } from './ShredLever'
+import { useNotesMode } from './notesMode'
+import { ShredLever } from './ShredLever'
+import { sessionForSource } from './siteSessions'
 import { launchTear, playDelivery, playPageTurn, resetDelivery, type DeliveryPhase } from './workbenchMotion'
 import { useMediaQuery } from './ui'
 import { classifyLetters, splitLetters, type InboxState, type Lane, type PaperLine } from './workbenchState'
@@ -43,7 +45,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const [error, setError] = useState('')
   const [snapshot, setSnapshot] = useState<string[]>([])
   const [press, setPress] = useState(false)
-  const [notesMode, setNotesMode] = useState<NotesMode>(() => (localStorage.getItem('workbench-notes-mode') as NotesMode) || 'curated')
+  const [notesMode, setNotesMode] = useNotesMode()
   const [turning, setTurning] = useState(false)
   const [arrived, setArrived] = useState(false)
   const [leavingId, setLeavingId] = useState('')
@@ -226,6 +228,16 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     if (env && flap && paper && closed && wax) resetDelivery(env, flap, paper, closed, wax)
     if (phase !== 'idle' && phase !== 'identifying') setPhase('idle')
   }, [active])
+  useEffect(() => {
+    const cancel = () => {
+      stopDelivery.current?.(); stopDelivery.current = null
+      const env=envRef.current, flap=flapRef.current, paper=paperRef.current, closed=closedRef.current, wax=waxRef.current
+      if(env&&flap&&paper&&closed&&wax)resetDelivery(env,flap,paper,closed,wax)
+      setPhase(current=>current==='identifying'?current:'idle')
+    }
+    window.addEventListener('resize',cancel)
+    return()=>window.removeEventListener('resize',cancel)
+  }, [])
 
   async function deliver() {
     if (busy || composing.current) return
@@ -246,7 +258,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     requestId.current ||= crypto.randomUUID()
     try {
       const response = await request<{ group_id: string }>('/desktop/inbox/deliveries', 'POST', {
-        request_id: requestId.current, lane, notes_mode: lane === 'notes' ? notesMode : 'curated', entries: frozen.map(line => ({ id: line.id, text: line.text, local: Boolean(line.local) })),
+        request_id: requestId.current, lane, notes_mode: lane === 'notes' ? notesMode : 'curated', entries: frozen.map(line => ({ id: line.id, text: line.text, local: Boolean(line.local), session_id:sessionForSource(classifyLetters(line.text)[0]?.source||line.text) })),
       })
       requestId.current = ''
       pending.current = response.group_id
@@ -327,6 +339,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
         </div>
         <p className="paper-hint">Ctrl + Enter</p>
       </div>
+      {lane==='notes'&&<div className="home-mode"><ShredLever value={notesMode} locked={busy} onChange={setNotesMode}/></div>}
       <div className="delivery-envelope" ref={envRef}>
         <Prop name="envelope" layer="body" className="envelope-back" />
         <div className="letter-insert" ref={paperRef} aria-hidden="true"><div className="letter-insert-copy" ref={copyRef}>{snapshot.slice(0, 6).map(line => <span key={line}>{line.replace(/\s+/g, ' ')}</span>)}</div></div>

@@ -9,6 +9,7 @@ import threading
 import subprocess
 import sys
 from typing import Literal
+import httpx
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -34,6 +35,7 @@ class Preferences(BaseModel):
     obsidian_vault: str | None = None
     ai_model: str | None = Field(default=None, min_length=1, max_length=120)
     gpu_enabled: bool | None = None
+    onboarding_complete: bool | None = None
     secrets: dict[str, str | None] = Field(default_factory=dict)
 
 
@@ -50,6 +52,7 @@ def settings():
         "has_ai_key": bool(keys["TRANSLATE_API_KEY"]),
         "has_bilibili_credentials": media.bilibili_configured(),
         "gpu_enabled": bool(preferences.get("gpu_enabled")),
+        "onboarding_complete": bool(preferences.get("onboarding_complete")),
         "gpu_ready": config.gpu_ready(gpu_path),
         "gpu_install_dir": str(gpu_path.parent),
         "gpu": dict(gpu.PROGRESS),
@@ -460,7 +463,7 @@ def get_media(transcript_id: int):
 
 class Consent(BaseModel):
     send_subtitles: bool = False
-    mode: Literal["curated", "comprehensive"] = "curated"
+    mode: Literal["summary", "curated", "comprehensive"] = "curated"
 
 
 @router.post("/knowledge/{transcript_id}/generate")
@@ -477,6 +480,12 @@ def generate(transcript_id: int, consent: Consent):
     try:
         model = config.settings().get("ai_model", media.TRANSLATE_MODEL)
         return {"added": knowledge.generate_cards(transcript_id, media.TRANSLATE_API_KEY, model, consent.mode)}
+    except httpx.TimeoutException as error:
+        raise HTTPException(504, 'DeepSeek 请求超时，已有观点和编辑已保留，可重试。') from error
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code in {401, 403}:
+            raise HTTPException(502, 'DeepSeek 密钥无效或无访问权限，请到设置更新密钥。') from error
+        raise HTTPException(502, 'DeepSeek 服务暂不可用，已有观点和编辑已保留，可稍后重试。') from error
     except Exception as error:
         raise HTTPException(502, "DeepSeek 请求失败或返回的引用无效，请检查模型配置后重试。") from error
     finally:

@@ -74,6 +74,7 @@ def run_command_streaming(
     on_stdout_line: Callable[[str], None] | None = None,
     on_stderr_line: Callable[[str], None] | None = None,
     env: dict[str, str] | None = None,
+    on_tick: Callable[[], None] | None = None,
 ) -> None:
     log_dir = log_dir or tempfile.mkdtemp(prefix="media-command-")
     log_dir = Path(log_dir)
@@ -115,9 +116,22 @@ def run_command_streaming(
     stderr_thread = threading.Thread(target=reader, args=(process.stderr, stderr_path, stderr_tail, on_stderr_line), daemon=True)
     stdout_thread.start()
     stderr_thread.start()
-    return_code = process.wait()
-    stdout_thread.join(timeout=5)
-    stderr_thread.join(timeout=5)
+    try:
+        while process.poll() is None:
+            if on_tick:
+                on_tick()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        return_code = process.returncode
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=5)
     if return_code != 0:
         message = "\n".join(stderr_tail or stdout_tail).strip() or f"command failed with exit code {return_code}"
         raise RuntimeError(message)

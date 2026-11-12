@@ -48,6 +48,7 @@ BILI_COOKIE_NAMES = {
     "bili_jct": "BILI_JCT",
     "buvid3": "BILI_BUVID3",
     "DedeUserID": "BILI_DEDEUSERID",
+    "ac_time_value": "BILI_AC_TIME_VALUE",
 }
 
 
@@ -73,6 +74,11 @@ def cookies_path(site):
 
 
 def site_for_url(url):
+    from urllib.parse import urlsplit
+    host = (urlsplit(url).hostname or '').lower()
+    for key in ('bilibili', 'weread'):
+        if any(host == domain or host.endswith('.' + domain) for domain in SITES[key]['domains']):
+            return key
     from app.sites.resolve import platform_of
 
     label = platform_of(url)[0]
@@ -83,28 +89,57 @@ def status(site):
     key = canonical_site(site)
     folder = profile_dir(key)
     logged_in = False
+    state = 'signed_out'
     meta = folder / "profile.json"
     if meta.is_file() and cookies_path(key).is_file():
         try:
-            logged_in = bool(json.loads(meta.read_text(encoding="utf-8")).get("logged_in"))
+            stored = json.loads(meta.read_text(encoding="utf-8"))
+            state = stored.get('state', 'signed_out')
+            logged_in = bool(stored.get("logged_in"))
+            if logged_in:
+                names = valid_cookie_names(key, cookies_path(key).read_text(encoding='utf-8').splitlines())
+                required = {'bilibili': {'SESSDATA', 'bili_jct', 'buvid3'}, 'weread': {'wr_skey', 'wr_vid'}}.get(key)
+                logged_in = required.issubset(names) if required else bool(names & SITES[key]['session_names'])
+                state = 'saved' if logged_in else 'expired'
         except (OSError, ValueError):
             logged_in = False
     with LOCK:
         logging_in = key in ACTIVE
-    return {"site": key, "platform": SITES[key]["label"], "logged_in": logged_in, "logging_in": logging_in}
+    return {"site": key, "platform": SITES[key]["label"], "logged_in": logged_in, "logging_in": logging_in, 'state': state}
+
+
+def valid_cookie_names(site, lines):
+    names = set()
+    for line in lines:
+        fields = line.split('\t')
+        if len(fields) != 7 or not _matches(site, fields[0]) or not fields[-1]:
+            continue
+        try:
+            expiry = float(fields[4])
+        except ValueError:
+            continue
+        if expiry == 0 or expiry > time.time():
+            names.add(fields[5])
+    return names
+
+
+def invalidate(site):
+    key = canonical_site(site)
+    _write_meta(key, False, 'expired')
+    _clear_probes(SITES[key]['label'])
 
 
 def status_all():
     return {"sites": [status(key) for key in SITES]}
 
 
-def _write_meta(site, logged_in):
+def _write_meta(site, logged_in, state=None):
     from app import main as media
 
     folder = profile_dir(site)
     folder.mkdir(parents=True, exist_ok=True)
     temporary = folder / "profile.json.tmp"
-    temporary.write_text(json.dumps({"logged_in": bool(logged_in), "saved_at": media.now_iso()}, ensure_ascii=False),
+    temporary.write_text(json.dumps({"logged_in": bool(logged_in), 'state': state or ('saved' if logged_in else 'signed_out'), "saved_at": media.now_iso()}, ensure_ascii=False),
                          encoding="utf-8")
     temporary.replace(folder / "profile.json")
 
