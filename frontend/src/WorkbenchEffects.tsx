@@ -154,8 +154,8 @@ function layoutOf(el: HTMLElement, origin: HTMLElement): Box {
   return { left: (a.left - b.left) * sx, top: (a.top - b.top) * sy, width: a.width * sx, height: a.height * sy }
 }
 
-export function PaperProcess({ lane, progress, progressKnown = true, status, title, mark = 'clean', active = true, parked = false, arrived = true, links = [], replaySmoke = false, onStrip, frameKey = '' }: {
-  lane: Lane; progress: number; progressKnown?: boolean; status: string; title: string; mark?: Mark; active?: boolean; parked?: boolean
+export function PaperProcess({ lane, stage, progress, progressKnown = true, status, title, mark = 'clean', active = true, parked = false, arrived = true, links = [], replaySmoke = false, onStrip, frameKey = '' }: {
+  lane: Lane; stage?: string; progress: number; progressKnown?: boolean; status: string; title: string; mark?: Mark; active?: boolean; parked?: boolean
   arrived?: boolean; links?: StripLink[]; replaySmoke?: boolean; onStrip?: (link: StripLink) => void; frameKey?: string
 }) {
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -169,6 +169,8 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
   const progressRef = useRef(progress)
   const knownRef = useRef(progressKnown)
   const statusRef = useRef(status)
+  const stageRef = useRef(stage)
+  stageRef.current = stage
   const parkedRef = useRef(parked)
   const activeRef = useRef(active)
   const arrivedRef = useRef(arrived)
@@ -269,7 +271,7 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
       const since = landedAt.current ? now - landedAt.current : 0
       const intro = landedAt.current ? Math.min(1, since / 700) : (arrivedRef.current ? 1 : 0)
       const ash = landedAt.current && statusRef.current === 'running' ? Math.max(0, Math.min(1, (since - 760) / 1500)) : 0
-      const visual = !arrivedRef.current ? 0 : statusRef.current === 'running' ? Math.min(1, shown * intro + (1 - shown) * ash) : shown
+      const visual = !arrivedRef.current ? 0 : lane==='notes' ? (state==='succeeded'?1:stageRef.current==='extract'?.88:stageRef.current==='translate'?.7:stageRef.current==='transcribe'?Math.max(.18,shown):0) : statusRef.current === 'running' ? Math.min(1, shown * intro + (1 - shown) * ash) : shown
       const sheet = canvas.current
       if (lane === 'publish' && sheet) sheet.style.opacity = ''
       const layoutKey = host.clientWidth + 'x' + host.clientHeight
@@ -396,11 +398,12 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
     return bindFrame(job, now => paint.current(now))
   }, [active, progress, status, arrived, parked, replaySmoke, lane, title, frameKey])
 
-  const showStrips = lane === 'notes' && arrived && (status === 'succeeded' || progress >= 92)
+  const showStrips = lane === 'notes' && arrived && (status === 'succeeded' || stage === 'extract')
+  const falling = lane==='notes' && active && arrived && status==='running' && ['transcribe','translate','extract'].includes(stage||'')
   const mouth = lane === 'publish' && box ? bowlMouth(box, manifest) : null
   const scraps = showStrips ? [
-    ...links.slice(0, 6).map((link, index) => ({ key: 'card-' + link.id, link, index })),
-    ...[0, 1, 2, 3, 4].map(index => ({ key: 'scrap-' + index, link: null, index: index + 6 })),
+    ...links.slice(0, 8).map((link, index) => ({ key: 'card-' + link.id, link, index })),
+    ...[0, 1, 2, 3, 4].map(index => ({ key: 'scrap-' + index, link: null, index: index + 8 })),
   ] : []
   return <div ref={root} className={'paper-process ' + lane} data-mark={mark} data-arrived={arrived ? '1' : '0'} data-burning={lane==='publish'&&status==='running'&&arrived?'1':'0'}>
     {mouth&&box&&<i className="process-warmth" style={{left:mouth.cx-mouth.rx*1.2,top:box.top+box.height*.78,width:mouth.rx*2.4,height:box.height*.06}}/>}
@@ -408,9 +411,10 @@ export function PaperProcess({ lane, progress, progressKnown = true, status, tit
     {mouth && box && <BrazierLogs box={box}/>}
     <canvas ref={canvas} className="process-paper" aria-hidden="true" />
     {lane === 'publish' && <canvas ref={fireNode} className="flame-layer" aria-hidden="true" />}
+    {falling&&<div className="shred-fall" aria-hidden="true">{Array.from({length:14},(_,i)=><i key={i} style={{'--x':`${8+(i*17)%84}%`,'--spin':`${(i%2?1:-1)*(70+i*13)}deg`,animationDelay:`${-i*.19}s`,animationDuration:`${1.2+i%4*.15}s`} as React.CSSProperties}/>)}</div>}
     {showStrips && <div className="strip-tray">{scraps.map(scrap => {
-      const size=[12,10,14,11,13,12,14,10,12,11,13][scrap.index]
-      const style = { transform: `rotate(${[-18, 11, -7, 16, -13, 8, 14, -9, 5, -16, 10][scrap.index]}deg)`, width:size, height:size }
+      const size=[14,12,16,13,15][scrap.index%5]
+      const style = { transform: `rotate(${[-18, 11, -7, 16, -13][scrap.index%5]}deg)`, width:size, height:size, backgroundImage:scrap.link?`url(${textures[scrap.link.id]||''})`:undefined, animationDelay:`${scrap.index*65}ms` }
       return scrap.link
         ? <button type="button" key={scrap.key} className="shred-strip" data-card-id={scrap.link.id} data-refs={scrap.link.refs.join(' ')} style={style} onClick={() => onStrip?.(scrap.link!)} aria-label={'碎纸 ' + scrap.link.id} />
         : <i key={scrap.key} className="shred-strip" style={style} />

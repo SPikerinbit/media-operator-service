@@ -6,7 +6,7 @@ import { parseSrt } from './srt'
 import { transcriptSource, useSourceTitles } from './sourceTitles'
 import { Button, Busy, Feedback, Field, Select, useActions } from './ui'
 
-export function TranscriptView({ id, settings, translationUrl, onSettings, variant = 'stack', highlightCard = null, onActivateCard, onVisibleCards, onReady }: {
+export function TranscriptView({ id, settings, translationUrl, onSettings, variant = 'stack', highlightCard = null, onActivateCard, onVisibleCards, onReady, managed = false }: {
   id: number
   settings: Settings | null
   translationUrl?: string
@@ -15,7 +15,8 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
   highlightCard?: number | null
   onActivateCard?: (card: { id: number; refs: number[] }) => void
   onVisibleCards?: (cards: { id: number; refs: number[] }[]) => void
-  onReady?: (api: { locate: (cue: number) => void }) => void
+  managed?: boolean
+  onReady?: (api: { locate: (cue: number) => void; prepare: () => Promise<void>; refresh: () => Promise<void> }) => void
 }) {
   const [state, session] = useDraftSession(id)
   const { doc, edits, saves, selected, expanded, results, busy, activeCue } = state
@@ -28,6 +29,8 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
   const [translations, setTranslations] = useState<Map<number, string>>(new Map())
   const player = useRef<HTMLMediaElement>(null)
   const sourceBody = useRef<HTMLOListElement>(null)
+  const readScroll = useRef<HTMLDivElement>(null)
+  const slipScroll = useRef<HTMLDivElement>(null)
   const cueNodes = useRef(new Map<number, HTMLButtonElement>())
   const { notice, setNotice, perform } = useActions()
   const path = '/desktop/knowledge/' + id
@@ -46,7 +49,9 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
     const cue = cues.get(number)
     if (!cue) return
     session.update({ activeCue: number })
-    cueNodes.current.get(number)?.scrollIntoView({ block: 'nearest' })
+    const target=cueNodes.current.get(number)
+    if(target&&readScroll.current){const box=readScroll.current;box.scrollTop+=target.getBoundingClientRect().top-box.getBoundingClientRect().top-12}
+    else if(variant!=='desk')target?.scrollIntoView({block:'nearest'})
     if (seek && player.current) {
       session.scroll.playback = cue.start_ms / 1000
       if (player.current.readyState >= 1) player.current.currentTime = session.scroll.playback
@@ -88,7 +93,14 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
     }).slice(slipPage * 8, slipPage * 8 + 8)
     onVisibleCards?.(cards.map(card => ({ id: card.id, refs: card.refs })))
   }, [doc, edits, filter, slipPage, variant, onVisibleCards])
-  useEffect(() => { if (doc) readyRef.current?.({ locate }) }, [doc])
+  useEffect(() => { if (doc) readyRef.current?.({ locate, prepare:async()=>{await Promise.all(Object.keys(session.get().edits).map(key=>session.save(Number(key))))}, refresh:session.refresh }) }, [doc])
+
+  useEffect(()=>{
+    if(highlightCard!=null)session.update({panel:'drafts'})
+    const node=slipScroll.current?.querySelector<HTMLElement>(`[data-slip-id="${highlightCard}"]`)
+    const box=slipScroll.current
+    if(node&&box){box.scrollTop+=node.getBoundingClientRect().top-box.getBoundingClientRect().top-12}
+  },[highlightCard,slipPage])
 
   if (state.loading) return <Busy>正在载入笔记</Busy>
   if (!doc) return <div><Feedback notice={{ text: state.error, error: true }}/>
@@ -117,10 +129,11 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
         <button type="button" aria-pressed={state.panel === 'source'} onClick={() => session.update({panel:'source'})}>原文</button>
       </div>
       <div className="note-slips">
-        <div className="note-actions">
+        {!managed&&<div className="note-actions">
           <Button variant="secondary" disabled={Boolean(busy)} onClick={() => perform(generate)}>{busy === 'generate' ? '正在提取' : '提取观点'}</Button>
-        </div>
+        </div>}
         <input type="search" aria-label="筛选观点" placeholder="搜索观点" value={filter} onChange={event => { setFilter(event.target.value); setSlipPage(0) }} />
+        <div className="slip-scroll thin-scroll" ref={slipScroll}>
         {slipCards.map(card => {
           const value = edits[card.id] || card
           const open = expanded === card.id
@@ -131,6 +144,7 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
           </article>
         })}
         {!visibleCards.length && <p className="slip-empty">还没有观点。</p>}
+        </div>
         {pages > 1 && <div className="slip-pages"><button type="button" disabled={slipPage === 0} onClick={() => setSlipPage(page => page - 1)}>上一组</button><span>{slipPage + 1} / {pages}</span><button type="button" disabled={slipPage >= pages - 1} onClick={() => setSlipPage(page => page + 1)}>下一组</button></div>}
       </div>
       <div className="note-read">
@@ -141,6 +155,7 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
         </div>
         <Feedback notice={notice}/>
         <input type="search" aria-label="搜索字幕" placeholder="搜索原文或译文" value={cueQuery} onChange={event => setCueQuery(event.target.value)} />
+        <div className="source-scroll thin-scroll" ref={readScroll}>
         {doc.playable && !note && <Player ref={(node) => { player.current = node }} className={Player === 'audio' ? 'note-audio' : 'note-player'}
           controls preload="metadata" src={path + '/media'}
           onLoadedMetadata={() => { if (player.current) player.current.currentTime = session.scroll.playback }}
@@ -160,6 +175,7 @@ export function TranscriptView({ id, settings, translationUrl, onSettings, varia
             {translations.get(cue.number) && <span className="sentence-translation">{translations.get(cue.number)}</span>}
           </button></li>)}
         </ol>
+        </div>
       </div>
     </div>
   }

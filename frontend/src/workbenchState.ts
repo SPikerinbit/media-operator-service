@@ -11,6 +11,7 @@ export type LetterEntry = {
   result?:NonNullable<Item['result']>&{note_notice?:string}; reuse?:{stage:string;origin_lane:Lane}[]; duplicate_of?:string;
   run?:number; revision?:number; summary?:string[]; progress_known?:boolean; deletable?:boolean;
   original_url?:string; resolved_fetch_url?:string; canonical_url?:string; identity?:string;
+  notes_mode?:import('./notesMode').NotesMode; execution_mode?:import('./notesMode').NotesMode;
   refresh_reason?:string; undo_until?:number
 }
 export type LetterGroup = { id:string;lane:Lane;created_at:string;options:Partial<VideoOptions>;overrides:Record<string,Override>;
