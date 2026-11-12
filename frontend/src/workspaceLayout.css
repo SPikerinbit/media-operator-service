@@ -23,13 +23,13 @@
 .paper-process[data-burning="1"] .process-warmth { opacity:1; }
 .paper-process { width:100%; max-width:520px; height:auto; aspect-ratio:1; margin:0; transform:none; }
 .paper-process .process-machine,.paper-process.notes .process-machine,.paper-process.publish .process-machine { left:0; top:0; width:100%; height:100%; }
-.notes.workbench-queue { height:100%; overflow:hidden; }
-.notes .selected-letter { display:flex; flex-direction:column; overflow:hidden; }
+.notes.workbench-queue { height:100%; overflow:clip; }
+.notes .selected-letter { display:flex; flex-direction:column; overflow:clip; }
 .notes .letter-title { flex:0 0 72px; height:72px; max-height:72px; margin-bottom:12px; }
 .notes .letter-title>div { min-width:0; max-height:92px; overflow:auto; }
 .notes .letter-title h2 { font-size:16px; line-height:1.5; }
 .notes-completion { display:grid; flex:1; min-height:0; grid-template-columns:clamp(360px,31%,420px) minmax(0,1fr); gap:20px; align-items:stretch; position:relative; }
-.notes-completion .shredder-station { grid-column:auto; grid-row:auto; position:relative; align-self:stretch; width:100%; min-height:0; padding:0; display:flex; flex-direction:column; overflow:hidden; }
+.notes-completion .shredder-station { grid-column:auto; grid-row:auto; position:relative; align-self:stretch; width:100%; min-height:0; padding:0; display:flex; flex-direction:column; overflow:clip; }
 .notes-completion .paper-process.notes { width:calc(100% - 52px); max-width:400px; flex:0 0 auto; aspect-ratio:1; height:auto; padding:0; margin:0; }
 .shredder-station .shred-lever { position:absolute; left:auto; right:0; top:64px; width:86px; z-index:8; }
 .lever-track { gap:0; }
@@ -213,3 +213,7 @@ button.shred-strip:hover,button.shred-strip:focus-visible { translate:0 -5px; bo
   .notes .note-read>.note-actions { gap:6px; }
   .notes .note-actions .button-press-motion { font-size:11px; padding:6px; }
 }
+
+.notes .selected-letter.is-in,.notes .selected-letter.is-out { animation:none; }
+
+.shredder-station .lever-track button { min-width:0; max-width:100%; overflow:hidden; padding-right:0; }

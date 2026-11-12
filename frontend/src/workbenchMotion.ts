@@ -812,7 +812,8 @@ export function launchTear(rows: { text: string; rect: DOMRect }[], pile: () => 
     const h = Math.max(28, row.rect.height)
     pin(el, row.rect.left, row.rect.top, w, h)
     const started = performance.now() + index * 46
-    bindFrame('tear:' + index, now => {
+    bindFrame('tear:' + crypto.randomUUID(), now => {
+      if(pile()?.closest('[inert]')){el.remove();return false}
       const elapsed = now - started
       if (elapsed < 0) return true
       const dest = pile()?.getBoundingClientRect()

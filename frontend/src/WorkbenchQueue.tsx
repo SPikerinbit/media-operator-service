@@ -76,6 +76,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   const undoSelection=useRef({selected:'',picked:[] as string[]})
   useEffect(()=>{if(!active)trashFlights.current.forEach(cancel=>cancel());return()=>{trashFlights.current.forEach(cancel=>cancel())}},[active])
   const woodImg=useRef<Record<string,HTMLImageElement|null>>({})
+  const woodHome=useRef<Record<string,DOMRect>>({})
   const locateRef=useRef<(cue:number)=>void>(()=>{})
   const deskRef=useRef<HTMLDivElement>(null)
   const transcriptApi=useRef<{prepare:()=>Promise<void>;refresh:()=>Promise<void>}|null>(null)
@@ -103,11 +104,11 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   }
   async function startNotes(){
     if(!entry||!remote||running)return
-    await transcriptApi.current?.prepare()
+    if(transcript)await transcriptApi.current?.prepare()
     await request('/desktop/inbox/groups/'+remote.id+'/start','POST',{revision:remote.revision,confirmed:true,entry_ids:[entry.id],notes_mode:notesMode,restart:entry.status!=='ready',entry_revision:entry.revision})
     await refresh()
   }
-  useEffect(()=>{setLinks([]);setActiveCard(null);transcriptApi.current=null},[entry?.id])
+  useEffect(()=>{setActiveCard(null)},[entry?.id])
   useEffect(()=>{if(entry?.status==='succeeded')void transcriptApi.current?.refresh().catch(()=>{})},[entry?.status,entry?.run])
   const row=entry?asRow(entry):undefined
   const previous=useRef(entry?.id)
@@ -145,6 +146,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
     setDrafts(d=>({...d,[group.id]:changed}))
   }
   async function save(values:Editing,prepare?:string[]):Promise<LetterGroup>{
+    for(const [id,node] of Object.entries(woodImg.current)){const box=node?.getBoundingClientRect();if(box&&box.width>0)woodHome.current[id]=box}
     const result=await request<LetterGroup>('/desktop/inbox/groups/'+values.id,'PATCH',{
       revision:values.revision,options:values.options,overrides:values.overrides,prepared:prepare||values.prepared,
     });setDrafts(d=>({...d,[result.id]:result}));await refresh();return result
@@ -195,7 +197,8 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
       const order=Math.max(0,sections.findIndex(item=>item.id===id))
       const source=woodImg.current[id]
       if(!source||!box){if(added.includes(id))setSettled(list=>[...new Set([...list,id])]);return}
-      const home=source.getBoundingClientRect()
+      const measured=source.getBoundingClientRect()
+      const home=measured.width>0?measured:woodHome.current[id]||measured
       const land={...woodLanding(box,currentManifest(),order),width:box.width*.22,height:box.height*.145}
       const button={x:home.left+home.width/2,y:home.top+home.height/2,width:home.width||120,height:home.height||78,rot:0}
       const from=added.includes(id)?button:land
@@ -225,7 +228,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
       })},added.includes(id)?index*stagger:0))
     })
     return()=>{disposed=true;timers.forEach(clearTimeout);flights.forEach(flight=>flight.cancel());temporary.forEach(node=>node.remove())}
-  },[groupId,prepared.join(','),active,reduced,brazierBox?.image.left,brazierBox?.image.top,brazierBox?.image.width])
+  },[groupId,prepared.join(','),active,reduced])
   async function ignite(){
     if(!confirm||!entry||!rights||entering)return
     ignitionFrom.current=brazierRef.current?.getBoundingClientRect()||null

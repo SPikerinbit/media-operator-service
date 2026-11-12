@@ -63,6 +63,15 @@ async def fixture_cards(request:Request):
             db.execute("INSERT OR IGNORE INTO card(transcript_id,claim,evidence,example,refs,origin_key,quote_translation) VALUES(?,?,?,?,?,?,?)",
                        (values['transcript_id'],f'测试观点 {index+1}','仅用于布局复验','','[1]',f'fixture-{index}',''))
     return {'ok':True}
+@app.post('/fixture/long-notes')
+async def long_notes(request:Request):
+    values=await request.json()
+    transcript=values['transcript_id']
+    with knowledge.database() as db:
+        db.executemany('INSERT OR REPLACE INTO cue VALUES(?,?,?,?,?)',[(transcript,i,i*2000,(i+1)*2000,'长原文段落 '+str(i)+'。'+('保持内容框内部滚动，机器位置不变。'*8)) for i in range(1,601)])
+        db.execute("UPDATE card SET refs='[490]' WHERE transcript_id=?",(transcript,))
+    return {'ok':True}
+
 @app.post('/fixture/state')
 async def fixture(request:Request):
     values=await request.json();entry=inbox.get_entry(values.pop('id'));inbox.update(entry['id'],**values);return {'ok':True}

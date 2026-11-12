@@ -412,7 +412,7 @@ def test_notes_defer_all_source_work_and_freeze_each_task_mode(workspace, monkey
     for entry,mode in zip(entries,['summary','comprehensive']):
         request=inbox.Start(entry_ids=[entry['id']],revision=0,confirmed=True,notes_mode=mode)
         with ThreadPoolExecutor(max_workers=4) as pool:
-            list(pool.map(lambda _:inbox.start_group(gid,request),range(4)))
+            list(pool.map(lambda _,request=request:inbox.start_group(gid,request),range(4)))
         assert inbox.get_entry(entry['id'])['execution_mode']==mode
     assert len(probes)==2 and len(calls)==2
     assert [req.notes_mode for req in calls]==['summary','comprehensive']

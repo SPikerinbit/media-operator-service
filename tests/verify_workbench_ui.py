@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import time
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 origin = sys.argv[1]
 out = Path(sys.argv[2])
@@ -58,6 +58,8 @@ with sync_playwright() as playwright:
     group = delivery['group_id']
     for _ in range(120):
         entry = next(item for item in page.request.get(origin+'/desktop/inbox/queue').json()['entries'] if item['group_id'] == group)
+        if entry['status'] == 'ready':
+            api('/desktop/inbox/groups/'+group+'/start', {'revision':0,'confirmed':True,'entry_ids':[entry['id']],'notes_mode':'summary'})
         if entry['status'] == 'succeeded' and entry.get('result', {}).get('transcript_id'):
             break
         assert entry['status'] not in {'failed', 'blocked', 'rejected'}, entry
@@ -78,33 +80,37 @@ with sync_playwright() as playwright:
     assert publish_entry['status'] == 'ready'
     page.reload()
     page.get_by_role('button', name='笔记', exact=True).click()
+    page.locator('[data-entry-id="'+entry['id']+'"] .incoming-open').click()
     page.locator('.notes-completion .viewpoint-slip').first.wait_for()
     page.wait_for_timeout(1100)
     generate_requests = []
     page.on('request', lambda request: generate_requests.append(request.post_data_json)
-            if request.url.endswith('/generate') else None)
+            if request.url.endswith('/start') else None)
     for mode, label in [('summary', '摘要'), ('curated', '精华观点'), ('comprehensive', '大多数观点')]:
         before = len(generate_requests)
         page.locator('.shredder-station').get_by_role('radio', name=label, exact=True).click()
         page.wait_for_timeout(100)
         assert len(generate_requests) == before, 'Changing mode must not generate'
-        with page.expect_response('**/knowledge/*/generate') as pending:
-            page.get_by_role('button', name='提取观点', exact=True).click()
+        with page.expect_response('**/inbox/groups/*/start') as pending:
+            page.get_by_role('button', name='重新整理', exact=True).click()
         assert pending.value.ok
-        assert generate_requests[-1]['mode'] == mode
+        assert generate_requests[-1]['notes_mode'] == mode
         results['modes'].append(generate_requests[-1])
+        page.get_by_role('button',name='重新整理',exact=True).wait_for(state='visible')
     radio = page.locator('.shredder-station').get_by_role('radio', name='大多数观点', exact=True)
+    page.get_by_role('button',name='重新整理',exact=True).wait_for(state='visible')
+    expect(radio).to_be_enabled(timeout=30000)
     radio.focus()
     page.keyboard.press('ArrowRight')
-    assert page.locator('.shredder-station').get_by_role('radio', name='摘要', exact=True).get_attribute('aria-checked') == 'true'
+    expect(page.locator('.shredder-station').get_by_role('radio', name='摘要', exact=True)).to_have_attribute('aria-checked', 'true')
 
     page.locator('.viewpoint-slip .slip-body').first.click()
     assert page.locator('.note-read .sentence[aria-pressed="true"]').count() == 1
     page.locator('.viewpoint-slip').first.get_by_role('button', name='编辑', exact=True).click()
     editor = page.locator('.viewpoint-slip').first.get_by_label('主题', exact=True)
     editor.fill('人工编辑保持不变')
-    with page.expect_response('**/knowledge/*/generate'):
-        page.get_by_role('button', name='提取观点', exact=True).click()
+    with page.expect_response('**/inbox/groups/*/start'):
+        page.get_by_role('button', name='重新整理', exact=True).click()
     assert editor.input_value() == '人工编辑保持不变'
 
     for width, height, dpr in [(2560, 1392, 1.5), (1920, 1080, 1), (1440, 940, 1),
@@ -141,7 +147,7 @@ with sync_playwright() as playwright:
                 assert export.bounding_box()['y'] + export.bounding_box()['height'] <= height + 1
                 if tabs.is_visible():
                     tabs.get_by_role('button', name='观点', exact=True).click()
-                    page.get_by_role('button', name='提取观点', exact=True).scroll_into_view_if_needed()
+                    page.get_by_role('button', name='重新整理', exact=True).scroll_into_view_if_needed()
                 tray = page.locator('.strip-tray')
                 assert tray.count() == 1
                 assert tray.evaluate('(el)=>el.getBoundingClientRect().right<=el.parentElement.getBoundingClientRect().right+1')
@@ -158,21 +164,20 @@ with sync_playwright() as playwright:
     page.set_viewport_size({'width': 1440, 'height': 940})
     page.get_by_role('button', name='信箱', exact=True).click()
     page.wait_for_timeout(1100)
-    home_radio = page.locator('.home-mode').get_by_role('radio', name='摘要', exact=True)
-    assert home_radio.get_attribute('aria-checked') == 'true'
+    assert page.locator('.home-mode').count() == 0
     page.locator('.letter-station.publish input.rule-input').first.fill('https://example.com/video-'+token)
     page.get_by_role('button', name='投递投稿信件', exact=True).click()
     page.wait_for_function("() => document.querySelector('.letter-station.publish').dataset.phase==='fold'")
     page.wait_for_timeout(430)
     hinge = page.locator('.letter-station.publish').evaluate('''el => {
-      const envelope=el.querySelector('.delivery-envelope').getBoundingClientRect();
+      const envelope=el.querySelector('.delivery-envelope:not(.delivery-placeholder)').getBoundingClientRect();
       const back=el.querySelector('.flap-lining').getBoundingClientRect();
       return {gap:Math.abs(envelope.top-back.top),height:envelope.height}
     }''')
     assert hinge['gap'] < 2, ('Open flap detached from its hinge',hinge)
     results['open_flap_hinge'] = hinge
     page.set_viewport_size({'width': 1280, 'height': 800})
-    page.wait_for_timeout(350)
+    page.wait_for_function("() => document.querySelector('.letter-station.publish').dataset.phase==='idle'")
     assert page.locator('.fold-sheet,.routing-letter,.cast-shadow').count() == 0
     assert page.locator('.letter-station.publish').get_attribute('data-phase') == 'idle'
     page.emulate_media(reduced_motion='reduce')
