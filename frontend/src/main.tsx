@@ -28,6 +28,8 @@ function App(){
   const [settings,setSettings]=useState<Preferences|null>(null);const [error,setError]=useState('')
   const [settingsFocus,setSettingsFocus]=useState<SettingsSection>('general');const inbox=useInbox()
   const [warm,setWarm]=useState(false)
+  const [pendingLetters,setPendingLetters]=useState<string[]>([])
+  useEffect(()=>{const update=(event:Event)=>{const {ids,on}=(event as CustomEvent<{ids:string[];on:boolean}>).detail;setPendingLetters(current=>on?[...new Set([...current,...ids])]:current.filter(id=>!ids.includes(id)))};window.addEventListener('delivery-pending',update);return()=>window.removeEventListener('delivery-pending',update)},[])
   const [leaving,setLeaving]=useState<View|null>(null)
   const [deck,setDeck]=useState<{kind:string;dir:number}>({kind:'drawer',dir:1})
   const [welcome,setWelcome]=useState(false)
@@ -83,7 +85,7 @@ function App(){
     }}}
   return <MotionConfig reducedMotion="user"><a className="skip-link" href="#workspace">跳到工作区</a><div className="shell workbench-shell">
     <aside className="sidebar"><div className="workbench-brand" title="Media Operator">M<span>O</span></div><nav aria-label="工作台">{navigation.map(({id,label})=>{
-      const count=inbox.data.entries.filter(e=>e.lane===id&&['ready','running','queued','blocked','failed','identifying','starting'].includes(e.status)).length
+      const count=inbox.data.entries.filter(e=>e.lane===id&&!pendingLetters.includes(e.client_id||'')&&['ready','running','queued','blocked','failed','identifying','starting'].includes(e.status)).length
       return <button type="button" className="nav-item" key={id} aria-label={label} aria-current={view===id?'page':undefined} onClick={()=>show(id)}>
         {id==='home'?<Home size={20} aria-hidden="true"/>:id==='settings'?<Settings2 size={20} aria-hidden="true"/>:<span className="sidebar-mail-slot" aria-hidden="true"><span className="slot-mouth" data-mail-slot={id}/><i/></span>}
         <span>{label}</span>{count>0&&<small className="nav-count">{count}</small>}</button>

@@ -4,7 +4,6 @@ import { errorMessage, request } from './api'
 import { Prop, asset } from './WorkbenchEffects'
 import { currentManifest, flapOrigin, useWorkbenchManifest } from './workbenchAnchors'
 import { useNotesMode } from './notesMode'
-import { ShredLever } from './ShredLever'
 import { sessionForSource } from './siteSessions'
 import { launchTear, playDelivery, playPageTurn, resetDelivery, type DeliveryPhase } from './workbenchMotion'
 import { useMediaQuery } from './ui'
@@ -45,7 +44,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const [error, setError] = useState('')
   const [snapshot, setSnapshot] = useState<string[]>([])
   const [press, setPress] = useState(false)
-  const [notesMode, setNotesMode] = useNotesMode()
+  const [notesMode] = useNotesMode()
   const [turning, setTurning] = useState(false)
   const [arrived, setArrived] = useState(false)
   const [leavingId, setLeavingId] = useState('')
@@ -67,7 +66,12 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const inputs = useRef<Record<string, HTMLInputElement | null>>({})
   const stopDelivery = useRef<(() => void) | null>(null)
   const requestId = useRef('')
-  const pending = useRef('')
+  const [pending, setPending] = useState('')
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const submitting = useRef(false)
+  const deliveryClients=useRef<string[]>([])
+  function announcePending(on:boolean){window.dispatchEvent(new CustomEvent('delivery-pending',{detail:{ids:deliveryClients.current,on}}))}
   const handled = useRef('')
   const focusId = useRef('')
   const composing = useRef(false)
@@ -84,12 +88,11 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const stackGap = tight ? 4 : compact ? 6 : 8
   const mailSize = mailVisible / mailBox.w
   const envSize = envVisible / envBox.w
-  const flapTop = 0.102
-  const envTuck = -(flapTop * envSize) + stackGap
+  const envTuck = 40 - envBox.y * envSize - 24
   const mailTop = mailBox.y * mailSize
   const mailBot = (1 - mailBox.bottom) * mailSize
   const envBot = (1 - 0.852) * envSize
-  const paperW = tight ? 300 : compact ? 360 : 400
+  const paperW = tight ? 320 : compact ? 360 : 400
 
   useEffect(() => {
     const stored = { lines: trimLines(draft.lines, draft.caretId), returned: draft.returned, caretId: draft.caretId }
@@ -177,8 +180,8 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     }
   }
   useEffect(() => {
-    const id = pending.current
-    if (!id || handled.current === id) return
+    const id = pending
+    if (!id || handled.current === id || !active) return
     const received = data.entries.filter(entry => entry.group_id === id)
     if (!received.length || received.some(entry => entry.status === 'identifying')) return
     handled.current = id
@@ -195,7 +198,8 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     if (tears.length && !reduced) launchTear(tears, () => pile.current)
     const acceptedLines = accepted.map(entry => entry.raw)
     setSnapshot(acceptedLines)
-    if (!accepted.length || !active || reduced) { setPhase('idle'); return }
+    setDraft(current => ({ ...current, lines: [] }))
+    if (!accepted.length || reduced) { setPhase('idle'); submitting.current = false; announcePending(false); return }
     const env = envRef.current
     const mail = mailRef.current
     const paper = paperRef.current
@@ -204,43 +208,23 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     const wax = waxRef.current
     const copy = copyRef.current
     const station = root.current
-    if (!env || !mail || !paper || !flap || !closed || !wax || !copy || !station) { setPhase('idle'); return }
+    if (!env || !mail || !paper || !flap || !closed || !wax || !copy || !station) { setPhase('idle'); submitting.current = false; announcePending(false); return }
     const home = env.getBoundingClientRect()
     env.dataset.home = JSON.stringify({ x: home.left + home.width / 2, y: home.top + home.height / 2 })
     stopDelivery.current?.()
     stopDelivery.current = playDelivery({
-      root: station, env, mail, paper, flap, closed, wax, copy, sheet: sheetRef.current, lines: acceptedLines,
+      root: station, env, mail, paper, flap, closed, wax, copy, sheet: sheetRef.current, lines: acceptedLines, isActive: () => activeRef.current,
     }, currentManifest(), import.meta.env.BASE_URL, next => setPhase(next), () => {
       resetDelivery(env, flap, paper, closed, wax)
       setPhase('idle')
+      submitting.current = false
+      announcePending(false)
     })
-  }, [data, active, reduced])
+  }, [data, active, reduced, pending])
   useEffect(() => () => { stopDelivery.current?.(); stopDelivery.current = null }, [])
-  useEffect(() => {
-    if (active) return
-    stopDelivery.current?.()
-    stopDelivery.current = null
-    const env = envRef.current
-    const flap = flapRef.current
-    const paper = paperRef.current
-    const closed = closedRef.current
-    const wax = waxRef.current
-    if (env && flap && paper && closed && wax) resetDelivery(env, flap, paper, closed, wax)
-    if (phase !== 'idle' && phase !== 'identifying') setPhase('idle')
-  }, [active])
-  useEffect(() => {
-    const cancel = () => {
-      stopDelivery.current?.(); stopDelivery.current = null
-      const env=envRef.current, flap=flapRef.current, paper=paperRef.current, closed=closedRef.current, wax=waxRef.current
-      if(env&&flap&&paper&&closed&&wax)resetDelivery(env,flap,paper,closed,wax)
-      setPhase(current=>current==='identifying'?current:'idle')
-    }
-    window.addEventListener('resize',cancel)
-    return()=>window.removeEventListener('resize',cancel)
-  }, [])
 
   async function deliver() {
-    if (busy || composing.current) return
+    if (busy || submitting.current || composing.current) return
     const frozen: Frozen[] = draft.lines.filter(line => line.text.trim()).map(line => {
       const found = classifyLetters(line.text)
       return { id: line.id, text: line.text.trim(), local: found.length === 1 ? found[0].local : line.local }
@@ -248,10 +232,11 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     if (!frozen.length) return
     setPress(true)
     window.setTimeout(() => setPress(false), 160)
-    const ids = new Set(frozen.map(line => line.id))
+    submitting.current = true
+    deliveryClients.current=frozen.map(line=>line.id)
+    announcePending(true)
     frozen.forEach(line => { const rect = inputs.current[line.id]?.getBoundingClientRect(); if (rect) lineRects.current[line.id] = rect })
     setSnapshot(frozen.map(line => line.text))
-    setDraft(current => ({ ...current, lines: current.lines.filter(line => !ids.has(line.id)) }))
     setPage(0)
     setError('')
     setPhase('identifying')
@@ -261,10 +246,11 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
         request_id: requestId.current, lane, notes_mode: lane === 'notes' ? notesMode : 'curated', entries: frozen.map(line => ({ id: line.id, text: line.text, local: Boolean(line.local), session_id:sessionForSource(classifyLetters(line.text)[0]?.source||line.text) })),
       })
       requestId.current = ''
-      pending.current = response.group_id
+      setPending(response.group_id)
     } catch (reason) {
       requestId.current = ''
-      setDraft(current => ({ ...current, lines: [...frozen.map(line => ({ id: line.id, text: line.text, local: line.local })), ...current.lines] }))
+      submitting.current = false
+      announcePending(false)
       setPhase('idle')
       setError(errorMessage(reason))
     }
@@ -289,7 +275,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   }, [draft.returned.length])
 
     return <section ref={root} className={'letter-station ' + lane + (tight ? ' is-tight' : compact ? ' is-short' : '')} data-phase={phase === 'identifying' ? 'identify' : phase} aria-label={title + '信箱'} style={{ '--hinge-x': origin[0], '--hinge-y': origin[1], '--plaque-x': manifest.mailbox.anchors.plaque[0], '--plaque-y': manifest.mailbox.anchors.plaque[1], '--seal-x': seal[0], '--seal-y': seal[1], '--lines': pageSize, '--mail-box': mailSize + 'px', '--env-box': envSize + 'px', '--paper-w': paperW + 'px', '--env-tuck': envTuck + 'px', '--mail-top': mailTop + 'px', '--mail-bot': mailBot + 'px', '--env-bot': envBot + 'px', '--stack-gap': stackGap + 'px' } as React.CSSProperties}>
-    <header className="station-heading"><h2>{title}</h2><p>{lane === 'publish' ? '投递后再设置。' : '投递后自动整理。'}</p></header>
+    <header className="station-heading"><h2>{title}</h2><p>{lane === 'publish' ? '投递后再设置。' : '入队后选择档位，再开始整理。'}</p></header>
     <div className="delivery-apparatus">
       <div className="desk-mailbox" ref={mailRef}>
         <Prop name="mailbox" layer="body" className="mailbox-body" />
@@ -308,7 +294,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
               {Array.from({ length: pageSize }, (_, slot) => {
                 const index = page * pageSize + slot
                 const line = draft.lines[index]
-                return <input key={slot} data-line-id={line?.id || ''} ref={node => { if (line) inputs.current[line.id] = node }} className="rule-input" aria-label={`${title}第 ${index + 1} 行`} placeholder={page === 0 && slot === 0 ? '写在这里' : ''} value={line?.text ?? ''}
+                return <input key={slot} data-line-id={line?.id || ''} ref={node => { if (line) inputs.current[line.id] = node }} className="rule-input" readOnly={busy} aria-label={`${title}第 ${index + 1} 行`} placeholder={page === 0 && slot === 0 ? '写在这里' : ''} value={line?.text ?? ''}
                   onCompositionStart={() => { composing.current = true }}
                   onCompositionEnd={() => { composing.current = false }}
                   onFocus={() => { if (line) setDraft(current => ({ ...current, caretId: line.id })); else if (!composing.current) focusIndex(index) }}
@@ -337,9 +323,8 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
             <button type="button" className={'page-corner next' + (turning ? ' is-lifted' : '')} aria-label="下一页" disabled={turning || busy || page >= maxPage(draft.lines.length, pageSize)} onClick={() => void turn('next')} />
           </div>
         </div>
-        <p className="paper-hint">Ctrl + Enter</p>
+        <p className="paper-hint" role="status">{phase === 'identifying' ? '正在识别，信纸已保留…' : 'Ctrl + Enter'}</p>
       </div>
-      {lane==='notes'&&<div className="home-mode"><ShredLever value={notesMode} locked={busy} onChange={setNotesMode}/></div>}
       <div className="delivery-envelope" ref={envRef}>
         <Prop name="envelope" layer="body" className="envelope-back" />
         <div className="letter-insert" ref={paperRef} aria-hidden="true"><div className="letter-insert-copy" ref={copyRef}>{snapshot.slice(0, 6).map(line => <span key={line}>{line.replace(/\s+/g, ' ')}</span>)}</div></div>

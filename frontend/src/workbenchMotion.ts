@@ -28,15 +28,17 @@ type DeliveryNodes = {
   copy: HTMLElement
   sheet?: HTMLElement | null
   lines?: string[]
+  isActive?: () => boolean
 }
 
 type Point = { x: number; y: number }
 
-function phaseOf(u: number): DeliveryPhase {
-  if (u < 0.32) return 'fold'
-  if (u < 0.46) return 'tuck'
-  if (u < 0.64) return 'seal'
-  if (u < 0.86) return 'insert'
+function phaseOf(elapsed: number): DeliveryPhase {
+  let end = 0
+  for (const phase of DELIVERY_PHASES) {
+    end += phase.ms
+    if (elapsed < end) return phase.id
+  }
   return 'route'
 }
 
@@ -48,7 +50,7 @@ function foldAngle(elapsed: number, delay: number) {
   if (e < 280) return 72 + ((e - 140) / 140) * 34
   if (e < 460) return 106 + ((e - 280) / 180) * 66
   const s = Math.min(1, (e - 460) / 160)
-  return 172 + Math.max(0, springAt(s * 220, SPRING.press) - 1) * 5
+  return 172 + 8 * ramp(s, 0, 1)
 }
 
 function cubic(a: number, b: number, c: number, d: number, t: number) {
@@ -170,7 +172,8 @@ function buildFold(lines: string[], width: number, height: number) {
 export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, base: string, onPhase: (phase: DeliveryPhase) => void, onDone?: () => void) {
   if (reducedMotion()) { onDone?.(); return () => {} }
   let stopped = false
-  const started = performance.now()
+  let previous = performance.now()
+  let elapsed = 0
   let announced = ''
   const homeRect = nodes.sheet?.getBoundingClientRect()
   const lines = nodes.lines?.length ? nodes.lines : [...(nodes.sheet?.querySelectorAll('input') || [])].map(node => (node as HTMLInputElement).value).filter(Boolean)
@@ -183,8 +186,8 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
   flight.dataset.lane = lane
   flight.setAttribute('aria-hidden', 'true')
   document.body.append(flight)
-  const originX = homeRect?.left || 0
-  const originY = homeRect?.top || 0
+  let originX = homeRect?.left || 0
+  let originY = homeRect?.top || 0
   pin(flight, originX, originY, sheetW, sheetH)
   flight.style.transformOrigin = '0 0'
   flight.style.willChange = 'auto'
@@ -205,6 +208,11 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
   const home = nodes.env.dataset.home
     ? JSON.parse(nodes.env.dataset.home) as Point
     : { x: originX + sheetW / 2, y: originY }
+  const placeholder = document.createElement('div')
+  placeholder.className = 'delivery-envelope delivery-placeholder'
+  placeholder.style.visibility = 'hidden'
+  placeholder.style.display = 'none'
+  nodes.env.before(placeholder)
   const raise = Math.max(0, originY + sheetH - (window.innerHeight - 28))
   const finish = () => {
     if (source) source.style.opacity = ''
@@ -212,21 +220,40 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
     flight.remove()
     shade.remove()
     route?.remove()
+    placeholder.remove()
+    nodes.env.style.visibility = ''
+    nodes.env.style.marginTop = ''
   }
   const tick = (now: number) => {
     if (stopped) return false
-    const u = Math.min(1, (now - started) / DELIVERY_MS)
-    const phase = phaseOf(u)
+    const dt = now - previous
+    previous = now
+    const paused = document.hidden || nodes.isActive?.() === false
+    flight.style.visibility = paused ? 'hidden' : 'visible'
+    shade.style.visibility = paused ? 'hidden' : 'visible'
+    if (route) route.style.visibility = paused ? 'hidden' : 'visible'
+    nodes.env.style.visibility = paused ? 'hidden' : ''
+    if (paused) return true
+    elapsed += Math.min(50, dt)
+    const u = Math.min(1, elapsed / DELIVERY_MS)
+    const phase = phaseOf(elapsed)
     if (phase !== announced) { announced = phase; onPhase(phase) }
-    const elapsed = now - started
-    const tuckT = ramp(u, 0.32, 0.48)
-    const sealT = ramp(u, 0.46, 0.64)
-    const insertT = ramp(u, 0.66, 0.96)
+    const tuckT = ramp(elapsed, 980, 1400)
+    const sealT = ramp(elapsed, 1400, 1960)
+    const insertT = ramp(elapsed, 1960, 2940)
+    const sheetBox = nodes.sheet?.getBoundingClientRect()
+    if (sheetBox) { originX = lerp(originX, sheetBox.left, .24); originY = lerp(originY, sheetBox.top, .24) }
+    const room = 64 * ramp(elapsed, 0, 320) * (1 - sealT)
+    if (!insertT) nodes.env.style.marginTop = `calc(var(--env-tuck) + ${room}px)`
+    else { placeholder.style.display = ''; nodes.env.style.marginTop = '' }
+    const anchor = (insertT ? placeholder : nodes.env).getBoundingClientRect()
+    home.x = lerp(home.x, anchor.left + anchor.width / 2, .24)
+    home.y = lerp(home.y, anchor.top + anchor.height / 2, .24)
     const openT = ramp(elapsed, 40, 240)
-    const fold1 = foldAngle(elapsed, 280)
-    const fold2 = foldAngle(elapsed, 500)
+    const fold1 = foldAngle(elapsed, 0)
+    const fold2 = foldAngle(elapsed, 360)
     const tiltIn = ramp(elapsed, 0, 180)
-    built.stage.style.transform = `rotateX(${tiltIn * 26}deg) rotateY(${tiltIn * -18}deg)`
+    built.stage.style.transform = `rotateX(${tiltIn * 26 * (1-tuckT)}deg) rotateY(${tiltIn * -18 * (1-tuckT)}deg)`
     built.hingeBot.style.transform = `rotateX(${fold1}deg)`
     built.hingeMid.style.transform = `rotateX(${fold2}deg)`
     const crease = (el: HTMLElement, angle: number) => {
@@ -246,7 +273,7 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
       w: pocket[2] * envBox.width,
       h: pocket[3] * envBox.height,
     } : null
-    const sideGap = pocketBox ? Math.max(4, (pocketBox.w - sheetW * 0.92) / 2) : 8
+    const sideGap = pocketBox ? (pocketBox.w - sheetW * Math.min(.9, pocketBox.w*.82/sheetW))/2 : 8
     const destX = pocketBox ? pocketBox.x + sideGap : envBox.left + envBox.width * 0.12
     const destY = pocketBox ? pocketBox.y + pocketBox.h * 0.15 : envBox.top + envBox.height * 0.5
     const x = lerp(originX, destX, tuckT)
@@ -374,7 +401,7 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
         shade.style.opacity = String(0.28 * (1 - into))
         shade.style.transform = `translate3d(${cx - 28}px, ${groundY}px, 0) scale(${0.55 + (1 - scale) * 0.2}, 0.55)`
         const exit = manifest.mailbox.anchors.exit
-        if (u > 0.88 && exit) {
+        if (elapsed >= 2940 && exit) {
           const side = shell?.querySelector<HTMLElement>(`[data-mail-slot="${lane}"]`)
           const sideBox = side?.getBoundingClientRect()
           const exitPoint = { x: mail.left + exit[0] * mail.width, y: mail.top + exit[1] * mail.height }
@@ -391,7 +418,7 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
             document.body.append(route)
             pin(route, 0, 0, 36, 24)
           }
-          const local = Math.min(1, (u - 0.88) / 0.12)
+          const local = ramp(elapsed, 2940, 3420)
           const p = Math.min(1.04, Math.max(0, springAt(local * 520, SPRING.mass)))
           const along = Math.min(1, p)
           const slotIn = Math.max(0, (along - 0.62) / 0.38)
@@ -491,7 +518,9 @@ export function playPageTurn(sheet: DOMRect, dir: 'next' | 'prev', lines: string
   const atlas = currentManifest()['paper-turn']
   const started = performance.now()
   let cancel = () => {}
+  let settle = () => {}
   const promise = new Promise<void>(resolve => {
+    settle = resolve
     const tick = (now: number) => {
       const p = springAt(now - started, SPRING.soft)
       const shown = Math.max(0, Math.min(1.08, p))
@@ -525,9 +554,9 @@ export function playPageTurn(sheet: DOMRect, dir: 'next' | 'prev', lines: string
       resolve()
       return false
     }
-    cancel = bindFrame('page:turn', tick)
+    cancel = bindFrame('page:turn:'+crypto.randomUUID(), tick)
   })
-  return Object.assign(promise, { cancel: () => { cancel(); flyer.remove() } })
+  return Object.assign(promise, { cancel: () => { cancel(); flyer.remove(); settle() } })
 }
 
 type WoodRect = { x: number; y: number; width: number; height: number; rot: number }
@@ -543,7 +572,9 @@ export function glideWood(el: HTMLElement, from: WoodRect, to: WoodRect, _ms = 4
   pin(el, from.x - from.width / 2, from.y - from.height / 2, from.width, from.height)
   el.style.transformOrigin = 'center center'
   let cancel = () => {}
+  let settle = () => {}
   const promise = new Promise<void>(resolve => {
+    settle = resolve
     const tick = (now: number) => {
       const p = springAt(now - started, SPRING.soft)
       const arc = p > 0 && p < 1 ? Math.sin(Math.PI * p) * 92 : 0
@@ -561,7 +592,7 @@ export function glideWood(el: HTMLElement, from: WoodRect, to: WoodRect, _ms = 4
     }
     cancel = bindFrame('wood:' + (el.dataset.id || 'log'), tick)
   })
-  return Object.assign(promise, { cancel })
+  return Object.assign(promise, { cancel:()=>{cancel();settle()} })
 }
 
 function parkWood(el: HTMLElement, to: WoodRect) {
@@ -573,6 +604,32 @@ function parkWood(el: HTMLElement, to: WoodRect) {
   el.style.transform = `rotate(${to.rot}deg)`
   el.style.zIndex = '2'
   el.style.willChange = ''
+}
+
+/** Notes land above the rollers; the machine canvas then owns the same feed. */
+export function flyShredPaper(from: DOMRect, machine: () => HTMLElement | null, title: string) {
+  if (reducedMotion()) return Object.assign(Promise.resolve(), {cancel:()=>{}})
+  const paper=document.createElement('div')
+  paper.className='task-paper-flight shred-paper-flight'
+  paper.textContent=title
+  document.body.append(paper)
+  const started=performance.now(), key=crypto.randomUUID()
+  let stop=()=>{}, finish=()=>{}
+  const promise=new Promise<void>(resolve=>{
+    finish=()=>{paper.remove();resolve()}
+    stop=bindFrame('feed:'+key,now=>{
+      const host=machine()
+      if(!host||host.closest('[inert]')){finish();return false}
+      const rect=host.getBoundingClientRect(), feed=anchorPixels(rect,currentManifest().shredder.anchors.feed)
+      const t=ramp(now-started,0,700), ease=t*t*(3-2*t)
+      const width=rect.width*.42, height=rect.height*.46
+      pin(paper,lerp(from.left,feed.x-width/2,ease),lerp(from.top,feed.y-height,ease)-Math.sin(t*Math.PI)*20,lerp(from.width,width,ease),lerp(from.height,height,ease))
+      paper.style.rotate=`${(1-ease)*-6}deg`
+      if(t<1)return true
+      finish();return false
+    })
+  })
+  return Object.assign(promise,{cancel:()=>{stop();finish()}})
 }
 
 export function flyTaskPaper(from: DOMRect, to: () => Point | null, title: string, key = 'task') {
@@ -602,8 +659,10 @@ export function flyTaskPaper(from: DOMRect, to: () => Point | null, title: strin
   let host: HTMLElement | null = null
   let told = false
   let cancel = () => {}
-  const clear = () => { card.remove(); shade.remove() }
+  let settle = () => {}
+  const clear = () => { card.remove(); shade.remove(); settle() }
   const promise = new Promise<void>(resolve => {
+    settle = resolve
     const tick = (now: number) => {
       const dest = to()
       if (!dest) { clear(); if (!told) { told = true; resolve() }; return false }
@@ -626,6 +685,7 @@ export function flyTaskPaper(from: DOMRect, to: () => Point | null, title: strin
       y = Math.max(y, end.y - 28)
       const rot = Math.max(-22, Math.min(18, Math.atan2(ty, tx) * 180 / Math.PI * 0.18)) + Math.sin(te * 9) * 4 * (1 - te)
       if (!host) host = liveProcess()
+      if(host?.closest('[inert]')){clear();return false}
       const sink = ramp(te, 0.58, 0.92)
       const burn = ramp(te, 0.72, 1)
       let scaleX = lerp(1, 78 / w0, Math.min(1, te * 1.3))
@@ -670,67 +730,75 @@ export function flyTaskPaper(from: DOMRect, to: () => Point | null, title: strin
   return Object.assign(promise, { cancel: () => { cancel(); clear() } })
 }
 
-export function flyTrashSheets(from: { rect: DOMRect; title: string }[], mouth: () => { x: number; y: number; width: number; height: number } | null) {
+/** Each request owns its paper, shadow and completion, including cancellation. */
+export function flyTrashSheets(from: { rect: DOMRect; title: string }[], target: () => HTMLElement | null) {
   if (reducedMotion() || !from.length) return Object.assign(Promise.resolve(), { cancel: () => {} })
-  const shown = from.slice(0, 3)
-  const stack = from.length > 3
-  const nodes = shown.map((item, index) => {
+  const id = crypto.randomUUID()
+  const nodes = from.slice(0, 3).map((item, index) => {
     const el = document.createElement('div')
-    el.className = 'trash-sheet' + (stack && index === shown.length - 1 ? ' is-stack' : '')
+    el.className = 'trash-sheet' + (from.length > 3 && index === 2 ? ' is-stack' : '')
+    el.dataset.flightId = id
     el.setAttribute('aria-hidden', 'true')
-    el.textContent = item.title
-    document.body.append(el)
-    const w = Math.max(item.rect.width, 96)
-    const h = Math.max(item.rect.height, 72)
+    const face = document.createElement('span')
+    face.textContent = item.title
+    el.append(face)
+    for (let i = 0; i < 6; i++) { const fold = document.createElement('i'); fold.className = 'trash-fold'; fold.style.setProperty('--facet', String(i)); el.append(fold) }
+    const shadow = castShadow()
+    document.body.append(el, shadow)
+    const w = Math.max(item.rect.width, 96), h = Math.max(item.rect.height, 64)
     pin(el, item.rect.left, item.rect.top, w, h)
-    return { el, w, h, x: item.rect.left + w / 2, y: item.rect.top + h / 2 }
+    el.style.transformOrigin = 'center'
+    return { el, shadow, w, h, x: item.rect.left + w / 2, y: item.rect.top + h / 2 }
   })
-  let started = performance.now()
-  let prev: { x: number; y: number } | null = null
+  const started = performance.now()
   let cancel = () => {}
+  let settle = () => {}
+  let done = false
+  const clear = () => {
+    if (done) return
+    done = true
+    nodes.forEach(node => { node.el.remove(); node.shadow.remove() })
+    settle()
+  }
   const promise = new Promise<void>(resolve => {
-    const tick = (now: number) => {
-      const hole = mouth()
-      if (!hole) { nodes.forEach(node => node.el.remove()); resolve(); return false }
-      if (prev && Math.hypot(hole.x - prev.x, hole.y - prev.y) > 12) {
-        nodes.forEach(node => {
-          const box = node.el.getBoundingClientRect()
-          node.x = box.left + box.width / 2
-          node.y = box.top + box.height / 2
-        })
-        started = now
-      }
-      prev = hole
-      const elapsed = now - started
-      const crumple = Math.min(1, elapsed / 280)
-      const flight = Math.min(1, Math.max(0, (elapsed - 260) / 620))
-      const ease = flight * flight * (3 - 2 * flight)
-      const bin = document.querySelector<HTMLElement>('.desk-trash')
-      if (flight > 0.82 && bin && !bin.dataset.fed) {
-        bin.dataset.fed = '1'
-        bin.classList.add('is-fed')
-        window.setTimeout(() => { bin.classList.remove('is-fed'); delete bin.dataset.fed }, 480)
-      }
+    settle = resolve
+    cancel = bindFrame('trash:' + id, now => {
+      const bin = target()
+      const hole = bin && mouthOf(bin, currentManifest())
+      if (!bin || !hole || !bin.isConnected || bin.closest('[inert]')) { clear(); return false }
+      let live = false
       nodes.forEach((node, index) => {
-        const ball = crumple
-        const arc = Math.sin(Math.PI * ease) * 54
-        const x = lerp(node.x, hole.x, ease) + index * 6
-        const y = lerp(node.y, hole.y, ease) - arc
-        const size = lerp(1, 0.28, ball)
-        node.el.style.borderRadius = `${ball * 40}px`
-        node.el.style.transform = `translate3d(${x - node.w / 2}px, ${y - node.h / 2}px, 0) scale(${size}) rotate(${ball * 18 + ease * -12}deg)`
-        node.el.style.transformOrigin = 'center center'
-        node.el.style.clipPath = ''
-        node.el.style.opacity = String(flight < 0.02 ? 1 : 1 - ramp(ease, 0.86, 1))
+        const elapsed = now - started - index * 140
+        if (elapsed < 0) { node.el.style.opacity = '0'; live = true; return }
+        const ball = ramp(elapsed, 0, 360)
+        const t = ramp(elapsed, 340, 1080)
+        const x = lerp(node.x, hole.x, t)
+        const y = lerp(node.y, hole.y + 16, t) - Math.sin(Math.PI * t) * 100
+        const sx = lerp(1, 25 / node.w, ball), sy = lerp(1, 25 / node.h, ball)
+        node.el.style.setProperty('--crumple', String(ball))
+        node.el.style.borderRadius = `${ball * 44}%`
+        node.el.style.clipPath = ball > .3 ? 'polygon(8% 20%,28% 3%,64% 0,90% 19%,100% 60%,79% 95%,38% 100%,3% 71%)' : ''
+        let px = x, py = y
+        if (t > .9) {
+          // The actual foreground texture covers the ball as it crosses the rim.
+          if (node.el.parentElement !== bin) bin.insertBefore(node.el, bin.querySelector('.trash-front'))
+          const box = bin.getBoundingClientRect()
+          px -= box.left; py -= box.top
+          node.el.style.position = 'absolute'; node.el.style.zIndex = '2'
+          bin.classList.add('is-fed')
+        }
+        node.el.style.transform = `translate3d(${px - node.w / 2}px, ${py - node.h / 2}px, 0) rotate(${ball * 30 + t * 270 + Math.sin(t * 18) * 8}deg) scale(${sx},${sy})`
+        node.el.style.opacity = t >= 1 ? '0' : '1'
+        node.shadow.style.transform = `translate3d(${x - 22}px, ${lerp(node.y, hole.y + 25, t)}px, 0) scale(${1 - Math.sin(Math.PI * t) * .55}, .4)`
+        node.shadow.style.opacity = String(.24 * (1 - ramp(t, .85, 1)))
+        live ||= elapsed < 1190
       })
-      if (elapsed < 980) return true
-      nodes.forEach(node => node.el.remove())
-      resolve()
-      return false
-    }
-    cancel = bindFrame('trash', tick)
+      if (live) return true
+      bin.classList.remove('is-fed')
+      clear(); return false
+    })
   })
-  return Object.assign(promise, { cancel: () => { cancel(); nodes.forEach(node => node.el.remove()) } })
+  return Object.assign(promise, { cancel: () => { cancel(); target()?.classList.remove('is-fed'); clear() } })
 }
 
 export function launchTear(rows: { text: string; rect: DOMRect }[], pile: () => HTMLElement | null) {
