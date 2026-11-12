@@ -446,3 +446,61 @@ def test_notes_invalid_confirmation_does_not_claim_task(workspace):
         with pytest.raises(HTTPException):
             inbox.start_group(gid,inbox.Start(entry_ids=[entry['id']],notes_mode='curated',**fields))
     assert inbox.get_entry(entry['id'])['status']=='ready'
+
+
+def test_imported_subtitle_extract_progress_and_all_reused_restart(workspace, monkeypatch):
+    monkeypatch.setattr(media, 'TRANSLATE_API_KEY', 'fixture')
+    source = workspace / 'progress.srt'
+    source.write_text('1\n00:00:00,000 --> 00:00:02,000\n这是一段中文原文。\n', encoding='utf-8')
+    gid = delivery('notes', [str(source)], 'subtitle-progress')
+    entry = inbox.get_delivery(gid)['entries'][0]
+    samples = []
+    def generate(ident, *args, progress=None):
+        for value in [0, 25, 50, 100]:
+            progress(value, '摘录')
+            shown = inbox.get_delivery(gid)['entries'][0]
+            samples.append(shown['work_progress'])
+        return 0
+    monkeypatch.setattr(knowledge, 'generate_cards', generate)
+    inbox.start_group(gid, inbox.Start(entry_ids=[entry['id']], revision=0, confirmed=True, notes_mode='curated'))
+    completed = inbox.get_delivery(gid)['entries'][0]
+    assert samples == [0, 25, 50, 99]
+    assert completed['work_progress'] == 100
+    assert completed['task']['stage_details']['translate']['skipped']
+    assert completed['task']['stage_details']['extract']['status'] == 'succeeded'
+    monkeypatch.setattr(knowledge, 'generate_cards', lambda *a, **kw: pytest.fail('cached extract was executed'))
+    inbox.start_group(gid, inbox.Start(entry_ids=[entry['id']], revision=0, confirmed=True, notes_mode='curated',
+                                    restart=True, entry_revision=completed['revision']))
+    reused = inbox.get_delivery(gid)['entries'][0]
+    assert reused['execution_id'] != completed['execution_id']
+    assert reused['task']['stage_details']['extract']['reused']
+    assert reused['work_progress'] == 100
+    assert all(s['state'] == 'excluded' for s in reused['task']['work_plan']['steps'].values())
+
+
+def test_cross_lane_preflight_excludes_only_verified_compatible_artifacts(workspace):
+    from app import work_progress as work
+    folder = media.JOBS_DIR / 'cached'; folder.mkdir()
+    video = folder / 'source.mp4'; video.write_bytes(b'video')
+    subtitle = folder / 'english.srt'; subtitle.write_text('1\n00:00:00,000 --> 00:00:02,000\n中文原文。\n', encoding='utf-8')
+    source = 'https://example.com/verified-source'
+    batch = media.create_batch(media.BatchCreateRequest(rights_confirmed=True, knowledge_only=True, notes_auto=True,
+        subtitle_output_mode='en_only', sources=[media.SourceInput(source_kind='url', source_value=source, client_row_id='verified')]),
+        {'verified': {'planned_stages': ['download', 'transcribe'], 'media_type': 'video'}})
+    item = batch.items[0]; settings = media.batch_item_settings(batch.request, item)
+    download = {'source_kind': 'url', 'source_value': source, 'audio_only': True}
+    cache.save(cache.signature('download', source, download), 'download', 'publish',
+               {'source_video_url': media.public_file_url('cached', 'source.mp4')}, source)
+    transcribe = {'source_video_url': source, 'language': settings['source_language'],
+                  'whisper_model': settings['whisper_model'], 'whisper_inference_mode': settings['whisper_inference_mode']}
+    cache.save(cache.signature('transcribe', source, transcribe), 'transcribe', 'publish',
+               {'english_srt_url': media.public_file_url('cached', 'english.srt')}, source)
+    media.update_batch_item(batch.batch_id, item.item_id, execution=work.begin(work.NOTES_WEIGHTS, notes=True))
+    item = media.load_batch(batch.batch_id).items[0]
+    jobs.prepare_execution(batch, item, settings, download)
+    steps = media.load_batch(batch.batch_id).items[0].work_plan['steps']
+    assert [s for s, detail in steps.items() if detail['state'] != 'excluded'] == ['extract']
+    subtitle.unlink()
+    jobs.prepare_execution(batch, item, settings, download)
+    steps = media.load_batch(batch.batch_id).items[0].work_plan['steps']
+    assert steps['download']['state'] == 'excluded' and steps['transcribe']['state'] == 'pending'

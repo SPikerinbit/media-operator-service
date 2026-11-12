@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useReducedMotion } from 'motion/react'
-import { advanceProgress, anchorPixels, bowlMouth, burnPaper, currentManifest, shredderPaper, useWorkbenchManifest, woodLanding } from './workbenchAnchors'
+import { advanceProgress, bowlMouth, currentManifest, woodLanding } from './workbenchAnchors'
 import type { Box } from './workbenchAnchors'
 import type { Lane } from './workbenchState'
 import { bindFrame } from './workbenchScheduler'
 import { mountPetalFlame, warmEdge, type PetalFlame } from './workbenchFire'
+
+import { paperSurface, paperSeed, paintBurn, type PaperMark } from './paperModel'
+import { sceneMachine, scenePaper, type PaperProcessHandle } from './paperScene'
 
 export const asset = (name: string) => `${import.meta.env.BASE_URL}workbench/${name}.webp`
 
@@ -28,109 +31,6 @@ export function BrazierLogs({box, ids=[0,1,2,3]}:{box:Box;ids?:number[]}) {
     })}
   </div>
 }
-type Mark = 'clean' | 'cut' | 'charred'
-
-function hash(n: number) {
-  const x = Math.sin(n * 127.1) * 43758.5453
-  return x - Math.floor(x)
-}
-function edgeAt(x: number, cut: number) {
-  return cut + Math.sin(x * 0.085) * 5 + Math.sin(x * 0.21 + 1.4) * 2.2 + (Math.sin(x * 0.51) > 0.84 ? 8 : 0)
-}
-
-function paperSurface(title: string, mark: Mark) {
-  const paper = document.createElement('canvas')
-  paper.width = 380
-  paper.height = 520
-  const c = paper.getContext('2d')
-  if (!c) return paper
-  c.fillStyle = '#FEFEFC'
-  c.fillRect(0, 0, 380, 520)
-  let seed = 482
-  const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
-  for (let i = 0; i < 5000; i++) { c.fillStyle = `rgba(40,55,60,${random() * 0.035})`; c.fillRect(random() * 380, random() * 520, 1, 1) }
-  c.fillStyle = '#28373C'
-  c.font = '18px "Source Han Sans CN", sans-serif'
-  c.fillText(title.slice(0, 18), 24, 42, 330)
-  for (let y = 78; y < 490; y += 28) {
-    c.fillStyle = '#DDE3E5'
-    c.fillRect(24, y, 250 + random() * 70, 1)
-  }
-  if (mark === 'cut') {
-    c.strokeStyle = '#C4B8A4'
-    c.lineWidth = 2
-    for (const x of [70, 150, 230, 310]) {
-      c.beginPath()
-      c.moveTo(x, 60)
-      c.lineTo(x + Math.sin(x) * 4, 500)
-      c.stroke()
-    }
-  }
-  if (mark === 'charred') {
-    c.globalCompositeOperation = 'destination-out'
-    c.beginPath()
-    c.moveTo(300, 520)
-    c.lineTo(380, 430)
-    c.lineTo(380, 520)
-    c.closePath()
-    c.fill()
-    c.globalCompositeOperation = 'source-over'
-    const g = c.createRadialGradient(360, 500, 8, 330, 460, 80)
-    g.addColorStop(0, '#24140E')
-    g.addColorStop(0.55, '#6A3A22')
-    g.addColorStop(1, 'rgba(106,58,34,0)')
-    c.fillStyle = g
-    c.fillRect(260, 400, 120, 120)
-  }
-  return paper
-}
-
-const maskCanvas = document.createElement('canvas')
-
-function paintBurn(ctx: CanvasRenderingContext2D, paper: HTMLCanvasElement, pose: { x: number; y: number; width: number; height: number; edgeY: number }) {
-  const cut = Math.max(0, Math.min(paper.height, ((pose.edgeY - pose.y) / Math.max(1, pose.height)) * paper.height))
-  if (maskCanvas.width !== paper.width || maskCanvas.height !== paper.height) {
-    maskCanvas.width = paper.width
-    maskCanvas.height = paper.height
-  }
-  const c = maskCanvas.getContext('2d')
-  if (!c) return
-  c.clearRect(0, 0, paper.width, paper.height)
-  c.save()
-  c.beginPath()
-  c.moveTo(0, 0)
-  c.lineTo(paper.width, 0)
-  for (let x = paper.width; x >= 0; x -= 3) c.lineTo(x, Math.max(0, edgeAt(x, cut)))
-  c.closePath()
-  c.clip()
-  c.drawImage(paper, 0, 0)
-  c.restore()
-  c.beginPath()
-  for (let x = 0; x <= paper.width; x += 3) {
-    const y = edgeAt(x, cut)
-    if (x === 0) c.moveTo(x, y)
-    else c.lineTo(x, y)
-  }
-  c.strokeStyle = '#3A241C'
-  c.lineWidth = 5
-  c.stroke()
-  c.strokeStyle = '#FF9A1F'
-  c.lineWidth = 3
-  c.stroke()
-  c.strokeStyle = '#FFE7A0'
-  c.lineWidth = 1.2
-  c.stroke()
-  c.fillStyle = 'rgba(90,78,70,.55)'
-  for (let x = 8; x < paper.width; x += 14) {
-    if (hash(x) < 0.45) c.fillRect(x, edgeAt(x, cut) + 3 + hash(x + 3) * 7, 2, 2)
-  }
-  let lowest = cut
-  for (let x = 0; x <= paper.width; x += 3) lowest = Math.max(lowest, edgeAt(x, cut))
-  const srcH = Math.min(paper.height, Math.ceil(lowest + 6))
-  const destH = pose.height * (srcH / paper.height)
-  ctx.drawImage(maskCanvas, 0, 0, paper.width, srcH, pose.x, pose.y, pose.width, destH)
-}
-
 let smokeImage: HTMLImageElement | null = null
 function drawSmoke(ctx: CanvasRenderingContext2D, x: number, y: number, t: number) {
   if (!smokeImage) {
@@ -146,280 +46,195 @@ function drawSmoke(ctx: CanvasRenderingContext2D, x: number, y: number, t: numbe
   ctx.drawImage(smokeImage, col * fw, row * fh, fw, fh, x - 36, y - 90 - t * 20, 72, 80)
 }
 
-function layoutOf(el: HTMLElement, origin: HTMLElement): Box {
-  const a = el.getBoundingClientRect()
-  const b = origin.getBoundingClientRect()
-  const sx = b.width ? origin.clientWidth / b.width : 1
-  const sy = b.height ? origin.clientHeight / b.height : 1
-  return { left: (a.left - b.left) * sx, top: (a.top - b.top) * sy, width: a.width * sx, height: a.height * sy }
-}
-
-export function PaperProcess({ lane, stage, progress, progressKnown = true, status, title, mark = 'clean', active = true, parked = false, arrived = true, links = [], replaySmoke = false, onStrip, frameKey = '' }: {
-  lane: Lane; stage?: string; progress: number; progressKnown?: boolean; status: string; title: string; mark?: Mark; active?: boolean; parked?: boolean
-  arrived?: boolean; links?: StripLink[]; replaySmoke?: boolean; onStrip?: (link: StripLink) => void; frameKey?: string
+type Fragment = { row: number; column: number; born: number; ash: boolean }
+export function PaperProcess({ lane, stage, progress, progressKnown = true, status, title, mark = 'clean', active = true,
+  parked = false, arrived = true, links = [], replaySmoke = false, onStrip, frameKey = '', paperId = frameKey,
+  processRef, logs = [0, 1, 2, 3], showPaper = true }: {
+  lane: Lane; stage?: string; progress: number; progressKnown?: boolean; status: string; title: string; mark?: PaperMark
+  active?: boolean; parked?: boolean; arrived?: boolean; links?: StripLink[]; replaySmoke?: boolean
+  onStrip?: (link: StripLink) => void; frameKey?: string; paperId?: string
+  processRef?: React.RefObject<PaperProcessHandle | null>; logs?: number[]; showPaper?: boolean
 }) {
-  const canvas = useRef<HTMLCanvasElement>(null)
-  const fireNode = useRef<HTMLCanvasElement>(null)
-  const root = useRef<HTMLDivElement>(null)
-  const flame = useRef<PetalFlame | null>(null)
-  const previous = useRef(status)
-  const smokeUntil = useRef(0)
-  const goal = useRef(Math.max(0, Math.min(1, progressKnown ? progress / 100 : 0)))
-  const displayed = useRef(goal.current)
-  const progressRef = useRef(progress)
-  const knownRef = useRef(progressKnown)
-  const statusRef = useRef(status)
-  const stageRef = useRef(stage)
-  stageRef.current = stage
-  const parkedRef = useRef(parked)
-  const activeRef = useRef(active)
-  const arrivedRef = useRef(arrived)
-  const landedAt = useRef(0)
-  const markRef = useRef(mark)
-  const reducedRef = useRef(false)
-  const paint = useRef<(now: number) => boolean>(() => false)
-  const draws = useRef(0)
-  const litAt = useRef(0)
-  const painted = useRef(-1)
-  progressRef.current = progress
-  knownRef.current = progressKnown
-  statusRef.current = status
-  parkedRef.current = parked
-  activeRef.current = Boolean(active)
-  arrivedRef.current = arrived
-  if (arrived && status === 'running' && landedAt.current === 0) landedAt.current = performance.now()
-  if (!arrived) landedAt.current = 0
-  markRef.current = mark
-  const reduced = useReducedMotion()
-  reducedRef.current = Boolean(reduced)
-  const manifest = useWorkbenchManifest()
+  const canvas = useRef<HTMLCanvasElement>(null), fireNode = useRef<HTMLCanvasElement>(null), root = useRef<HTMLDivElement>(null)
+  const flame = useRef<PetalFlame | null>(null), paint = useRef<(now: number, force?: boolean) => boolean>(() => false)
+  const reduced = Boolean(useReducedMotion())
+  const live = useRef({progress, progressKnown, status, active, parked, arrived, replaySmoke, reduced, showPaper})
+  live.current = {progress, progressKnown, status, active, parked, arrived, replaySmoke, reduced, showPaper}
+  const surface = paperSurface(paperId, title, mark), paper = useRef(surface)
+  paper.current = surface
   const [box, setBox] = useState<Box | null>(null)
-  const [textures, setTextures] = useState<Record<number, string>>({})
-  const [tray, setTray] = useState<{ left: number; top: number; width: number } | null>(null)
-  const trayKey = useRef('')
+  const geometry = useRef<Box | null>(null)
+  const shown = useRef(0), target = useRef(0), emitted = useRef(0), fragments = useRef<Fragment[]>([])
+  const seed = paperSeed(paperId)
+  const job = 'paper:' + lane + ':' + frameKey
 
+  useLayoutEffect(() => {
+    shown.current = arrived && progressKnown ? Math.min(status === 'succeeded' ? 1 : .99, progress / 100) : 0
+    target.current = shown.current; emitted.current = Math.floor(shown.current * 48); fragments.current = []
+  }, [frameKey])
   useEffect(() => {
-    if (!replaySmoke) return
-    smokeUntil.current = performance.now() + 1000
-    previous.current = 'succeeded'
-  }, [replaySmoke])
-  useEffect(() => {
-    if (status === 'succeeded' && previous.current !== 'succeeded' && replaySmoke) smokeUntil.current = performance.now() + 1000
-    previous.current = status
-  }, [status, replaySmoke])
-  useEffect(() => {
-    const node = fireNode.current
-    if (!node || lane !== 'publish') return
-    const mounted = mountPetalFlame(node)
-    flame.current = mounted
+    if (!fireNode.current || lane !== 'publish') return
+    const mounted = mountPetalFlame(fireNode.current); flame.current = mounted
     return () => { mounted.dispose(); flame.current = null }
   }, [lane])
-  useEffect(() => {
-    if (!links.length) return
-    const paper = paperSurface(title, mark)
-    const count = Math.max(1, links.length)
-    const next: Record<number, string> = {}
-    links.forEach((link, index) => {
-      const slice = document.createElement('canvas')
-      const sw = Math.max(1, Math.floor(paper.width / count))
-      slice.width = sw
-      slice.height = paper.height
-      slice.getContext('2d')?.drawImage(paper, index * sw, 0, sw, paper.height, 0, 0, sw, slice.height)
-      next[link.id] = slice.toDataURL()
-    })
-    setTextures(next)
-  }, [links, title, mark])
-
-  useEffect(() => {
-    const node = canvas.current
-    const host = root.current
+  useLayoutEffect(() => {
+    const node = canvas.current, host = root.current
     if (!node || !host) return
-    const context = node.getContext('2d')
-    if (!context) return
-    const paper = paperSurface(title, mark)
-    let last = performance.now()
-    let visible = !document.hidden
-    let wasAway = !activeRef.current
+    const context = node.getContext('2d')!
+    let last = performance.now(), smokeStart = 0, completeSeen = live.current.status === 'succeeded', replaySeen = false
+    let lastDraw = '', wasAway = !live.current.active || document.hidden
     const resize = () => {
       const dpr = Math.min(devicePixelRatio || 1, 2)
       node.width = Math.round(Math.max(1, host.clientWidth) * dpr)
       node.height = Math.round(Math.max(1, host.clientHeight) * dpr)
       context.setTransform(dpr, 0, 0, dpr, 0, 0)
-      const machine = host.querySelector('.process-machine') as HTMLElement | null
-      if (machine) setBox(layoutOf(machine, host))
+      const local = sceneMachine(lane, host.clientWidth, host.clientHeight)
+      geometry.current = local; setBox(local); lastDraw = ''
     }
-    resize()
-    const draw = (now: number) => {
-      const machine = host.querySelector('.process-machine') as HTMLElement | null
-      if (!machine || host.clientWidth < 2) return false
-      const dt = Math.min(80, Math.max(0, now - last))
-      last = now
-      const spec = currentManifest()
-      const state = statusRef.current
-      if (knownRef.current) goal.current = advanceProgress(goal.current, Math.max(0, Math.min(1, progressRef.current / 100)), state)
-      const running = state === 'running' && !parkedRef.current
-      const smoking = now < smokeUntil.current
-      const away = !activeRef.current || !visible
-      if (away) wasAway = true
-      else if (wasAway) { displayed.current = goal.current; wasAway = false }
-      const decorative = Boolean(!away && !reducedRef.current && (running || smoking || Math.abs(goal.current - displayed.current) > 0.004 || (lane === 'publish' && running)))
-      const smooth = decorative && !reducedRef.current ? 1 - Math.exp(-dt / 160) : 1
-      let shown = displayed.current + (goal.current - displayed.current) * smooth
-      if (!running && !decorative) shown = goal.current
-      if (goal.current < displayed.current && !running) shown = goal.current
-      displayed.current = shown
-      const since = landedAt.current ? now - landedAt.current : 0
-      const intro = landedAt.current ? Math.min(1, since / 700) : (arrivedRef.current ? 1 : 0)
-      const ash = landedAt.current && statusRef.current === 'running' ? Math.max(0, Math.min(1, (since - 760) / 1500)) : 0
-      const visual = !arrivedRef.current ? 0 : lane==='notes' ? (state==='succeeded'?1:stageRef.current==='extract'?.88:stageRef.current==='translate'?.7:stageRef.current==='transcribe'?Math.max(.18,shown):0) : statusRef.current === 'running' ? Math.min(1, shown * intro + (1 - shown) * ash) : shown
-      const sheet = canvas.current
-      if (lane === 'publish' && sheet) sheet.style.opacity = ''
-      const layoutKey = host.clientWidth + 'x' + host.clientHeight
-      const paperChanged = Math.abs(visual - painted.current) > 0.001 || host.dataset.layout !== layoutKey
-      const local = layoutOf(machine, host)
-      let edgeViewport = 0
-      if (lane === 'publish') {
-        const pose = burnPaper(local, spec, arrivedRef.current ? 1 - visual : 1)
-        const mouth = bowlMouth(local, spec)
-        const hostBox = host.getBoundingClientRect()
-        const rim = anchorPixels(local, spec.brazier.anchors.rim, spec.brazier.size)
-        edgeViewport = hostBox.top + rim.y * (hostBox.height / Math.max(1, host.clientHeight))
-        if (paperChanged || smoking) {
-          context.clearRect(0, 0, host.clientWidth, host.clientHeight)
+    let transient = false
+    const draw = (now: number, force = false, landing = false) => {
+      const local = geometry.current
+      if (!local) return false
+      const state = live.current, dt = Math.min(50, Math.max(0, now - last)); last = now
+      const away = !state.active || document.hidden
+      if (away) { wasAway = true; return false }
+      if (state.progressKnown) target.current = advanceProgress(target.current, Math.min(state.status === 'succeeded' ? 1 : .99, state.progress / 100), state.status)
+      if (state.status === 'succeeded') target.current = 1
+      if (!state.arrived) { shown.current = 0; emitted.current = 0 }
+      else if (wasAway || state.reduced) {
+        shown.current = target.current; emitted.current = Math.floor(shown.current * 48); fragments.current = []; wasAway = false
+      } else if (!landing && !state.parked && ['running', 'succeeded'].includes(state.status)) {
+        shown.current += (target.current - shown.current) * (1 - Math.exp(-dt / 95))
+        if (Math.abs(target.current - shown.current) < .0001) shown.current = target.current
+      }
+      const visual = shown.current
+      const row = Math.floor(visual * 48)
+      if (state.arrived && !state.parked && !state.reduced && ['running', 'succeeded'].includes(state.status)) {
+        for (let i = emitted.current; i < row; i++) for (let column = 0; column < (lane === 'notes' ? 8 : 3); column++) {
+          fragments.current.push({row: i, column, born: now, ash: lane === 'publish'})
+        }
+      }
+      emitted.current = Math.max(emitted.current, row)
+      fragments.current = fragments.current.filter(f => now - f.born < 1150)
+      if (state.status === 'succeeded' && !completeSeen && visual === 1) {
+        completeSeen = true; smokeStart = now
+      }
+      if (state.replaySmoke && !replaySeen) { replaySeen = true; smokeStart = now }
+      const smoking = lane === 'publish' && smokeStart > 0 && now - smokeStart < 1000
+      const pose = scenePaper(lane, local, 1 - visual)
+      const drawKey = [visual.toFixed(5), state.arrived, state.showPaper, node.width, node.height, mark].join(':')
+      if (force || drawKey !== lastDraw || fragments.current.length || smoking || transient) {
+        context.clearRect(0, 0, host.clientWidth, host.clientHeight)
+        if (state.arrived && state.showPaper && visual < 1) {
+          if (lane === 'publish' && 'edgeY' in pose) paintBurn(context, paper.current, pose, seed)
+          else if ('feed' in pose) {
+            context.save(); context.beginPath(); context.rect(0, 0, host.clientWidth, pose.feed.y)
+            context.clip(); context.drawImage(paper.current, pose.x, pose.y, pose.width, pose.height); context.restore()
+          }
+        }
+        for (const fragment of fragments.current) {
+          const t = Math.min(1, (now - fragment.born) / 1050), sign = fragment.column % 2 ? 1 : -1
           context.save()
-          context.beginPath()
-          context.ellipse(mouth.cx, mouth.cy, mouth.rx, mouth.ry, 0, 0, Math.PI * 2)
-          context.clip()
-          if ((arrivedRef.current || statusRef.current === 'running') && pose.height > 1) {
-            context.save()
-            context.translate(mouth.cx, mouth.cy + mouth.ry * 0.28)
-            context.rotate(-0.08)
-            const width = mouth.rx * 0.92
-            const height = mouth.ry * 1.7
-            context.beginPath()
-            context.moveTo(-width * 0.48, height * 0.05)
-            context.quadraticCurveTo(-width * 0.1, -height * 0.72, width * 0.46, -height * 0.02)
-            context.quadraticCurveTo(width * 0.18, height * 0.42, -width * 0.42, height * 0.28)
-            context.closePath()
-            context.clip()
-            const curled = { x: -width / 2, y: -height * 0.55, width, height, edgeY: -height * 0.55 + height * Math.max(0.5, pose.remaining) }
-            paintBurn(context, paper, curled)
-            const char = context.createLinearGradient(0, -height * 0.2, 0, height * 0.35)
-            char.addColorStop(0, 'rgba(90, 50, 24, 0)')
-            char.addColorStop(0.55, 'rgba(90, 42, 18, 0.35)')
-            char.addColorStop(1, 'rgba(40, 18, 8, 0.85)')
-            context.fillStyle = char
-            context.fillRect(-width / 2, -height / 2, width, height)
+          if (fragment.ash && 'edgeY' in pose) {
+            context.translate(pose.x + pose.width * ((fragment.row * 7 + fragment.column * 13) % 31) / 31 + Math.sin(t * 5) * 7, pose.edgeY - t * 40)
+            context.globalAlpha = (1 - t) * .55; context.rotate(t * sign * 4)
+            context.fillStyle = '#6a4a32'; context.fillRect(-1, -1, 2, 3)
+          } else if ('output' in pose) {
+            const x = pose.output.x - pose.width / 2 + (fragment.column + .5) * pose.width / 8
+            const fall = Math.min(1, t * 1.4)
+            context.translate(x + sign * Math.sin(t * 4) * 6, pose.output.y + (pose.tray.y - pose.output.y) * fall * fall)
+            context.rotate(sign * t * (1.5 + fragment.row % 3))
+            context.scale(Math.max(.12, Math.abs(Math.cos(t * Math.PI * 2))), 1)
+            context.globalAlpha = t > .85 ? (1 - t) / .15 : 1
+            const sy = 520 * (1 - (fragment.row + 1) / 48), sw = 380 / 8
+            const dw = pose.width / 8 * .9, dh = Math.max(3, pose.height / 48)
+            context.drawImage(paper.current, fragment.column * sw, sy, sw, 520 / 48, -dw / 2, -dh / 2, dw, dh)
+          }
+          context.restore()
+        }
+        // Settled scraps are sampled from the already-consumed paper, not a loop.
+        if ('tray' in pose && visual > 0) {
+          const count = Math.min(36, Math.floor(visual * 48))
+          for (let i = 0; i < count; i++) {
+            const x = pose.tray.x + ((i * 37 % 101) / 100 - .5) * pose.width * 1.35
+            const y = pose.tray.y + (i * 13 % 17) - 6
+            context.save(); context.translate(x, y); context.rotate((i * 17 % 45 - 22) * Math.PI / 180)
+            const sourceY = Math.max(0, 520 * (1 - (i + 1) / 48))
+            context.drawImage(paper.current, (i * 47) % 340, sourceY, 35, 10, -5, -2, 10, 4)
             context.restore()
           }
-          if (smoking) drawSmoke(context, mouth.cx, mouth.cy, 1 - (smokeUntil.current - now) / 1000)
-          context.restore()
-          painted.current = visual
-          host.dataset.layout = layoutKey
         }
-        const fire = fireNode.current
-        if (fire && flame.current) {
-          const width = Math.min(150, Math.max(110, mouth.rx * 1.3))
-          const height = Math.min(160, Math.max(120, width * 1.05))
-          if (fire.dataset.size !== width + 'x' + height) {
-            fire.dataset.size = width + 'x' + height
-            fire.style.left = '0'
-            fire.style.top = '0'
-            fire.style.width = width + 'px'
-            fire.style.height = height + 'px'
-            flame.current.resize(width, height)
-          }
-          fire.style.zIndex = '4'
-          fire.style.transform = `translate3d(${mouth.cx - width / 2}px, ${mouth.cy - height * 0.8}px, 0)`
-          const lit = running && arrivedRef.current
-          if (lit && !litAt.current) litAt.current = now
-          if (!lit) litAt.current = 0
-          const ramp = !lit || reducedRef.current ? (lit ? 1 : 0) : Math.min(1, (now - litAt.current) / 600)
-          const glow = state === 'failed' ? 0 : lit ? Math.max(0.18, ramp) : smoking ? 0.28 : 0
-          flame.current.set({
-            intensity: glow,
-            loop: Boolean(!away && !reducedRef.current && glow > 0),
-            reduced: Boolean(reducedRef.current),
-            hidden: away || glow <= 0,
-          })
-        }
-      } else {
-        const pose = shredderPaper(local, spec, !arrivedRef.current ? 1 : 1 - visual)
-        if (paperChanged) context.clearRect(0, 0, host.clientWidth, host.clientHeight)
-        const hostBox = host.getBoundingClientRect()
-        edgeViewport = hostBox.top + pose.feed.y * (hostBox.height / Math.max(1, host.clientHeight))
-        if (paperChanged && arrivedRef.current && pose.height > 1) {
-          context.save()
-          context.beginPath()
-          context.rect(pose.x - 4, pose.y - 8, pose.width + 8, Math.max(0, pose.feed.y - pose.y))
-          context.clip()
-          context.drawImage(paper, pose.x, pose.y, pose.width, pose.height)
-          context.restore()
-        }
-        const nextKey = `${Math.round(pose.x)}:${Math.round(pose.tray.y)}:${Math.round(pose.width)}`
-        if (nextKey !== trayKey.current) {
-          trayKey.current = nextKey
-          setTray({ left: pose.tray.x, top: pose.tray.y, width: pose.width })
-        }
-        if (paperChanged) { painted.current = visual; host.dataset.layout = layoutKey }
+        if (smoking && 'edgeY' in pose) drawSmoke(context, pose.edgeX, pose.edgeY, (now - smokeStart) / 1000)
+        lastDraw = drawKey
+        transient = fragments.current.length > 0 || smoking
       }
-      draws.current += 1
-      host.dataset.shown = visual.toFixed(4)
-      host.dataset.edge = String(Math.round(edgeViewport))
-      host.dataset.draws = String(draws.current)
-      host.dataset.live = decorative && arrivedRef.current ? '1' : '0'
-      const flameLive = lane === 'publish' && running && arrivedRef.current && !away && !reducedRef.current
-      return Boolean(decorative || flameLive || smoking || (ash > 0 && ash < 1))
+      if (lane === 'publish' && flame.current && fireNode.current) {
+        const mouth = bowlMouth(local, currentManifest()), fire = fireNode.current
+        const width = mouth.rx * 1.6, height = width * 1.05
+        const size = width + 'x' + height
+        if (fire.dataset.size !== size) {
+          fire.dataset.size = size; fire.style.width = width + 'px'; fire.style.height = height + 'px'; flame.current.resize(width, height)
+        }
+        fire.style.transform = `translate3d(${mouth.cx - width / 2}px,${mouth.cy - height * .8}px,0)`
+        const lit = state.status === 'running' && state.arrived
+        flame.current.set({intensity: lit ? .85 : smoking ? .25 : 0, loop: !state.reduced && (lit || smoking), reduced: state.reduced, hidden: !lit && !smoking})
+      }
+      host.dataset.shown = visual.toFixed(4); host.dataset.emitted = String(emitted.current)
+      host.dataset.fragments = String(fragments.current.length)
+      host.dataset.edge = String(('edgeY' in pose ? pose.edgeY : pose.feed.y) + host.getBoundingClientRect().top)
+      const changing = state.arrived && !state.parked && ['running', 'succeeded'].includes(state.status) && Math.abs(target.current - visual) > .0001
+      return changing || fragments.current.length > 0 || smoking
     }
-    paint.current = draw
-    const job = 'paper:' + (frameKey || lane + ':' + title) + ':burn'
-    const stop = bindFrame(job, now => paint.current(now))
+    resize(); paint.current = draw
+    const handle: PaperProcessHandle = {
+      key: frameKey, surface: () => paper.current,
+      pose: () => {
+        if (!host.isConnected || host.closest('[inert]') || !geometry.current) return null
+        const pose = scenePaper(lane, geometry.current), rect = host.getBoundingClientRect()
+        const sx = rect.width / host.clientWidth, sy = rect.height / host.clientHeight
+        return {x: rect.left + pose.x * sx, y: rect.top + pose.y * sy, width: pose.width * sx, height: pose.height * sy}
+      },
+      land: () => { live.current.arrived = true; shown.current = 0; emitted.current = 0; draw(performance.now(), true, true) },
+    }
+    if (processRef) processRef.current = handle
+    draw(performance.now(), true)
+    let stop = bindFrame(job, draw)
+    const observer = new ResizeObserver(() => {resize(); draw(performance.now(), true)})
+    observer.observe(host)
     const visibility = () => {
-      visible = !document.hidden
-      painted.current = -1
-      draw(performance.now())
-      if (visible && activeRef.current) bindFrame(job, now => paint.current(now))
+      if (document.hidden) { wasAway = true; flame.current?.set({hidden:true, loop:false, reduced:live.current.reduced, intensity:0}); return }
+      stop(); stop = bindFrame(job, draw)
     }
-    const onResize = () => { resize(); host.dataset.layout = ''; paint.current(performance.now()) }
     document.addEventListener('visibilitychange', visibility)
-    window.addEventListener('resize', onResize)
-    const kick = () => { draw(performance.now()) }
-    kick()
-    return () => {
-      stop()
-      document.removeEventListener('visibilitychange', visibility)
-      window.removeEventListener('resize', onResize)
-    }
-  }, [lane, title, mark, reduced, links.length, frameKey])
+    return () => { stop(); observer.disconnect(); document.removeEventListener('visibilitychange', visibility)
+      if (processRef?.current === handle) processRef.current = null }
+  }, [lane, frameKey, job, processRef])
   useEffect(() => {
-    painted.current = -1
-    paint.current(performance.now())
-    const job = 'paper:' + (frameKey || lane + ':' + title) + ':burn'
+    if (!active) flame.current?.set({hidden:true, loop:false, reduced:live.current.reduced, intensity:0})
+    paint.current(performance.now(), true)
     return bindFrame(job, now => paint.current(now))
-  }, [active, progress, status, arrived, parked, replaySmoke, lane, title, frameKey])
+  }, [progress, progressKnown, status, arrived, parked, active, reduced, showPaper, surface, replaySmoke, job])
 
   const showStrips = lane === 'notes' && arrived && (status === 'succeeded' || stage === 'extract')
-  const falling = lane==='notes' && active && arrived && status==='running' && ['transcribe','translate','extract'].includes(stage||'')
-  const mouth = lane === 'publish' && box ? bowlMouth(box, manifest) : null
-  const scraps = showStrips ? [
-    ...links.slice(0, 8).map((link, index) => ({ key: 'card-' + link.id, link, index })),
-    ...[0, 1, 2, 3, 4].map(index => ({ key: 'scrap-' + index, link: null, index: index + 8 })),
-  ] : []
-  return <div ref={root} className={'paper-process ' + lane} data-mark={mark} data-arrived={arrived ? '1' : '0'} data-burning={lane==='publish'&&status==='running'&&arrived?'1':'0'}>
-    {mouth&&box&&<i className="process-warmth" style={{left:mouth.cx-mouth.rx*1.2,top:box.top+box.height*.78,width:mouth.rx*2.4,height:box.height*.06}}/>}
-    <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} className="process-machine" />
-    {mouth && box && <BrazierLogs box={box}/>}
-    <canvas ref={canvas} className="process-paper" aria-hidden="true" />
-    {lane === 'publish' && <canvas ref={fireNode} className="flame-layer" aria-hidden="true" />}
-    {falling&&<div className="shred-fall" aria-hidden="true">{Array.from({length:14},(_,i)=><i key={i} style={{'--x':`${8+(i*17)%84}%`,'--spin':`${(i%2?1:-1)*(70+i*13)}deg`,animationDelay:`${-i*.19}s`,animationDuration:`${1.2+i%4*.15}s`} as React.CSSProperties}/>)}</div>}
-    {showStrips && <div className="strip-tray">{scraps.map(scrap => {
-      const size=[14,12,16,13,15][scrap.index%5]
-      const style = { transform: `rotate(${[-18, 11, -7, 16, -13][scrap.index%5]}deg)`, width:size, height:size, backgroundImage:scrap.link?`url(${textures[scrap.link.id]||''})`:undefined, animationDelay:`${scrap.index*65}ms` }
-      return scrap.link
-        ? <button type="button" key={scrap.key} className="shred-strip" data-card-id={scrap.link.id} data-refs={scrap.link.refs.join(' ')} style={style} onClick={() => onStrip?.(scrap.link!)} aria-label={'碎纸 ' + scrap.link.id} />
-        : <i key={scrap.key} className="shred-strip" style={style} />
-    })}</div>}
-    <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} layer="front" className="process-machine foreground" />
+  const pose = box ? scenePaper(lane, box) : null
+  const mouth = lane === 'publish' && box ? bowlMouth(box, currentManifest()) : null
+  return <div ref={root} className={'paper-process ' + lane} data-paper-key={frameKey} data-mark={mark} data-arrived={arrived ? '1' : '0'} data-burning={lane === 'publish' && status === 'running' && arrived ? '1' : '0'}>
+    {mouth && box && <i className="process-warmth" style={{left:mouth.cx-mouth.rx*1.2,top:mouth.cy,width:mouth.rx*2.4,height:box.height*.18}}/>}
+    <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} className="process-machine" style={box || undefined}/>
+    {mouth && box && <BrazierLogs box={box} ids={logs}/>}
+    <canvas ref={canvas} className="process-paper" aria-hidden="true"/>
+    {lane === 'publish' && <canvas ref={fireNode} className="flame-layer" aria-hidden="true"/>}
+    {showStrips && pose && 'tray' in pose && <div className="strip-tray" style={{left:pose.tray.x-pose.width*.65,top:pose.tray.y-8,width:pose.width*1.3}}>
+      {links.slice(0,8).map(link => {
+        const index = paperSeed(String(link.id))
+        const crop = document.createElement('canvas'); crop.width = 30; crop.height = 34
+        crop.getContext('2d')?.drawImage(surface, index % 350, (index >>> 8) % 486, 30, 34, 0, 0, 30, 34)
+        return <button type="button" key={link.id} className="shred-strip" data-card-id={link.id} data-refs={link.refs.join(' ')}
+          style={{transform:`rotate(${index % 39-19}deg)`,width:16,height:18,backgroundImage:`url(${crop.toDataURL()})`}}
+          onClick={() => onStrip?.(link)} aria-label={'碎纸 ' + link.id}/>
+      })}
+    </div>}
+    <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} layer="front" className="process-machine foreground" style={box || undefined}/>
   </div>
 }
 
@@ -446,22 +261,28 @@ export function CoverArt({ cover, video }: { cover?: string; video?: string }) {
   return frame ? <img src={frame} alt="" /> : null
 }
 
-export function DeskTV({ url }: { url?: string }) {
+export function DeskTV({ url, children, caption, active = true, label = '成片放映' }: {
+  url?: string; children?: React.ReactNode; caption?: string; active?: boolean; label?: string
+}) {
   const [state,setState]=useState<'loading'|'ready'|'error'>('loading')
   const [attempt,setAttempt]=useState(0)
+  const video=useRef<HTMLVideoElement>(null)
   useEffect(()=>{setState('loading');setAttempt(0)},[url])
-  return <div className="desk-tv" aria-label={url ? '成片' : '成片预留'}>
+  useEffect(()=>{if(!active)video.current?.pause()},[active])
+  return <figure className="desk-tv" aria-label={label}>
     <div className="tv-bezel">
       <div className="tv-screen">
         {url ? <>
-          <video key={url+attempt} src={url} controls playsInline preload="metadata" onLoadedData={()=>setState('ready')} onError={()=>setState('error')}/>
+          <video ref={video} key={url+attempt} src={url} controls playsInline preload="metadata" onLoadedData={()=>setState('ready')} onError={()=>setState('error')}/>
           {state==='loading'&&<span className="tv-status" role="status">正在载入成片</span>}
           {state==='error'&&<div className="tv-status" role="alert">成片播放失败<button type="button" onClick={()=>{setState('loading');setAttempt(value=>value+1)}}>重新载入</button></div>}
-        </> : <span>成片将在这里放映</span>}
+        </> : children || <span>成片将在这里放映</span>}
       </div>
-      <i className="tv-foot" />
+      <div className="tv-controls" aria-hidden="true"><i className={'tv-lamp'+(url&&state==='ready'?' is-on':'')}/><span>MEDIA OPERATOR</span><i className="tv-speaker"/><i className="tv-dial"/></div>
     </div>
-  </div>
+    <i className="tv-foot" aria-hidden="true"/>
+    <figcaption><strong>{label}</strong>{caption&&<span>{caption}</span>}</figcaption>
+  </figure>
 }
 
 export function DeskProjector({ url }: { url?: string }) {

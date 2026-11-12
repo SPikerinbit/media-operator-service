@@ -70,7 +70,7 @@ def digest(value):
 
 
 def signature(stage, source, payload):
-    clean = {k: v for k, v in payload.items() if k not in {'operator_batch_id', 'operator_item_id', 'title', 'output_name', 'retain_cover', 'allow_muxed_audio', 'rights_confirmed'}}
+    clean = {k: v for k, v in payload.items() if k not in {'operator_batch_id', 'operator_item_id', 'operator_entry_id', 'execution_id', 'title', 'output_name', 'retain_cover', 'allow_muxed_audio', 'rights_confirmed'}}
     # A source artifact's content, not the transient job URL, determines downstream compatibility.
     for key in ('english_srt_url', 'bilingual_srt_url'):
         if clean.get(key):

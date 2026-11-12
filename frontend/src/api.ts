@@ -58,6 +58,11 @@ export type Item = {
   status: Status
   stage: string
   progress: number
+  execution_id?: string
+  updated_at?: string
+  work_progress?: number
+  work_progress_known?: boolean
+  waiting_for_shared?: boolean
   message: string
   progress_detail?: string
   log_tail?: string[]

@@ -74,7 +74,7 @@
     const output = anchorPixels(rect, manifest.shredder.anchors.output, manifest.shredder.size)
     const tray = anchorPixels(rect, manifest.shredder.anchors.tray, manifest.shredder.size)
     const width = rect.width * 0.42
-    const height = rect.height * 0.46
+    const height = width * 520 / 380
     const remain = clamp01(remaining)
     const entered = (1 - remain) * height
     return { x: feed.x - width / 2, y: feed.y - height + entered, width: width, height: height, feed: feed, output: output, tray: tray, entered: entered }
@@ -91,12 +91,12 @@
   function burnPaper(rect, manifest, remaining) {
     const mouth = bowlMouth(rect, manifest)
     const remain = clamp01(remaining)
-    const width = mouth.rx * 1.15
-    const full = mouth.ry * 1.35
-    const sunk = mouth.ry * (0.15 + remain * 0.35)
+    const width = rect.width * 0.42
+    const full = width * 520 / 380
     const x = mouth.cx - width / 2
-    const y = mouth.cy - full * 0.35 + sunk
-    return { x: x, y: y, width: width, height: full, full: full, edgeX: mouth.cx, edgeY: y + full * remain, remaining: remain, mouth: mouth }
+    const edgeY = mouth.cy - mouth.ry * 0.25
+    const y = edgeY - full * remain
+    return { x: x, y: y, width: width, height: full, full: full, edgeX: mouth.cx, edgeY: edgeY, remaining: remain, mouth: mouth }
   }
   function atlasPosition(frame, columns, rows) {
     const col = frame % columns
@@ -174,7 +174,6 @@
   }
   function advanceProgress(current, reported, status) {
     const next = clamp01(reported)
-    if (next + 0.05 < current && next < 0.08 && (status === 'starting' || status === 'queued' || status === 'running')) return next
     if (next < current) return current
     return next
   }

@@ -803,6 +803,11 @@ class BatchItemState(BaseModel):
     status: BatchItemStatus = "queued"
     stage: str = "queued"
     progress: int = 0
+    execution_id: str | None = None
+    work_progress: float | None = None
+    work_progress_known: bool | None = None
+    waiting_for_shared: bool | None = None
+    work_plan: dict[str, Any] | None = None
     message: str = "queued"
     output_name: str | None = None
     stage_jobs: dict[str, str] = Field(default_factory=dict)

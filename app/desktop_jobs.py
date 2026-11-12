@@ -10,6 +10,7 @@ from app import knowledge
 from app import desktop_config
 from app import desktop_sources
 from app import main as media
+from app import work_progress as work
 
 
 RUNNERS = {
@@ -229,7 +230,8 @@ def douyin_result_stale(item):
 def reusable_stage(item, stage, previous, payload):
     if previous.status != "succeeded":
         return None
-    if stage != "bilibili_upload" and any(previous.request.get(key) != value for key, value in payload.items()):
+    if stage != "bilibili_upload" and any(previous.request.get(key) != value for key, value in payload.items()
+                                        if key not in {'execution_id', 'operator_entry_id'}):
         return None
     result = previous.result or {}
     if stage == "transcribe":
@@ -251,6 +253,106 @@ def reusable_stage(item, stage, previous, payload):
     return result
 
 
+def execution_stages(batch, item):
+    settings = media.batch_item_settings(batch.request, item)
+    stages = list(item.planned_stages) if item.planned_stages is not None else (
+        ['download', 'transcribe'] if batch.request.get('knowledge_only') else
+        ['download', 'transcribe'] + ([] if settings.get('subtitle_output_mode') == 'en_only' else ['translate'])
+        + ['burn'] + (['bilibili_upload'] if (settings.get('bilibili_upload') or {}).get('enabled') else []))
+    if batch.request.get('notes_auto'):
+        stages = (['download'] if item.media_type == 'note' else ['download', 'transcribe']) + ['translate', 'extract']
+    return stages
+
+
+def cached_stage(item, stage, payload, transcript_id=None):
+    """Use the same parameter and artifact validation in preflight and execution."""
+    from app import workbench_cache as cache
+    if stage == 'bilibili_upload' or (stage == 'transcribe' and payload.get('whisper_inference_mode') == 'gpu_only'):
+        return None
+    found = cache.read(cache.signature(stage, item.source_value, payload))
+    if not found and stage == 'download' and payload.get('audio_only'):
+        found = cache.read(cache.signature(stage, item.source_value, {**payload, 'audio_only': False}))
+    if found:
+        return found
+    previous_id = item.stage_jobs.get(stage)
+    if previous_id:
+        try:
+            previous = media.load_state(previous_id)
+            result = reusable_stage(item, stage, previous, {**payload, 'operator_batch_id': previous.request.get('operator_batch_id'),
+                                                           'operator_item_id': item.item_id})
+            if result is not None:
+                return {'lane': transcript_lane(transcript_id, 'notes' if transcript_id else 'publish'), 'result': result}
+        except (OSError, ValueError, KeyError):
+            pass
+    return None
+
+
+def translation_payload(settings, result, notes=False):
+    if notes:
+        return {'english_srt_url': result['english_srt_url'], 'target_lang': 'zh-CN',
+                'translate_model': settings.get('translate_model') or desktop_config.settings().get('ai_model'),
+                'subtitle_output_mode': 'bilingual',
+                'translation_context_note': '保留已经是中文的原句，仅将非中文内容译为中文。',
+                'translation_glossary': settings.get('translation_glossary', '')}
+    return {'english_srt_url': result['english_srt_url'],
+            **{key: settings[key] for key in ('target_lang', 'translate_model', 'subtitle_output_mode',
+               'translation_context_profile_id', 'translation_context_note', 'translation_glossary') if key in settings},
+            **({'subtitle_output_mode': 'bilingual'} if settings.get('subtitle_output_mode') == 'en_only' else {})}
+
+
+def burn_payload(settings, result, output_name):
+    return {'source_video_url': result['source_video_url'], 'english_srt_url': result['english_srt_url'],
+            'bilingual_srt_url': result.get('bilingual_srt_url', result['english_srt_url']), 'output_name': output_name,
+            **{key: settings[key] for key in ('aspect_ratio', 'subtitle_font_size', 'subtitle_color', 'subtitle_outline_color',
+               'subtitle_position', 'subtitle_margin', 'subtitle_output_mode', 'subtitle_style', 'burn_encoder') if key in settings}}
+
+
+def prepare_execution(batch, item, settings, download, transcript_id=None, existing=None):
+    """Resolve known checkpoints before measuring this run; no network/AI work."""
+    from app import workbench_notes, workbench_cache as cache
+    notes = bool(batch.request.get('notes_auto'))
+    stages = execution_stages(batch, item)
+    excluded, result = [], dict(existing or {})
+    found = cached_stage(item, 'download', download)
+    if found:
+        result.update(found['result'])
+    if result.get('source_video_url'):
+        excluded.append('download')
+    transcript = None
+    if transcript_id:
+        transcript = knowledge.read_transcript(transcript_id)
+        path = media.artifact_path('plan_' + str(transcript_id), 'original.srt')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        knowledge.subtitle_file(transcript_id, path)
+        result['english_srt_url'] = media.public_file_url(path.parent.name, path.name)
+        excluded.append('transcribe')
+        if item.media_type == 'note':
+            excluded.append('download')
+    else:
+        payload = {'source_video_url': result.get('source_video_url', item.source_value),
+                   'language': settings.get('source_language') or 'auto', 'whisper_model': settings.get('whisper_model') or media.WHISPER_MODEL,
+                   'whisper_inference_mode': settings.get('whisper_inference_mode') or media.WHISPER_INFERENCE_MODE}
+        found = cached_stage(item, 'transcribe', payload)
+        if found:
+            result.update(found['result']); excluded.append('transcribe')
+            _, path = media.resolve_local_artifact_from_url(result['english_srt_url'])
+            transcript = {'cues': [{'text': c[2]} for c in knowledge.load_cues(path)]}
+    if notes and transcript and not workbench_notes.language_of(result, transcript)[1]:
+        excluded.append('translate')
+    elif 'translate' in stages and result.get('english_srt_url'):
+        found = cached_stage(item, 'translate', translation_payload(settings, result, notes))
+        if found:
+            result.update(found['result']); excluded.append('translate')
+    if 'burn' in stages and result.get('english_srt_url') and result.get('source_video_url'):
+        found = cached_stage(item, 'burn', burn_payload(settings, result, item.output_name or f'source{item.index}'))
+        if found:
+            excluded.append('burn')
+    if notes and transcript_id and cache.read(workbench_notes.extract_signature(transcript, settings)):
+        excluded.append('extract')
+    execution = work.begin(stages, notes=notes, execution_id=item.execution_id, excluded=excluded)
+    media.update_batch_item(batch.batch_id, item.item_id, execution=execution)
+
+
 def stage_result(batch_id, item_id, stage, payload, transcript_id=None):
     from app import workbench_cache as cache
     cache.initialize()
@@ -260,12 +362,11 @@ def stage_result(batch_id, item_id, stage, payload, transcript_id=None):
     key = cache.signature(stage, item.source_value, payload)
     lane = 'notes' if batch.request.get('knowledge_only') else 'publish'
     def waiting():
-        media.update_batch_item(batch_id, item_id, stage=stage, message='等待已有任务完成可共享步骤')
+        media.update_batch_item(batch_id, item_id, stage=stage, message='等待已有任务完成可共享步骤',
+                                work_event=work.event(stage, kind='waiting', execution_id=item.execution_id))
     flight_key=cache.signature(stage,item.source_value,{**payload,'audio_only':False}) if stage=='download' else key
     with cache.flight(flight_key, waiting):
-        found = cache.read(key)
-        if not found and stage == 'download' and payload.get('audio_only'):
-            found = cache.read(cache.signature(stage, item.source_value, {**payload, 'audio_only': False}))
+        found = cached_stage(item, stage, payload, transcript_id)
         if found:
             _, current = batch_item(batch_id, item_id)
             steps = current.planned_stages or list(RUNNERS)
@@ -273,7 +374,8 @@ def stage_result(batch_id, item_id, stage, payload, transcript_id=None):
                         min(99, round((steps.index(stage)+1)/len(steps)*100)) if stage in steps else current.progress)
             media.update_batch_item(batch_id, item_id, stage=stage, status='running', progress=max(current.progress, progress),
                                     message='已复用' + {'download':'源媒体','transcribe':'原文字幕','translate':'译文','burn':'成片'}.get(stage,stage),
-                                    stage_details={**current.stage_details, stage: {'status':'succeeded','progress':100,'reused':True,'origin_lane':found['lane']}})
+                                    stage_details={**current.stage_details, stage: {'status':'succeeded','progress':100,'reused':True,'origin_lane':found['lane']}},
+                                    work_event=work.event(stage, kind='reused', execution_id=item.execution_id))
             return {**found['result'], 'reuse': [{'stage': stage, 'origin_lane': found['lane']}]}
         result = _stage_result_uncached(batch_id, item_id, stage, payload, transcript_id)
         origin=transcript_lane(transcript_id,lane) if stage=='transcribe' and transcript_id else lane
@@ -284,13 +386,14 @@ def stage_result(batch_id, item_id, stage, payload, transcript_id=None):
 
 def _stage_result_uncached(batch_id, item_id, stage, payload, transcript_id=None):
     _, item = batch_item(batch_id, item_id)
-    payload = {**payload, "operator_batch_id": batch_id, "operator_item_id": item_id}
+    payload = {**payload, "operator_batch_id": batch_id, "operator_item_id": item_id, 'execution_id': item.execution_id}
     previous_id = item.stage_jobs.get(stage)
     if previous_id:
         try:
             previous = media.load_state(previous_id)
             result = reusable_stage(item, stage, previous, payload)
             if result is not None:
+                media.update_batch_item(batch_id, item_id, work_event=work.event(stage, kind='reused', execution_id=item.execution_id))
                 return result
         except (FileNotFoundError, ValueError, KeyError):
             pass
@@ -301,6 +404,10 @@ def _stage_result_uncached(batch_id, item_id, stage, payload, transcript_id=None
             if transcript_id:
                 try:
                     path = knowledge.subtitle_file(transcript_id, media.artifact_path(state.job_id, "english.srt"))
+                    media.update_batch_item(batch_id, item_id, work_event=work.event(stage, kind='reused', execution_id=item.execution_id))
+                    # Reuse completes the legacy stage without consuming this execution.
+                    state.request['work_reused'] = True
+                    media.save_state(state)
                     media.report_stage_progress(state.job_id, stage, 100, "已复用原文字幕",
                                                 status="succeeded", force=True, result={
                         "english_srt_url": media.public_file_url(state.job_id, path.name),
@@ -462,6 +569,7 @@ def run_item(batch_id, item_id):
             download_payload.update(managed=True, allow_muxed_audio=source.allow_muxed_audio,
                                     retain_cover="burn" in planned)
         if item.media_type == "note":
+            prepare_execution(batch, item, settings, download_payload, transcript_id)
             finish_note(batch_id, item_id, item, result, download_payload, transcript_id, explicit_transcripts,
                         cache_key, source_title, output_name, run)
             return
@@ -483,6 +591,7 @@ def run_item(batch_id, item_id):
                     "has_audio": True,
                 }
                 transcript_id = transcript_id or record["id"]
+        prepare_execution(batch, item, settings, download_payload, transcript_id, original if existing else None)
         if existing:
             result.update({key: original[key] for key in ("source_video_url", "source_media_url", "title",
                            "original_description", "asset_type", "duration", "has_audio") if key in original})
@@ -490,8 +599,8 @@ def run_item(batch_id, item_id):
                 result['reuse']=[{'stage':'download','origin_lane':transcript_lane(transcript_id,'notes' if knowledge_only else 'publish')}]
             media.update_batch_item(batch_id, item_id, result={**result, "output_name": output_name},
                                     stage_details={**item.stage_details, "download": {
-                                        "status": "succeeded", "progress": 100, "message": "已复用源视频",
-                                    }})
+                                        "status": "succeeded", "progress": 100, "message": "已复用源视频", 'reused': True,
+                                    }}, work_event=work.event('download', kind='reused', execution_id=item.execution_id))
         else:
             run("download", download_payload)
         if managed and "transcribe" not in planned:
@@ -581,18 +690,29 @@ def run_item(batch_id, item_id):
 
 
 def enqueue(batch, item_id, upload_job_id=None):
+    _, item = batch_item(batch.batch_id, item_id)
+    if not item.execution_id:
+        execution_id = None
+        if item.client_row_id:
+            from app import workbench_inbox
+            try:
+                execution_id = workbench_inbox.get_entry(item.client_row_id).get('execution_id')
+            except HTTPException:
+                pass
+        media.update_batch_item(batch.batch_id, item_id, execution=work.begin(
+            execution_stages(batch, item), notes=bool(batch.request.get('notes_auto')), execution_id=execution_id))
     slots = BATCH_SLOTS.setdefault(batch.batch_id, threading.BoundedSemaphore(
         batch.request.get("batch_concurrency") or media.BATCH_WORKER_CONCURRENCY,
     ))
 
-    def work():
+    def execute():
         with slots:
             if upload_job_id:
                 run_history_upload(batch.batch_id, item_id, upload_job_id)
             else:
                 run_item(batch.batch_id, item_id)
 
-    media.batch_executor.submit(work)
+    media.batch_executor.submit(execute)
 
 
 def validate_upload_category(upload):
@@ -780,7 +900,10 @@ def queue_history_uploads(batch_id, item_ids, confirmed, defaults=None, use_curr
 
         queued = []
         for item, payload in planned:
-            job = media.create_stage_job("bilibili_upload", payload.model_dump())
+            execution = work.begin(['bilibili_upload'])
+            for name, value in execution.items():
+                setattr(item, name, value)
+            job = media.create_stage_job("bilibili_upload", {**payload.model_dump(), 'execution_id': item.execution_id})
             item.stage_jobs["bilibili_upload"] = job.job_id
             item.stage_details["bilibili_upload"] = {
                 "job_id": job.job_id, "status": "queued", "progress": 0, "message": "等待投稿",
@@ -882,6 +1005,7 @@ def retry(batch_id, item_id, confirmed, session_id=""):
                     desktop_sources.forget_session(session_id)
         elif session_id:
             desktop_sources.forget_session(session_id)
-        updated = media.update_batch_item(batch_id, item_id, status="queued", message="等待重试", clear_error=True)
+        updated = media.update_batch_item(batch_id, item_id, status="queued", message="等待重试", clear_error=True,
+                                          execution=work.begin(execution_stages(batch, item), notes=bool(batch.request.get('notes_auto'))))
         enqueue(batch, item_id)
     return updated

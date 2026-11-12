@@ -10,6 +10,7 @@ export type LetterEntry = {
   stage?:string; progress:number; batch_id?:string; item_id?:string; task?:Item; created_at:string;
   result?:NonNullable<Item['result']>&{note_notice?:string}; reuse?:{stage:string;origin_lane:Lane}[]; duplicate_of?:string;
   run?:number; revision?:number; summary?:string[]; progress_known?:boolean; deletable?:boolean;
+  execution_id?:string; work_progress?:number; work_progress_known?:boolean; waiting_for_shared?:boolean;
   original_url?:string; resolved_fetch_url?:string; canonical_url?:string; identity?:string;
   notes_mode?:import('./notesMode').NotesMode; execution_mode?:import('./notesMode').NotesMode;
   refresh_reason?:string; undo_until?:number
@@ -18,6 +19,23 @@ export type LetterGroup = { id:string;lane:Lane;created_at:string;options:Partia
   prepared:string[];revision:number;legacy?:boolean }
 export type InboxState = {groups:LetterGroup[];entries:LetterEntry[]}
 export type PaperLine = {id:string;text:string;local?:boolean}
+export const executionKey = (entry: LetterEntry) => entry.id + ':' + (entry.execution_id || entry.run || 1)
+export const workProgress = (entry: LetterEntry) => entry.execution_id ? entry.work_progress ?? 0 : entry.progress
+export const workKnown = (entry: LetterEntry) => entry.execution_id ? entry.work_progress_known === true : entry.progress_known === true
+export function mergeInbox(previous: InboxState, next: InboxState): InboxState {
+  const old = new Map(previous.entries.map(entry => [entry.id, entry]))
+  return {...next, entries: next.entries.map(entry => {
+    const before = old.get(entry.id)
+    if (!before) return entry
+    if ((entry.revision || 0) < (before.revision || 0)) return before
+    if (entry.task?.updated_at && before.task?.updated_at && entry.task.updated_at < before.task.updated_at) return before
+    if (entry.execution_id && entry.execution_id === before.execution_id) {
+      if (['succeeded','failed','cancelled'].includes(before.status) && ['queued','running','starting'].includes(entry.status)) return before
+      return {...entry, work_progress: Math.max(entry.work_progress || 0, before.work_progress || 0)}
+    }
+    return entry
+  })}
+}
 export const sections = [{id:'output',label:'输出',summary:'画幅与转录'}, {id:'style',label:'字幕样式',summary:'字形与位置'},
   {id:'publish',label:'投稿信息',summary:'封面与内容'}, {id:'translation',label:'翻译上下文',summary:'背景与术语'}] as const
 export const stageLabels:Record<string,string> = {download:'获取素材',transcribe:'Whisper 转录',translate:'生成中文译文',burn:'烧录字幕',bilibili_upload:'提交 B 站',extract:'提取观点',done:'已完成',queued:'等待处理'}
@@ -34,12 +52,12 @@ export function optionsOf(group:LetterGroup):VideoOptions {
 export function useInbox() {
   const [data,setData]=useState<InboxState>({groups:[],entries:[]})
   const [error,setError]=useState('')
-  const refresh=useCallback(async()=>{try{setData(await request<InboxState>('/desktop/inbox/queue'));setError('')}catch(e){setError(errorMessage(e))}},[])
+  const refresh=useCallback(async()=>{try{const next=await request<InboxState>('/desktop/inbox/queue');setData(prev=>mergeInbox(prev,next));setError('')}catch(e){setError(errorMessage(e))}},[])
   useEffect(()=>{
     let alive=true
     let fallback:number|undefined
     const stream=new EventSource('/desktop/inbox/events')
-    stream.onmessage=e=>{if(!alive)return;try{setData(JSON.parse(e.data));setError('');if(fallback){clearInterval(fallback);fallback=undefined}}catch{setError('读取来信状态失败')}}
+    stream.onmessage=e=>{if(!alive)return;try{const next=JSON.parse(e.data) as InboxState;setData(prev=>mergeInbox(prev,next));setError('');if(fallback){clearInterval(fallback);fallback=undefined}}catch{setError('读取来信状态失败')}}
     stream.onerror=()=>{if(alive&&!fallback)fallback=window.setInterval(()=>void refresh(),4000)}
     void refresh()
     return()=>{alive=false;stream.close();clearInterval(fallback)}

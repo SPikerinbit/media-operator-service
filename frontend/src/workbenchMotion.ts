@@ -1,3 +1,4 @@
+import type { PaperProcessHandle, PaperPose } from './paperScene'
 import { anchorPixels, atlasPosition, currentManifest, normBox, type WorkbenchManifest } from './workbenchAnchors'
 import { bindFrame } from './workbenchScheduler'
 import { lerp, ramp, springAt, springSettled, SPRING } from './motionSystem'
@@ -70,17 +71,6 @@ function quad(a: number, b: number, c: number, t: number) {
 
 function quadTan(a: number, b: number, c: number, t: number) {
   return 2 * (1 - t) * (b - a) + 2 * t * (c - b)
-}
-
-function liveProcess() {
-  const hosts = document.querySelectorAll<HTMLElement>('.paper-process')
-  for (const host of hosts) {
-    const view = host.closest('.lane-view, .home-view')
-    if (!view || view.classList.contains('is-parked')) continue
-    const box = host.getBoundingClientRect()
-    if (box.width > 2 && box.height > 2) return host
-  }
-  return null
 }
 
 function ruledSheet(lines: string[], width: number, height: number) {
@@ -606,128 +596,54 @@ function parkWood(el: HTMLElement, to: WoodRect) {
   el.style.willChange = ''
 }
 
-/** Notes land above the rollers; the machine canvas then owns the same feed. */
-export function flyShredPaper(from: DOMRect, machine: () => HTMLElement | null, title: string) {
-  if (reducedMotion()) return Object.assign(Promise.resolve(), {cancel:()=>{}})
-  const paper=document.createElement('div')
-  paper.className='task-paper-flight shred-paper-flight'
-  paper.textContent=title
-  document.body.append(paper)
-  const started=performance.now(), key=crypto.randomUUID()
-  let stop=()=>{}, finish=()=>{}
-  const promise=new Promise<void>(resolve=>{
-    finish=()=>{paper.remove();resolve()}
-    stop=bindFrame('feed:'+key,now=>{
-      const host=machine()
-      if(!host||host.closest('[inert]')){finish();return false}
-      const rect=host.getBoundingClientRect(), feed=anchorPixels(rect,currentManifest().shredder.anchors.feed)
-      const t=ramp(now-started,0,700), ease=t*t*(3-2*t)
-      const width=rect.width*.42, height=rect.height*.46
-      pin(paper,lerp(from.left,feed.x-width/2,ease),lerp(from.top,feed.y-height,ease)-Math.sin(t*Math.PI)*20,lerp(from.width,width,ease),lerp(from.height,height,ease))
-      paper.style.rotate=`${(1-ease)*-6}deg`
+/** The landing draw and flight removal happen in the same frame. */
+export function flyProcessPaper(from: DOMRect, target: () => PaperProcessHandle | null, key: string, onLand: () => void) {
+  const sheet = document.createElement('canvas')
+  sheet.width = 380; sheet.height = 520; sheet.className = 'process-paper-flight'
+  sheet.dataset.paperKey = key; sheet.setAttribute('aria-hidden', 'true')
+  const c = sheet.getContext('2d')!
+  const shade = castShadow(); document.body.append(sheet, shade)
+  let stop = () => {}, settle = (_landed: boolean) => {}, done = false
+  let elapsed = 0, last = performance.now(), end = reducedMotion() ? 140 : 780
+  let start = 0, origin: PaperPose = {x:from.left,y:from.top,width:from.width,height:from.height}
+  let current = origin, previousTarget: PaperPose | null = null
+  const finish = (landed: boolean) => {
+    if (done) return
+    done = true
+    if (landed) onLand()
+    sheet.remove(); shade.remove(); settle(landed)
+  }
+  const promise = new Promise<boolean>(resolve => {
+    settle = resolve
+    stop = bindFrame('arrival:' + key, now => {
+      const dt = Math.min(40, now - last); last = now
+      if (document.hidden) return true
+      const handle = target(), dest = handle?.pose()
+      if (!handle || handle.key !== key || !dest) { finish(false); return false }
+      elapsed += dt
+      if (previousTarget && Math.abs(dest.x-previousTarget.x)+Math.abs(dest.y-previousTarget.y)+Math.abs(dest.width-previousTarget.width)>2) {
+        origin = current; start = elapsed; end = Math.max(end, elapsed+120)
+      }
+      previousTarget = dest
+      const t = Math.min(1, (elapsed-start)/Math.max(1,end-start)), e=t*t*(3-2*t)
+      const gentle = reducedMotion()
+      current = gentle ? dest : {x:lerp(origin.x,dest.x,e), y:lerp(origin.y,dest.y,e)-Math.sin(Math.PI*t)*Math.min(42,(end-start)*.06),
+        width:lerp(origin.width,dest.width,e),height:lerp(origin.height,dest.height,e)}
+      pin(sheet,current.x,current.y,current.width,current.height)
+      const settlePose = Math.min(1, Math.max(0,(end-elapsed)/120))
+      sheet.style.transformOrigin = 'center'; sheet.style.rotate = gentle ? '0deg' : `${Math.sin(t*Math.PI)*-7*settlePose}deg`
+      sheet.style.opacity = gentle ? String(Math.min(1,elapsed/100)) : '1'
+      c.clearRect(0,0,380,520)
+      const face=handle.surface(), bend=gentle?0:Math.sin(t*Math.PI)*7*settlePose
+      for(let y=0;y<520;y+=10){const h=Math.min(10,520-y);c.drawImage(face,0,y,380,h,Math.sin(y/520*Math.PI)*bend,y,380-Math.abs(bend),h)}
+      shade.style.opacity=String(.16*Math.sin(t*Math.PI))
+      shade.style.transform=`translate3d(${current.x+current.width*.3}px,${current.y+current.height+8}px,0) scale(${current.width/100},.55)`
       if(t<1)return true
-      finish();return false
+      // Consumer paints the full, identical sheet before this canvas is removed.
+      handle.land(); finish(true); return false
     })
   })
-  return Object.assign(promise,{cancel:()=>{stop();finish()}})
-}
-
-export function flyTaskPaper(from: DOMRect, to: () => Point | null, title: string, key = 'task') {
-  if (from.width < 2) return Object.assign(Promise.resolve(), { cancel: () => {} })
-  const card = document.createElement('div')
-  card.className = 'task-paper-flight'
-  card.dataset.lane = 'task'
-  card.setAttribute('aria-hidden', 'true')
-  card.textContent = title
-  const lip = document.createElement('i')
-  lip.className = 'burn-lip'
-  card.append(lip)
-  const shade = castShadow()
-  shade.dataset.lane = 'task'
-  document.body.append(card, shade)
-  const w0 = 112
-  const h0 = 28
-  card.style.fontSize = '11px'
-  card.style.lineHeight = '28px'
-  card.style.overflow = 'hidden'
-  card.style.whiteSpace = 'nowrap'
-  card.style.textOverflow = 'ellipsis'
-  pin(card, from.left, from.top, w0, h0)
-  card.style.opacity = '0'
-  card.style.transformOrigin = 'center center'
-  const started = performance.now()
-  let host: HTMLElement | null = null
-  let told = false
-  let cancel = () => {}
-  let settle = () => {}
-  const clear = () => { card.remove(); shade.remove(); settle() }
-  const promise = new Promise<void>(resolve => {
-    settle = resolve
-    const tick = (now: number) => {
-      const dest = to()
-      if (!dest) { clear(); if (!told) { told = true; resolve() }; return false }
-      const elapsed = now - started
-      const travel = Math.min(1, elapsed / 1100)
-      const te = travel * travel * (3 - 2 * travel)
-      const fadeIn = ramp(elapsed, 0, 140)
-      const sx = from.left + w0 / 2
-      const sy = from.top + h0 / 2
-      const end = { x: dest.x, y: dest.y + 6 }
-      const c1 = { x: sx + Math.min(70, Math.max(16, (end.x - sx) * 0.28)), y: sy + 28 }
-      const c2 = { x: end.x - 36, y: end.y + 18 }
-      const tx = cubicTan(sx, c1.x, c2.x, end.x, Math.min(0.98, Math.max(0.02, te)))
-      const ty = cubicTan(sy, c1.y, c2.y, end.y, Math.min(0.98, Math.max(0.02, te)))
-      const len = Math.hypot(tx, ty) || 1
-      const sway = Math.sin(te * Math.PI * 2.1) * 8 * (1 - te * 0.35)
-      let x = cubic(sx, c1.x, c2.x, end.x, te) + (-ty / len) * sway
-      let y = cubic(sy, c1.y, c2.y, end.y, te) + (tx / len) * sway
-      x = Math.min(x, end.x + 10)
-      y = Math.max(y, end.y - 28)
-      const rot = Math.max(-22, Math.min(18, Math.atan2(ty, tx) * 180 / Math.PI * 0.18)) + Math.sin(te * 9) * 4 * (1 - te)
-      if (!host) host = liveProcess()
-      if(host?.closest('[inert]')){clear();return false}
-      const sink = ramp(te, 0.58, 0.92)
-      const burn = ramp(te, 0.72, 1)
-      let scaleX = lerp(1, 78 / w0, Math.min(1, te * 1.3))
-      let scaleY = lerp(1, 26 / h0, Math.min(1, te * 1.3))
-      if (sink > 0.04 && host) {
-        const front = host.querySelector('.process-machine.foreground')
-        if (card.parentElement !== host) {
-          if (front) host.insertBefore(card, front)
-          else host.append(card)
-        }
-        const box = host.getBoundingClientRect()
-        scaleX = lerp(scaleX, 72 / w0, sink)
-        scaleY = lerp(scaleY, 22 / h0, sink)
-        card.style.position = 'absolute'
-        card.style.zIndex = '3'
-        card.style.left = '0'
-        card.style.top = '0'
-        card.style.transformOrigin = 'center center'
-        card.style.transform = `translate3d(${x - box.left - w0 / 2}px, ${y - box.top - h0 / 2}px, 0) scale(${scaleX}, ${scaleY}) rotate(${rot * (1 - sink)}deg)`
-      } else {
-        if (card.parentElement !== document.body) document.body.append(card)
-        card.style.position = 'fixed'
-        card.style.zIndex = '60'
-        card.style.transformOrigin = 'center center'
-        card.style.transform = `translate3d(${x - w0 / 2}px, ${y - h0 / 2}px, 0) scale(${scaleX}, ${scaleY}) rotate(${rot}deg)`
-      }
-      lip.style.opacity = String(Math.min(1, burn * 1.6))
-      lip.style.bottom = `${burn * 42}%`
-      card.style.clipPath = burn > 0.03 ? `inset(0 0 ${burn * 42}% 0)` : ''
-      const fade = Math.max(ramp(sink, 0.02, 0.32), ramp(burn, 0.45, 1))
-      card.style.opacity = String(fadeIn * (1 - fade))
-      card.classList.toggle('is-ember', burn > 0.08)
-      shade.style.opacity = String(0.3 * fadeIn * (1 - sink) * (1 - fade))
-      shade.style.transform = `translate3d(${x - 30}px, ${Math.max(sy, y) + 10}px, 0) scale(${0.8 + Math.sin(Math.PI * te) * 0.4}, .6)`
-      if (!told && te > 0.74) { told = true; resolve() }
-      if (fade < 1) return true
-      clear()
-      return false
-    }
-    cancel = bindFrame('arrive:' + key, tick)
-  })
-  return Object.assign(promise, { cancel: () => { cancel(); clear() } })
+  return Object.assign(promise,{cancel:()=>{stop();finish(false)}})
 }
 
 /** Each request owns its paper, shadow and completion, including cancellation. */

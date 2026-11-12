@@ -342,8 +342,12 @@ def generate_cards(transcript_id, api_key, model, mode="curated", progress=None)
                     raise ValueError("模型返回的观点或引用无效")
                 if not any(set(refs) == set(item.refs) for item in drafts):
                     drafts.append(card.model_copy(update={"refs": refs}))
+            if progress:
+                progress(round((group_index + 1) / (len(groups) + 1) * 100), f'已摘录 {group_index + 1}/{len(groups)} 段')
         # The final pass selects candidate IDs only: it cannot rewrite quotes or manufacture references.
         if len(groups) > 1 and drafts:
+            if progress:
+                progress(round(len(groups) / (len(groups) + 1) * 100), '正在筛选全篇观点')
             cues = {cue["number"]: cue["text"] for cue in transcript["cues"]}
             response = client.post("https://api.deepseek.com/chat/completions", headers={
                 "Authorization": f"Bearer {api_key}",
@@ -382,6 +386,8 @@ def generate_cards(transcript_id, api_key, model, mode="curated", progress=None)
             """, (transcript_id, draft.claim.strip(), draft.evidence, draft.example, draft.quote_translation,
                   json.dumps(draft.refs), origin_key)).rowcount
             existing.add(tuple(draft.refs))
+    if progress:
+        progress(100, '观点已保存')
     return inserted
 
 

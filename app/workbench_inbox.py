@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 from app import knowledge, desktop_jobs as jobs, desktop_sources, desktop_config, share_text
 from app import workbench_cache as cache
+from app import work_progress as work
 from app import main as media
 
 router = APIRouter(prefix='/desktop/inbox')
@@ -108,7 +109,11 @@ def update(ident, **changes):
         entry = get_entry(ident)
         for key in SECRET:
             changes.pop(key, None)
+        work_event = changes.pop('work_event', None)
+        if work_event and work_event.get('execution_id') and work_event['execution_id'] != entry.get('execution_id'):
+            return entry
         entry.update(changes)
+        work.apply(entry, work_event, status=changes.get('status'))
         for key in SECRET:
             entry.pop(key, None)
         entry['run'] = int(entry.get('run') or 1)
@@ -241,14 +246,16 @@ def summary_of(entry):
     elif status in {'rejected', 'blocked', 'failed'}:
         lines = [clean_line(entry.get('message')) or {'rejected': '无法处理', 'blocked': '需要处理', 'failed': '处理失败'}[status]]
     else:
-        waiting = waiting_line(entry)
+        waiting = '等待共享结果' if entry.get('waiting_for_shared') else waiting_line(entry)
         if waiting:
             lines = [waiting]
         else:
             lines = [LABELS.get(stage, '处理中')]
             task = entry.get('task') or {}
             local = int(((task.get('stage_details') or {}).get(stage) or {}).get('progress') or 0)
-            if entry.get('progress_known') and 0 < local < 100:
+            if entry.get('execution_id') and entry.get('work_progress_known'):
+                lines.append(f"本次处理进度 {min(99, round(entry.get('work_progress') or 0))}%")
+            elif entry.get('progress_known') and 0 < local < 100:
                 lines.append(f"进度 {entry.get('progress')}%")
             activity = task.get('progress_detail') or task.get('message') or ''
             if '最近阶段活动' in activity or 'GPU 转录失败' in activity or 'NVIDIA GPU' in activity or 'CPU ·' in activity:
@@ -334,6 +341,11 @@ def present(entry):
         progress = 100
     shown['progress'] = progress
     shown['progress_known'] = bool(progress) or shown.get('status') == 'succeeded'
+    task = shown.get('task') or {}
+    if task.get('execution_id'):
+        shown.update({key: task.get(key) for key in work.PUBLIC_FIELDS})
+    if shown.get('execution_id'):
+        shown['work_progress'] = 100 if shown.get('status') == 'succeeded' else min(99, shown.get('work_progress') or 0)
     shown['result'] = shape_result(shown.get('result') or {})
     if shown['result'].get('refresh_reason'):
         shown['refresh_reason'] = shown['result']['refresh_reason']
@@ -617,33 +629,43 @@ def start_notes(ident, run=None):
 
 
 def finish_subtitle(ident, transcript_id, options):
+    """Imported subtitles and reorganization use the same persisted stage pipeline."""
     from app import workbench_notes
+    entry = get_entry(ident)
     transcript = knowledge.read_transcript(transcript_id)
-    _, translate = workbench_notes.language_of({}, transcript)
-    result = {'transcript_id': transcript_id}
+    result = {**(entry.get('result') or {}), 'transcript_id': transcript_id}
     if not media.TRANSLATE_API_KEY:
         update(ident, status='blocked', message='请配置 DeepSeek，字幕已导入', result=result)
         return
-    if translate:
-        get_entry(ident)
-        job_dir = media.JOBS_DIR / ('subtitle_' + ident)
-        job_dir.mkdir(parents=True, exist_ok=True)
-        knowledge.subtitle_file(transcript_id, job_dir/'original.srt')
-        job = media.create_stage_job('translate', {'english_srt_url':media.public_file_url(job_dir.name,'original.srt'), 'target_lang':'zh-CN', 'subtitle_output_mode':'bilingual', 'translate_model':options.get('translate_model') or media.TRANSLATE_MODEL})
-        update(ident,status='running',stage='translate',progress=40,message='正在生成中文译文',result=result)
-        media.run_stage_translate(job.job_id)
-        done=media.load_state(job.job_id)
-        if done.status!='succeeded':raise ValueError((done.error or {}).get('message') or done.message)
-        result.update(done.result or {})
-    update(ident,status='running',stage='extract',progress=80,message='正在提取观点',result=result)
-    mode=options.get('notes_mode') or 'curated'
-    key=cache.digest(['extract-v3',transcript['digest'],transcript['source'],mode,options.get('translate_model') or media.TRANSLATE_MODEL])
-    with cache.flight(key):
-        if not cache.read(key):
-            count=knowledge.generate_cards(transcript_id,media.TRANSLATE_API_KEY,options.get('translate_model') or media.TRANSLATE_MODEL,mode,
-                                           progress=lambda value,message:update(ident,progress=80+int(value*.19),message=message))
-            cache.save(key,'extract','notes',{'transcript_id':transcript_id,'count':count}, transcript.get('source') or '')
-    update(ident,status='succeeded',stage='done',progress=100,message='笔记已完成',result=result)
+    path = media.artifact_path('subtitle_' + ident, 'original.srt')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    knowledge.subtitle_file(transcript_id, path)
+    result['english_srt_url'] = media.public_file_url(path.parent.name, path.name)
+    request = media.BatchCreateRequest(**options, sources=[source_of(entry, True)])
+    batch = media.create_batch(request, {ident: {'planned_stages': [], 'media_type': entry.get('probe', {}).get('media_type')
+                                               if entry.get('probe', {}).get('media_type') in {'video', 'audio', 'note'} else 'note'}})
+    item = batch.items[0]
+    excluded = []
+    if not workbench_notes.language_of(result, transcript)[1]:
+        excluded.append('translate')
+    elif jobs.cached_stage(item, 'translate', jobs.translation_payload(options, result, notes=True)):
+        excluded.append('translate')
+    if cache.read(workbench_notes.extract_signature(transcript, options)):
+        excluded.append('extract')
+    execution = work.begin(['translate', 'extract'], notes=True, execution_id=entry.get('execution_id'), excluded=excluded)
+    media.update_batch_item(batch.batch_id, item.item_id, status='running', result=result, execution=execution)
+    update(ident, batch_id=batch.batch_id, item_id=item.item_id, status='running', result=result, **execution)
+    def run(stage, payload):
+        output = jobs.stage_result(batch.batch_id, item.item_id, stage, payload)
+        result.update(output)
+    try:
+        workbench_notes.complete(batch.batch_id, item.item_id, result, options, run)
+        media.update_batch_item(batch.batch_id, item.item_id, status='succeeded', stage='done', progress=100,
+                                message='笔记已完成', result=result)
+        update(ident, status='succeeded', stage='done', progress=100, message='笔记已完成', result=result)
+    except Exception as error:
+        media.update_batch_item(batch.batch_id, item.item_id, status='failed', message=str(error), result=result)
+        update(ident, status='blocked', message=str(error), result=result)
 
 
 class GroupEdit(BaseModel):
@@ -718,7 +740,8 @@ def start_group(ident: str, request: Start):
                 update(entry['id'], status='starting', stage='download', progress=0,
                        message='正在获取原文', notes_mode=request.notes_mode,
                        execution_mode=request.notes_mode, execution_options=dict(group['options']),
-                       run=run, batch_id=None, item_id=None, result=entry.get('result') or {})
+                       run=run, batch_id=None, item_id=None, result=entry.get('result') or {},
+                       **work.begin(['download', 'transcribe', 'translate', 'extract'], notes=True))
             for entry in pending:
                 POOL.submit(start_notes, entry['id'], get_entry(entry['id'])['run'])
             return {'entry_ids': [e['id'] for e in chosen]}

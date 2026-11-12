@@ -194,9 +194,9 @@ with sync_playwright() as pw:
         page.get_by_role('button',name='确认并点火',exact=True).click()
         page.wait_for_selector('.paper-process.publish[data-burning="1"]')
         page.screenshot(path=str(out/'publishing-burning.png'))
-        before=page.locator('.publish .process-description').bounding_box()
-        page.locator('.publish .process-description').get_by_role('button',name='查看详情',exact=True).click()
-        after=page.locator('.publish .process-description').bounding_box()
+        before=page.locator('.publish .paper-process').bounding_box()
+        page.get_by_role('tab',name='记录',exact=True).click()
+        after=page.locator('.publish .paper-process').bounding_box()
         assert all(abs(before[k]-after[k])<1 for k in before),(before,after)
         results['publishing_wood_ignition_log']=True
         results['batch_partial_failure_and_page_cancel']=True

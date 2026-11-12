@@ -315,8 +315,8 @@
 
 .incoming-letter { transition: transform 420ms var(--spring), background-color 180ms linear; }
 .incoming-letter.selected { box-shadow: inset 3px 0 0 #8a5a32; }
-.selected-letter.is-out { animation: wb-out 220ms cubic-bezier(.4, 0, .2, 1) both; }
-.selected-letter.is-in { animation: paper-in 520ms var(--spring) both; }
+
+
 .progress-number {
   display: block;
   font: 400 42px/1.15 "Source Han Serif CN", "Palatino Linotype", Palatino, serif;
@@ -507,7 +507,7 @@
   box-shadow: 0 -6px 10px rgba(255, 140, 50, .35);
   transform-origin: center bottom;
 }
-.paper-process .process-paper { opacity: 0; transition: opacity 180ms linear; }
+
 .paper-process[data-arrived="1"] .process-paper,
 .paper-process.publish .process-paper { opacity: 1; }
 .fuel-brazier { overflow: hidden; }

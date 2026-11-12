@@ -79,6 +79,8 @@ with sync_playwright() as playwright:
         page.wait_for_timeout(100)
     assert publish_entry['status'] == 'ready'
     page.reload()
+    page.get_by_role('button', name='投稿', exact=True).click()
+    page.locator('[data-entry-id="'+publish_entry['id']+'"] .incoming-open').click()
     page.get_by_role('button', name='笔记', exact=True).click()
     page.locator('[data-entry-id="'+entry['id']+'"] .incoming-open').click()
     page.locator('.notes-completion .viewpoint-slip').first.wait_for()

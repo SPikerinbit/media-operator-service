@@ -363,6 +363,8 @@ def update_batch_item(
     result: dict[str, Any] | None = None,
     error: dict[str, Any] | None = None,
     clear_error: bool = False,
+    execution: dict[str, Any] | None = None,
+    work_event: dict[str, Any] | None = None,
 ) -> BatchState:
     with batch_lock:
         batch = load_batch(batch_id)
@@ -372,6 +374,8 @@ def update_batch_item(
             if item["item_id"] != item_id:
                 continue
             found = True
+            if work_event and work_event.get('execution_id') and work_event['execution_id'] != item.get('execution_id'):
+                return batch
             if item.get("status") == "cancelled" and status != "cancelled":
                 return batch
             if status is not None:
@@ -404,6 +408,10 @@ def update_batch_item(
                 item["error"] = None
             elif error is not None:
                 item["error"] = error
+            from app import work_progress
+            if execution is not None:
+                item.update(execution)
+            work_progress.apply(item, work_event, status=status)
             item["updated_at"] = now_iso()
             break
         if not found:
@@ -554,6 +562,9 @@ def sync_stage_to_batch(
     current = next((entry for entry in batch.items if entry.item_id == item_id), None)
     if current is None:
         return
+    execution_id = request_payload.get('execution_id')
+    if execution_id and execution_id != current.execution_id:
+        return
 
     local_progress = clamp_percent(progress)
     stage_jobs = dict(current.stage_jobs or {})
@@ -600,6 +611,8 @@ def sync_stage_to_batch(
         result=batch_result,
         error=error,
         clear_error=status in {"queued", "running", "succeeded"},
+        work_event={'stage': stage, 'value': local_progress, 'execution_id': execution_id,
+                    'kind': 'reused' if request_payload.get('work_reused') else 'complete' if status == 'succeeded' else 'progress'},
     )
 
 
