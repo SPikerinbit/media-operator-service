@@ -19,6 +19,7 @@
 - TypeScript 与 Vite 构建通过；仍有主 JS 大于 500 kB 的既有构建提示。[日志](../data/motion-polish-20261112/frontend-build.log)
 - `ruff check .`、`git diff --check` 通过。
 - 新的可复跑界面验收：[tests/verify_motion_workbench.py](../tests/verify_motion_workbench.py)。使用隔离 fixture，覆盖两种投递顺序、暂停/缩放续播、网络恢复、部分退信、三档重新整理与编辑保存、两页批量部分失败/撤销/切页取消、31 张观点和 600 段长原文、独立滚动、短窗口及减少动态。[结果](../data/motion-polish-20261112/browser/results.json)
+- 原有界面回归也通过：三档请求、键盘换档、编辑保留、44 个页面/尺寸组合、隐藏页焦点隔离、信封铰链、缩放续播和减少动态。[结果](../data/motion-polish-20261112/legacy-ui/ui-results.json)
 - 1280×800、1920×1080、1280×720、853×533 是浏览器逻辑视口，不是 Windows 实际缩放。[截图目录](../data/motion-polish-20261112/browser)
 
 ## 同场景动态对照
@@ -33,9 +34,15 @@
 
 [对照结果与逐帧 RAF 采样](../data/motion-polish-20261112/comparison/comparison.json)。这是 headless Edge 的受控竞态录像，不是 WebView2 成品签收录像；录制帧率与应用 RAF 分开记录，不能推断全程稳定 60fps。
 
+三份录像均为 1280×800、VP8、25 fps。修改后 RAF 帧间隔中位数 16.7 ms、P95 17.3 ms、最大 116.5 ms；此次对照期间机器同时在构建安装包，数据用于保留实际采样，不作为稳定帧率结论。[分项统计](../data/motion-polish-20261112/comparison/frame-metrics.json)。修改后录像已导出[全部连续帧](../data/motion-polish-20261112/comparison/after/frames)及[概览图](../data/motion-polish-20261112/comparison/after/contact-sheet.png)。
+
 ## 构建与安装
 
-安装结果、版本、构建清单和文件摘要在本轮覆盖安装后补充。原安装资料在更新前保存设置摘要及全部 31 张观点摘要：[更新前核对](../data/motion-polish-20261112/preservation-before.json)。上一安装包保留在本机输出目录的 `setup-before-motion.exe`。
+已按仓库脚本完成 PyInstaller、冻结运行时启动检查和 Inno Setup 构建，2026-11-12 13:40 静默覆盖安装成功，无需重启。安装目录为 `D:\Media Operator`，程序已启动，窗口标题为 Media Operator，WebView2 子进程与本地服务均已创建，没有新增启动错误。此项仅确认启动，不替代三条原生动效签收。[构建日志](../data/motion-polish-20261112/build.log)、[安装日志](../data/motion-polish-20261112/install.log)、[启动记录](../data/motion-polish-20261112/installed-startup.json)。
+
+安装包来自干净提交 `a78c8d4`，版本及卸载信息均为 0.5.0。两个程序的 SHA-256 与构建产物和清单一致，修改时间在安装时间戳精度内一致；145 个前端文件与 228 个运行时源码摘要全部匹配。设置文件与原有 31 张观点的完整摘要在安装前后相同。[安装核对结果](../data/motion-polish-20261112/installation.json)、[更新前核对](../data/motion-polish-20261112/preservation-before.json)。上一安装包保留在本机输出目录的 `setup-before-motion.exe`。
+
+实施提交依次为：`7bcd93e` 本地基线、`fa779a0` 笔记确认接口、`fa508f6` 投递竞态及连续动作、`2f1772b` 固定工作台与纸团投桶、`a78c8d4` 回归覆盖及木块/机器位置修复。文档验收记录另行提交，不改变运行时产物。
 
 ## 保留验收项
 
