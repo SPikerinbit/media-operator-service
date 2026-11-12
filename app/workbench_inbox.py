@@ -9,6 +9,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -221,7 +222,7 @@ def summary_of(entry):
     status = entry.get('status')
     stage = entry.get('stage') or ''
     if status == 'ready':
-        lines = ['待设置']
+        lines = ['待确认档位' if entry.get('lane') == 'notes' else '待设置']
     elif status == 'identifying':
         lines = ['正在识别来源']
     elif status == 'removed':
@@ -438,7 +439,8 @@ def deliver(request: Delivery):
                 entry_id = str(uuid.uuid4())
                 entry = {'id': entry_id, 'client_id': letter.id, 'group_id': ident, 'lane': request.lane,
                          'raw': letter.text, 'local': letter.local, 'status': 'identifying', 'message': '正在识别来源',
-                         'progress': 0, 'run': 1, 'revision': 1, 'created_at': media.now_iso()}
+                         'progress': 0, 'run': 1, 'revision': 1, 'created_at': media.now_iso(),
+                         'notes_mode': request.notes_mode}
                 db.execute('INSERT INTO workbench_entry VALUES (?,?,?)', (entry_id, ident, json.dumps(entry, ensure_ascii=False)))
                 if letter.session_id:
                     sessions[entry_id] = letter.session_id
@@ -500,20 +502,14 @@ def identify(ident, session_id=''):
         weread_text = ''
         if subtitle:
             probe = {'title': Path(source).name, 'media_type': 'subtitle', 'platform': '字幕文件', 'has_audio': False}
-        elif 'weread.qq.com' in (source or '') and entry['lane'] == 'notes':
-            from app import weread
-            try:
-                book = weread.fetch_book(source, weread.cookie_header(desktop_sources.cookies_for(source, session_id) or ''))
-            except weread.LoginRequired as error:
-                if alive():
-                    update(ident, status='blocked', message=str(error), platform='微信读书', source=source, kind='url')
-                return
-            except (ValueError, OSError) as error:
-                if alive():
-                    update(ident, status='blocked', message=str(error) or '没能读到微信读书正文', platform='微信读书', source=source, kind='url')
-                return
-            weread_text = book['text']
-            probe = {'title': book['title'] or source, 'platform': '微信读书', 'media_type': 'weread', 'has_audio': False, 'canonical_url': source}
+        elif entry['lane'] == 'notes':
+            # Receiving only classifies. Source pages can contain an entire book/note;
+            # even probing them belongs to the explicit start operation.
+            host = urlsplit(source or '').hostname or ''
+            probe = {'title': parsed.get('title') or Path(source).name or source,
+                     'platform': parsed.get('platform') or host,
+                     'media_type': 'weread' if host == 'weread.qq.com' else 'unknown',
+                     'deferred': True}
         else:
             reused = cache.reused_probe(source)
             probe = reused if reused else desktop_sources.probe(source, parsed.get('source_kind') or 'url', session_id)
@@ -550,9 +546,7 @@ def identify(ident, session_id=''):
             if duplicate:
                 update(ident, **data, status='duplicate', duplicate_of=duplicate['id'], message='已在队列中，未重复创建')
                 return
-            update(ident, **data, weread_text=weread_text, status='ready' if entry['lane']=='publish' else 'starting', message='待设置' if entry['lane']=='publish' else '准备生成笔记')
-        if entry['lane'] == 'notes' and alive():
-            start_notes(ident, run)
+            update(ident, **data, weread_text=weread_text, status='ready', message='待设置' if entry['lane']=='publish' else '待确认档位')
     except Exception as error:
         if not alive():
             return
@@ -575,18 +569,32 @@ def start_notes(ident, run=None):
     if entry.get('status') in {'removed', 'cancelled'}:
         return
     try:
-        options = settings_payload(get_group(entry['group_id'])['options'])
+        options = settings_payload(entry.get('execution_options') or get_group(entry['group_id'])['options'])
+        options['notes_mode'] = entry.get('execution_mode') or entry.get('notes_mode') or options.get('notes_mode', 'curated')
         options.update(knowledge_only=True, notes_auto=True, rights_confirmed=True,
                        subtitle_output_mode='en_only', bilibili_upload={'enabled': False}, batch_concurrency=2)
-        if entry.get('probe', {}).get('media_type') == 'weread':
-            text = entry.get('weread_text') or ''
-            if not text.strip():
-                update(ident, status='blocked', message='没有读到微信读书正文')
-                return
-            transcript_id = knowledge.register(Path('weread.txt'), source_kind='url', source=entry.get('source') or '',
-                                               title=entry.get('title') or '微信读书', media_type='note', note_body=text)
+        transcript_id = (entry.get('result') or {}).get('transcript_id')
+        if transcript_id:
             finish_subtitle(ident, transcript_id, options)
             return
+        if entry.get('probe', {}).get('media_type') == 'weread':
+            from app import weread
+            update(ident, stage='download', message='正在获取微信读书正文')
+            book = weread.fetch_book(entry['source'], weread.cookie_header(
+                desktop_sources.cookies_for(entry['source'], SESSIONS.get(ident, '')) or ''))
+            if get_entry(ident).get('status') in {'removed', 'cancelled'}:
+                return
+            transcript_id = knowledge.register(Path('weread.txt'), source_kind='url', source=entry['source'],
+                                               title=book['title'] or entry['title'], media_type='note', note_body=book['text'])
+            finish_subtitle(ident, transcript_id, options)
+            return
+        if entry.get('probe', {}).get('deferred'):
+            update(ident, stage='download', message='正在获取来源信息')
+            probe = cache.reused_probe(entry['source']) or desktop_sources.probe(
+                entry['source'], entry['kind'], SESSIONS.get(ident, ''))
+            entry.update(probe={'ready': True, **probe}, title=probe.get('title') or entry['title'],
+                         resolved_fetch_url=probe.get('resolved_fetch_url') or entry['source'])
+            update(ident, probe=entry['probe'], title=entry['title'], resolved_fetch_url=entry['resolved_fetch_url'])
         if entry['probe']['media_type'] == 'subtitle':
             transcript_id = knowledge.register(Path(entry['source']), source_kind='subtitle', source=entry['source'], title=entry['title'])
             # A local subtitle has no media job; finish it as a persisted inbox task.
@@ -670,12 +678,50 @@ class Start(BaseModel):
     entry_ids: list[str] = Field(min_length=1)
     revision: int
     confirmed: bool = False
+    notes_mode: Literal['summary', 'curated', 'comprehensive'] | None = None
+    restart: bool = False
+    entry_revision: int | None = None
 
 
 @router.post('/groups/{ident}/start')
 def start_group(ident: str, request: Start):
     with LOCK:
         group = get_group(ident)
+        if group['lane'] == 'notes':
+            if not request.confirmed or not request.notes_mode:
+                raise HTTPException(400, '请先确认本次整理档位')
+            if group['revision'] != request.revision:
+                raise HTTPException(409, '设置已变化，请重新确认')
+            chosen = [get_entry(i) for i in dict.fromkeys(request.entry_ids)]
+            if any(e['group_id'] != ident for e in chosen):
+                raise HTTPException(400, '来信不属于本次投递')
+            # Claim every task under the same lock before submitting any work.
+            # Idempotency survives fast completion, repeated clicks and SSE reentry.
+            pending = []
+            for entry in chosen:
+                if entry.get('execution_mode') and not request.restart:
+                    continue
+                current = sync(entry, {}) if request.restart else entry
+                if current['status'] in {'starting', 'queued', 'running'}:
+                    continue
+                if request.restart:
+                    if current['status'] not in {'succeeded', 'blocked', 'failed', 'cancelled'}:
+                        raise HTTPException(409, '当前任务尚未结束')
+                    if request.entry_revision != entry['revision']:
+                        raise HTTPException(409, '任务已变化，请重新载入')
+                    entry.update(result=current.get('result') or {})
+                elif entry['status'] != 'ready':
+                    raise HTTPException(409, '请先完成来源识别')
+                pending.append(entry)
+            for entry in pending:
+                run = int(entry.get('run') or 1) + (1 if request.restart else 0)
+                update(entry['id'], status='starting', stage='download', progress=0,
+                       message='正在获取原文', notes_mode=request.notes_mode,
+                       execution_mode=request.notes_mode, execution_options=dict(group['options']),
+                       run=run, batch_id=None, item_id=None, result=entry.get('result') or {})
+            for entry in pending:
+                POOL.submit(start_notes, entry['id'], get_entry(entry['id'])['run'])
+            return {'entry_ids': [e['id'] for e in chosen]}
         if group['lane'] != 'publish' or not request.confirmed: raise HTTPException(400, '请确认本次投稿')
         if not {'output','style','publish','translation'}.issubset(group['prepared']):raise HTTPException(400, '请先备齐四类设置')
         if group['revision'] != request.revision: raise HTTPException(409, '设置已变化，请重新确认')

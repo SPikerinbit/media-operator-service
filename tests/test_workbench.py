@@ -53,14 +53,20 @@ def test_configuration_revision_and_explicit_start(workspace,monkeypatch):
     assert len(captured)==1 and captured[0].item_overrides[entry['id']]['aspect_ratio']=='9:16'
     assert captured[0].bilibili_upload.enabled and captured[0].rights_confirmed
 
-def test_notes_start_automatically_and_remain_separate(workspace,monkeypatch):
+def test_notes_require_confirmation_and_remain_separate(workspace,monkeypatch):
     calls=[]
     def submit(req):
         calls.append(req);return SimpleNamespace(batch_id='notes',items=[SimpleNamespace(item_id='one')])
     monkeypatch.setattr(jobs,'submit_desktop_batch',submit)
     delivery('publish',['https://example.com/video'],'publish')
-    delivery('notes',['https://example.com/video'],'notes')
+    gid=delivery('notes',['https://example.com/video'],'notes')
+    entry=inbox.get_delivery(gid)['entries'][0]
+    assert entry['status']=='ready' and calls==[]
+    request=inbox.Start(entry_ids=[entry['id']],revision=0,confirmed=True,notes_mode='summary')
+    inbox.start_group(gid,request)
+    inbox.start_group(gid,request)
     assert len(calls)==1 and calls[0].notes_auto and calls[0].knowledge_only
+    assert calls[0].notes_mode=='summary'
     assert calls[0].sources[0].allow_muxed_audio and not calls[0].bilibili_upload.enabled
     assert len(inbox.entries())==2
 
@@ -114,6 +120,9 @@ def test_paths_are_validated_and_publish_stays_video_only(workspace, monkeypatch
     monkeypatch.setattr(media, 'TRANSLATE_API_KEY', '')
     gid = delivery('notes', [str(subtitle)], 'subtitle-note')
     note = inbox.get_delivery(gid)['entries'][0]
+    assert note['status'] == 'ready' and not note.get('result')
+    inbox.start_group(gid,inbox.Start(entry_ids=[note['id']],revision=0,confirmed=True,notes_mode='curated'))
+    note=inbox.get_entry(note['id'])
     assert note['status'] == 'blocked' and '字幕' in note['message']
 
 
@@ -244,7 +253,7 @@ def test_delete_undo_queue_race_and_late_identify(workspace, monkeypatch):
                 'audio_direct': True, 'duration': 1}
 
     monkeypatch.setattr(desktop_sources, 'probe', late)
-    delivery('notes', ['https://example.com/late'], 'late-identify')
+    delivery('publish', ['https://example.com/late'], 'late-identify')
     assert started == []
     late_entry = next(entry for entry in inbox.entries() if entry.get('raw') == 'https://example.com/late')
     assert late_entry['status'] == 'removed' and late_entry['run'] == 2
@@ -391,3 +400,49 @@ def test_session_stays_out_of_the_letter_and_history_does_not_block_retry(worksp
     assert inbox.get_entry(second['id'])['status'] == 'ready'
     gid = delivery('publish', ['https://example.com/same', 'https://example.com/same'], 'active-dup')
     assert sorted(entry['status'] for entry in inbox.get_delivery(gid)['entries']) == ['duplicate', 'ready']
+
+
+def test_notes_defer_all_source_work_and_freeze_each_task_mode(workspace, monkeypatch):
+    probes=[]; calls=[]
+    monkeypatch.setattr(desktop_sources,'probe',lambda *args:probes.append(args) or {'media_type':'audio','title':'来源','has_audio':True})
+    monkeypatch.setattr(jobs,'submit_desktop_batch',lambda req:calls.append(req) or SimpleNamespace(batch_id=str(len(calls)),items=[SimpleNamespace(item_id='one')]))
+    gid=delivery('notes',['https://example.com/one','https://example.com/two'])
+    entries=inbox.get_delivery(gid)['entries']
+    assert not probes and not calls
+    for entry,mode in zip(entries,['summary','comprehensive']):
+        request=inbox.Start(entry_ids=[entry['id']],revision=0,confirmed=True,notes_mode=mode)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda _:inbox.start_group(gid,request),range(4)))
+        assert inbox.get_entry(entry['id'])['execution_mode']==mode
+    assert len(probes)==2 and len(calls)==2
+    assert [req.notes_mode for req in calls]==['summary','comprehensive']
+
+
+def test_notes_weread_waits_for_confirmation(workspace, monkeypatch):
+    from app import weread
+    fetched=[]
+    monkeypatch.setattr(weread,'fetch_book',lambda *args:fetched.append(args) or {'title':'书','text':'一段中文原文。'})
+    monkeypatch.setattr(desktop_sources,'cookies_for',lambda *args:'')
+    monkeypatch.setattr(media,'TRANSLATE_API_KEY','')
+    gid=delivery('notes',['https://weread.qq.com/web/reader/test'])
+    entry=inbox.get_delivery(gid)['entries'][0]
+    assert entry['status']=='ready' and fetched==[]
+    request=inbox.Start(entry_ids=[entry['id']],revision=0,confirmed=True,notes_mode='summary')
+    inbox.start_group(gid,request)
+    inbox.start_group(gid,request)
+    result=inbox.get_entry(entry['id'])
+    assert len(fetched)==1 and result['result']['transcript_id']
+    assert result['status']=='blocked'
+    inbox.start_group(gid,inbox.Start(entry_ids=[entry['id']],revision=0,confirmed=True,
+                                    notes_mode='comprehensive',restart=True,entry_revision=result['revision']))
+    assert len(fetched)==1  # Reorganizing reuses the original text.
+    assert inbox.get_entry(entry['id'])['execution_mode']=='comprehensive'
+
+
+def test_notes_invalid_confirmation_does_not_claim_task(workspace):
+    gid=delivery('notes',['https://example.com/one'])
+    entry=inbox.get_delivery(gid)['entries'][0]
+    for fields in [{'confirmed':False,'revision':0},{'confirmed':True,'revision':9}]:
+        with pytest.raises(HTTPException):
+            inbox.start_group(gid,inbox.Start(entry_ids=[entry['id']],notes_mode='curated',**fields))
+    assert inbox.get_entry(entry['id'])['status']=='ready'
