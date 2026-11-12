@@ -2,6 +2,12 @@
 #ifndef AppVersion
 #define AppVersion "0.5.0"
 #endif
+#ifndef MinVersion
+#define MinVersion "10.0.22000"
+#endif
+#ifndef OutputBaseName
+#define OutputBaseName "MediaOperatorSetup"
+#endif
 [Setup]
 AppId={{102997A8-6D84-4A52-B13E-9F5E9F29DD64}
 AppName=Media Operator
@@ -13,11 +19,11 @@ DefaultGroupName=Media Operator
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-MinVersion=10.0.22000
+MinVersion={#MinVersion}
 AppMutex=MediaOperatorDesktopWindow
 DisableProgramGroupPage=yes
 OutputDir={#MediaOutput}
-OutputBaseFilename=MediaOperatorSetup
+OutputBaseFilename={#OutputBaseName}
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern

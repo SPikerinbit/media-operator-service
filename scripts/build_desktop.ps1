@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory)][string]$BuildDir,
     [Parameter(Mandatory)][string]$OutputDir,
     [Parameter(Mandatory)][string]$InnoCompiler,
-    [string]$PythonExe = "python"
+    [string]$PythonExe = "python",
+    [switch]$Win10,
+    [switch]$InstallerOnly
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -58,84 +60,95 @@ if (-not (Test-Path -LiteralPath (Join-Path $assets "deno.exe"))) {
     if ($LASTEXITCODE -ne 0) { throw "Could not extract Deno" }
 }
 
-Push-Location (Join-Path $root "frontend")
-try {
-    & npm.cmd ci --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) { throw "Could not install desktop frontend dependencies" }
-    & npm.cmd run build
-    if ($LASTEXITCODE -ne 0) { throw "Desktop frontend build failed" }
-} finally {
-    Pop-Location
+if (-not (Test-Path -LiteralPath $application -PathType Container) -and $InstallerOnly) {
+    throw "Frozen distribution missing at $application. Run a full build first or omit -InstallerOnly."
 }
 
-& $PythonExe -m PyInstaller --noconfirm --distpath $dist --workpath (Join-Path $BuildDir "freeze") (Join-Path $root "packaging\media_operator.spec")
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
-# Import the actual frozen runtime before spending time on the installer.
-# --help loads app.main, including VERSION and the dynamically executed stages.
-& (Join-Path $application 'MediaWhisper.exe') --help | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Frozen runtime smoke check failed" }
-
-$frontend = Join-Path $root "app\static\desktop-ui"
-$static = Join-Path $application "_internal\app\static"
-New-Item -ItemType Directory -Force $static | Out-Null
-Copy-Item -LiteralPath $frontend -Destination $static -Recurse -Force
-$bundledFrontend = Join-Path $static "desktop-ui"
-$assetReferences = [regex]::Matches((Get-Content -LiteralPath (Join-Path $bundledFrontend "index.html") -Raw),
-    '/static/desktop-ui/(assets/[^"\s]+)')
-if ($assetReferences.Count -lt 2) { throw "Desktop frontend entry point is missing its generated assets" }
-foreach ($asset in $assetReferences) {
-    if (-not (Test-Path -LiteralPath (Join-Path $bundledFrontend $asset.Groups[1].Value) -PathType Leaf)) {
-        throw "Missing bundled desktop asset: $($asset.Groups[1].Value)"
+if (-not $InstallerOnly) {
+    Push-Location (Join-Path $root "frontend")
+    try {
+        & npm.cmd ci --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { throw "Could not install desktop frontend dependencies" }
+        & npm.cmd run build
+        if ($LASTEXITCODE -ne 0) { throw "Desktop frontend build failed" }
+    } finally {
+        Pop-Location
     }
-}
 
-$tools = Join-Path $application "tools"
-New-Item -ItemType Directory -Force $tools | Out-Null
-foreach ($name in "ffmpeg.exe", "ffprobe.exe") {
-    $binary = Get-ChildItem -LiteralPath $ffmpegDir -Recurse -Filter $name | Select-Object -First 1
-    if (-not $binary) { throw "Missing $name" }
-    Copy-Item -LiteralPath $binary.FullName -Destination $tools
-}
-Copy-Item -LiteralPath $nvencExe -Destination (Join-Path $tools "ffmpeg-burn.exe")
-Copy-Item -LiteralPath $yt, (Join-Path $assets "deno.exe") -Destination $tools
-$licenses = Join-Path $application "licenses"
-$fonts = Join-Path $application "fonts"
-New-Item -ItemType Directory -Force $fonts, $licenses | Out-Null
-foreach ($font in @(@{Archive=$sans; Family="SourceHanSansCN"}, @{Archive=$serif; Family="SourceHanSerifCN"})) {
-    $family = $font.Family
-    $staging = Join-Path $BuildDir $family
-    New-Item -ItemType Directory -Force $staging | Out-Null
-    & tar.exe -xf $font.Archive -C $staging "SubsetOTF/CN/$family-Light.otf" "SubsetOTF/CN/$family-Regular.otf" "SubsetOTF/CN/$family-Bold.otf" "LICENSE.txt"
-    if ($LASTEXITCODE -ne 0) { throw "Could not extract $family" }
-    Copy-Item -Path (Join-Path $staging "SubsetOTF\CN\*.otf") -Destination $fonts
-    Copy-Item -LiteralPath (Join-Path $staging "LICENSE.txt") -Destination (Join-Path $licenses "$family-OFL.txt")
-}
-& $PythonExe (Join-Path $root "packaging\collect_notices.py") $licenses
-if ($LASTEXITCODE -ne 0) { throw "Could not collect Python notices" }
-Copy-Item -LiteralPath (Join-Path $root "packaging\THIRD_PARTY.md") -Destination $licenses
-Copy-Item -LiteralPath (Join-Path $root "docs\DESKTOP_QUICKSTART.md") -Destination $application
-Get-ChildItem -LiteralPath (Join-Path $root "frontend/src/vendor") -Recurse -File -Filter "LICENSE" |
-    ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $licenses "$($_.Directory.Name)-LICENSE.txt") }
-$nodeLicenses = Join-Path $licenses "frontend"
-Push-Location (Join-Path $root "frontend")
-try {
-    foreach ($packagePath in (& npm.cmd ls --omit=dev --all --parseable)) {
-        if ($packagePath -notmatch '[\\/]node_modules[\\/]') { continue }
-        $packageInfo = Get-Content -LiteralPath (Join-Path $packagePath "package.json") -Raw | ConvertFrom-Json
-        $label = ($packageInfo.name -replace '[/@]', '-') + '-' + $packageInfo.version
-        $licenseFolder = Join-Path $nodeLicenses $label
-        Get-ChildItem -LiteralPath $packagePath -File -Filter 'LICENSE*' | ForEach-Object {
-            New-Item -ItemType Directory -Force $licenseFolder | Out-Null
-            Copy-Item -LiteralPath $_.FullName -Destination $licenseFolder
+    & $PythonExe -m PyInstaller --noconfirm --distpath $dist --workpath (Join-Path $BuildDir "freeze") (Join-Path $root "packaging\media_operator.spec")
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
+    # Import the actual frozen runtime before spending time on the installer.
+    # --help loads app.main, including VERSION and the dynamically executed stages.
+    & (Join-Path $application 'MediaWhisper.exe') --help | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Frozen runtime smoke check failed" }
+
+    $frontend = Join-Path $root "app\static\desktop-ui"
+    $static = Join-Path $application "_internal\app\static"
+    New-Item -ItemType Directory -Force $static | Out-Null
+    Copy-Item -LiteralPath $frontend -Destination $static -Recurse -Force
+    $bundledFrontend = Join-Path $static "desktop-ui"
+    $assetReferences = [regex]::Matches((Get-Content -LiteralPath (Join-Path $bundledFrontend "index.html") -Raw),
+        '/static/desktop-ui/(assets/[^"\s]+)')
+    if ($assetReferences.Count -lt 2) { throw "Desktop frontend entry point is missing its generated assets" }
+    foreach ($asset in $assetReferences) {
+        if (-not (Test-Path -LiteralPath (Join-Path $bundledFrontend $asset.Groups[1].Value) -PathType Leaf)) {
+            throw "Missing bundled desktop asset: $($asset.Groups[1].Value)"
         }
     }
-} finally {
-    Pop-Location
+
+    $tools = Join-Path $application "tools"
+    New-Item -ItemType Directory -Force $tools | Out-Null
+    foreach ($name in "ffmpeg.exe", "ffprobe.exe") {
+        $binary = Get-ChildItem -LiteralPath $ffmpegDir -Recurse -Filter $name | Select-Object -First 1
+        if (-not $binary) { throw "Missing $name" }
+        Copy-Item -LiteralPath $binary.FullName -Destination $tools
+    }
+    Copy-Item -LiteralPath $nvencExe -Destination (Join-Path $tools "ffmpeg-burn.exe")
+    Copy-Item -LiteralPath $yt, (Join-Path $assets "deno.exe") -Destination $tools
+    $licenses = Join-Path $application "licenses"
+    $fonts = Join-Path $application "fonts"
+    New-Item -ItemType Directory -Force $fonts, $licenses | Out-Null
+    foreach ($font in @(@{Archive=$sans; Family="SourceHanSansCN"}, @{Archive=$serif; Family="SourceHanSerifCN"})) {
+        $family = $font.Family
+        $staging = Join-Path $BuildDir $family
+        New-Item -ItemType Directory -Force $staging | Out-Null
+        & tar.exe -xf $font.Archive -C $staging "SubsetOTF/CN/$family-Light.otf" "SubsetOTF/CN/$family-Regular.otf" "SubsetOTF/CN/$family-Bold.otf" "LICENSE.txt"
+        if ($LASTEXITCODE -ne 0) { throw "Could not extract $family" }
+        Copy-Item -Path (Join-Path $staging "SubsetOTF\CN\*.otf") -Destination $fonts
+        Copy-Item -LiteralPath (Join-Path $staging "LICENSE.txt") -Destination (Join-Path $licenses "$family-OFL.txt")
+    }
+    & $PythonExe (Join-Path $root "packaging\collect_notices.py") $licenses
+    if ($LASTEXITCODE -ne 0) { throw "Could not collect Python notices" }
+    Copy-Item -LiteralPath (Join-Path $root "packaging\THIRD_PARTY.md") -Destination $licenses
+    Copy-Item -LiteralPath (Join-Path $root "docs\DESKTOP_QUICKSTART.md") -Destination $application
+    Get-ChildItem -LiteralPath (Join-Path $root "frontend/src/vendor") -Recurse -File -Filter "LICENSE" |
+        ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $licenses "$($_.Directory.Name)-LICENSE.txt") }
+    $nodeLicenses = Join-Path $licenses "frontend"
+    Push-Location (Join-Path $root "frontend")
+    try {
+        foreach ($packagePath in (& npm.cmd ls --omit=dev --all --parseable)) {
+            if ($packagePath -notmatch '[\\/]node_modules[\\/]') { continue }
+            $packageInfo = Get-Content -LiteralPath (Join-Path $packagePath "package.json") -Raw | ConvertFrom-Json
+            $label = ($packageInfo.name -replace '[/@]', '-') + '-' + $packageInfo.version
+            $licenseFolder = Join-Path $nodeLicenses $label
+            Get-ChildItem -LiteralPath $packagePath -File -Filter 'LICENSE*' | ForEach-Object {
+                New-Item -ItemType Directory -Force $licenseFolder | Out-Null
+                Copy-Item -LiteralPath $_.FullName -Destination $licenseFolder
+            }
+        }
+    } finally {
+        Pop-Location
+    }
+    $extraNotices = Join-Path $BuildDir "sources"
+    if (Test-Path -LiteralPath $extraNotices) {
+        Get-ChildItem -LiteralPath $extraNotices -File -Filter "*.txt" | Copy-Item -Destination $licenses
+    }
+} else {
+    & (Join-Path $application 'MediaWhisper.exe') --help | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Frozen runtime smoke check failed" }
 }
-$extraNotices = Join-Path $BuildDir "sources"
-if (Test-Path -LiteralPath $extraNotices) {
-    Get-ChildItem -LiteralPath $extraNotices -File -Filter "*.txt" | Copy-Item -Destination $licenses
-}
+
+$frontend = Join-Path $root "app\static\desktop-ui"
 
 $version = (Get-Content -LiteralPath (Join-Path $root "VERSION") -Raw).Trim()
 $sourceFiles = @(& git -C $root ls-files --cached --others --exclude-standard -- app frontend packaging desktop_entry.py VERSION)
@@ -160,10 +173,25 @@ $manifest = [ordered]@{
     })
 }
 $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $application 'build-manifest.json') -Encoding utf8
-Copy-Item -LiteralPath (Join-Path $application 'build-manifest.json') -Destination (Join-Path $OutputDir 'MediaOperator-build-manifest.json')
-& $InnoCompiler "/DAppVersion=$version" "/DMediaDist=$application" "/DMediaOutput=$OutputDir" "/DWebViewSetup=$webview" (Join-Path $root "packaging\MediaOperator.iss")
+$installerBase = if ($Win10) { 'MediaOperatorSetup-Win10' } else { 'MediaOperatorSetup' }
+$manifestName = if ($Win10) { 'MediaOperator-build-manifest-win10.json' } else { 'MediaOperator-build-manifest.json' }
+Copy-Item -LiteralPath (Join-Path $application 'build-manifest.json') -Destination (Join-Path $OutputDir $manifestName)
+$innoArgs = @(
+    "/DAppVersion=$version",
+    "/DMediaDist=$application",
+    "/DMediaOutput=$OutputDir",
+    "/DWebViewSetup=$webview",
+    "/DOutputBaseName=$installerBase"
+)
+if ($Win10) {
+    $innoArgs += '/DMinVersion=10.0.19041'
+}
+& $InnoCompiler @innoArgs (Join-Path $root "packaging\MediaOperator.iss")
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed" }
 
-$installer = Join-Path $OutputDir "MediaOperatorSetup.exe"
+$installer = Join-Path $OutputDir "$installerBase.exe"
 $checksum = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-"$checksum *MediaOperatorSetup.exe" | Set-Content -LiteralPath (Join-Path $OutputDir "MediaOperatorSetup.sha256") -Encoding ascii
+"$checksum *$installerBase.exe" | Set-Content -LiteralPath (Join-Path $OutputDir "$installerBase.sha256") -Encoding ascii
+if ($Win10) {
+    Copy-Item -LiteralPath (Join-Path $root "packaging\WIN10-INSTALLER-NOTICE.md") -Destination (Join-Path $OutputDir "WIN10-INSTALLER-NOTICE.md") -Force
+}
