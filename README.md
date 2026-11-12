@@ -2,11 +2,11 @@
 
 Media Operator 是跑在 Windows 上的本地桌面程序。它把本机文件，以及 YouTube、Bilibili、抖音、小红书、小宇宙的链接或分享文案，做成带字幕的视频，可以投稿到 B 站，也可以把原话整理成 Obsidian 笔记。0.5 的界面是一个双信箱工作台：首页同时收「投稿」和「笔记」。转录在本机完成。DeepSeek 翻译、投稿文案和观点摘录是可选项。
 
-当前版本 **0.5.0**。版本号以仓库根目录的 [`VERSION`](VERSION) 为准。`main` 与 `dev` 都在这一版。
+当前版本 **0.5.0**。版本号以仓库根目录的 [`VERSION`](VERSION) 为准。发布线是 `main`。还没做的改动记在 [docs/PENDING.md](docs/PENDING.md)。
 
 ## English summary
 
-Media Operator is a Windows desktop app. It turns local files and links from YouTube, Bilibili, Douyin, Xiaohongshu, and Xiaoyuzhou into subtitled videos, can upload those videos to Bilibili, and can file source-grounded notes into an Obsidian vault. Version 0.5 is a workbench with two inboxes, one for publishing and one for notes. Transcription runs locally. DeepSeek is optional. `main` and `dev` both carry 0.5.0.
+Media Operator is a Windows desktop app. It turns local files and links from YouTube, Bilibili, Douyin, Xiaohongshu, and Xiaoyuzhou into subtitled videos, can upload those videos to Bilibili, and can file source-grounded notes into an Obsidian vault. Version 0.5 is a workbench with two inboxes, one for publishing and one for notes. Transcription runs locally. DeepSeek is optional. The release line is `main` at 0.5.0. Pending work is listed in [docs/PENDING.md](docs/PENDING.md).
 
 下面是给使用者的说明。安装包未签名。桌面窗口只连接本机 `127.0.0.1`，密钥放在 Windows 凭据管理器里。
 
