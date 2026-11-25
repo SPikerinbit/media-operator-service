@@ -716,13 +716,16 @@ def test_obsidian_publication_respects_ownership(desktop_app, monkeypatch):
     result = client.post(route, json={"card_ids":[first]}).json()["results"][0]
     assert (result["status"], result["cleared"]) == ("published", True)
     assert [card["id"] for card in knowledge.read_transcript(transcript)["cards"]] == [retained]
+    from urllib.parse import quote
     note = next((vault / "Media Operator" / "观点").glob("*.md"))
     source = next((vault / "Media Operator" / "素材").glob("*.md"))
+    assert note.name == "第一次观点.md"
+    assert source.name == "样片与长期学习（素材）.md"
     text = note.read_text(encoding="utf-8")
     assert "第一次观点" in text and "引用的原文" in text
     assert "v=aqz-KE-bpKQ&t=1s" in text and "00:00:01.250" in text
     assert result["publication_id"] in text and "media_operator_type: viewpoint" in text
-    assert "Media%20Operator/" in text and source.stem.split("-")[-1] in text
+    assert "Media%20Operator/" in text and quote(source.stem, safe="") in text
     moved = vault / "已归档 观点.md"
     note.rename(moved)
     moved.write_text(text + "\n这是在 Obsidian 补写的内容。\n", encoding="utf-8")
@@ -740,7 +743,18 @@ def test_obsidian_publication_respects_ownership(desktop_app, monkeypatch):
     assert version["status"] == "published" and version["cleared"]
     assert version["publication_id"] != result["publication_id"]
     assert "补写的内容" in moved.read_text(encoding="utf-8")
-    assert "观点修订版" in next((vault / "Media Operator" / "观点").glob("*.md")).read_text(encoding="utf-8")
+    revised_note = next((vault / "Media Operator" / "观点").glob("*.md"))
+    assert revised_note.name == "观点修订版.md"
+    assert "观点修订版" in revised_note.read_text(encoding="utf-8")
+
+    # Duplicate claims and illegal filename characters disambiguate cleanly without overwriting.
+    same_a = _draft(transcript, "复盘/核心:方法? #测试。", "dup-claim-1")
+    same_b = _draft(transcript, "复盘/核心:方法? #测试。", "dup-claim-2")
+    dup_results = client.post(route, json={"card_ids": [same_a, same_b]}).json()["results"]
+    assert [r["status"] for r in dup_results] == ["published", "published"]
+    names = sorted(p.name for p in (vault / "Media Operator" / "观点").glob("*.md"))
+    assert "复盘 核心 方法 测试.md" in names
+    assert "复盘 核心 方法 测试 (2).md" in names
 
 
 def test_obsidian_partial_write_and_recovery(desktop_app, monkeypatch):
@@ -1443,6 +1457,9 @@ def test_dual_obsidian_vaults_and_rich_summary_presentation(desktop_app, monkeyp
     assert pub_sum["status"] == "published" and pub_sum["vault_kind"] == "summary"
     sum_files = list((summary_vault / "Media Operator" / "摘要").glob("*.md"))
     assert len(sum_files) == 1
+    assert sum_files[0].name == "卡片盒 系统 复盘（摘要）.md"
+    sum_sources = list((summary_vault / "Media Operator" / "素材").glob("*.md"))
+    assert len(sum_sources) == 1 and sum_sources[0].name == "卡片盒 系统 复盘（素材）.md"
     assert not (viewpoint_vault / "Media Operator" / "摘要").exists()
     sum_md = sum_files[0].read_text(encoding="utf-8")
     assert "media_operator_type: summary" in sum_md
@@ -1464,7 +1481,8 @@ def test_dual_obsidian_vaults_and_rich_summary_presentation(desktop_app, monkeyp
     assert dup_sum["status"] == "already_published" and dup_sum["unchanged"] is False
     v2_sum = client.post(f"/desktop/knowledge/{tid}/publish-summary", json={"new_version": True}).json()["result"]
     assert v2_sum["status"] == "published" and v2_sum["publication_id"] != pub_sum["publication_id"]
-    assert len(list((summary_vault / "Media Operator" / "摘要").glob("*.md"))) == 2
+    sum_names = sorted(p.name for p in (summary_vault / "Media Operator" / "摘要").glob("*.md"))
+    assert sum_names == ["卡片盒 系统 复盘（摘要） (2).md", "卡片盒 系统 复盘（摘要）.md"]
 
     # 2. Publish BOTH curated and comprehensive viewpoints -> BOTH go into Viewpoint Vault!
     cur_card = cur_page["cards"][0]
@@ -1475,6 +1493,7 @@ def test_dual_obsidian_vaults_and_rich_summary_presentation(desktop_app, monkeyp
     assert pub_comp["status"] == "published" and pub_comp["vault_kind"] == "viewpoint"
     vp_files = list((viewpoint_vault / "Media Operator" / "观点").glob("*.md"))
     assert len(vp_files) == 2
+    assert all("核心洞察" in f.stem for f in vp_files)
     assert not (summary_vault / "Media Operator" / "观点").exists()
     vp_text = "\n".join(f.read_text(encoding="utf-8") for f in vp_files)
     assert "media_operator_kind:" in vp_text and "media_operator_tier:" in vp_text

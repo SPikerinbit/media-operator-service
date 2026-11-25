@@ -154,6 +154,103 @@ def test_bilibili_metadata_disables_thinking_with_400_fallback(monkeypatch):
     assert parsed["tid"] == 17 and len(seen_bodies) == 2
 
 
+def test_bilibili_metadata_resilient_parsing_length_retry_and_missing_title_recovery(monkeypatch):
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        data = json.loads(body["messages"][1]["content"])
+        # Placeholder original_title="video1" must be cleared before sending to DeepSeek.
+        assert data["source_title"] == ""
+        assert body["temperature"] == 0.2
+        if len(calls) == 1:
+            # 1st attempt: exhausted max_tokens while thinking -> triggers length retry with 6144 max_tokens.
+            return httpx.Response(200, json={
+                "choices": [{"finish_reason": "length", "message": {"content": "", "reasoning_content": "thinking..." * 40}}]
+            })
+        if len(calls) == 2:
+            # 2nd attempt: fenced JSON, string tid, list desc, comma string tags, but placeholder title "video1".
+            assert body["max_tokens"] == 6144
+            fenced = '```json\n{"tid": "17", "title": "video1", "desc": ["• 对局复盘", "• 关键回合"], "tags": "CS2, 第一视角，教学"}\n```'
+            return httpx.Response(200, json={
+                "choices": [{"finish_reason": "stop", "message": {"content": fenced}}]
+            })
+        # 3rd attempt: targeted retry for missing/placeholder title succeeds.
+        assert data["fields_to_fill"] == ["title"]
+        return httpx.Response(200, json={
+            "choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"title": "CS2 关键回合复盘与战术解析"})}}]
+        })
+
+    real_client = httpx.Client
+    monkeypatch.setattr(media, "TRANSLATE_API_BASE", "https://api.deepseek.com")
+    monkeypatch.setattr(media, "TRANSLATE_API_KEY", "sk-test")
+    monkeypatch.setattr(media, "TRANSLATE_MODEL", "deepseek-flash")
+    monkeypatch.setattr(desktop_bilibili, "posting_zones", lambda: {17: "游戏 / 单机游戏"})
+    monkeypatch.setattr(
+        desktop_bilibili,
+        "httpx",
+        SimpleNamespace(
+            Client=lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+            Timeout=httpx.Timeout,
+            HTTPError=httpx.HTTPError,
+        ),
+    )
+    req = media.StageBilibiliUploadRequest(
+        final_video_url="/files/j/final.mp4",
+        original_source="https://youtu.be/demo1234567",
+        output_name="video1",
+        original_title="video1",
+        original_description="CS2 tactical round breakdown",
+        upload_settings=media.BilibiliUploadSettings(
+            enabled=True, auto_metadata=True, tid=None, title_template="", desc="", tags=[],
+        ),
+    )
+    effective, meta = desktop_bilibili.prepare_metadata(req)
+    assert len(calls) == 3
+    assert effective.tid == 17
+    assert effective.title_template == "CS2 关键回合复盘与战术解析"
+    assert meta["title"] == "CS2 关键回合复盘与战术解析"
+    assert effective.desc == "• 对局复盘\n• 关键回合"
+    assert effective.tags == ["CS2", "第一视角", "教学"]
+    assert set(meta["generated_fields"]) == {"tid", "title", "desc", "tags"}
+
+
+def test_bilibili_metadata_falls_back_to_real_original_title_instead_of_video1(monkeypatch):
+    def fail_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="server error")
+
+    real_client = httpx.Client
+    monkeypatch.setattr(media, "TRANSLATE_API_BASE", "https://api.deepseek.com")
+    monkeypatch.setattr(media, "TRANSLATE_API_KEY", "sk-test")
+    monkeypatch.setattr(media, "TRANSLATE_MODEL", "deepseek-flash")
+    monkeypatch.setattr(desktop_bilibili, "posting_zones", lambda: {201: "知识 / 科学"})
+    monkeypatch.setattr(desktop_bilibili.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        desktop_bilibili,
+        "httpx",
+        SimpleNamespace(
+            Client=lambda **kwargs: real_client(transport=httpx.MockTransport(fail_handler), **kwargs),
+            Timeout=httpx.Timeout,
+            HTTPError=httpx.HTTPError,
+        ),
+    )
+    req = media.StageBilibiliUploadRequest(
+        final_video_url="/files/j/final.mp4",
+        original_source="https://youtu.be/demo1234567",
+        output_name="video1",
+        original_title="How Distributed Consensus Actually Works",
+        original_description="Raft explained",
+        upload_settings=media.BilibiliUploadSettings(
+            enabled=True, auto_metadata=True, tid=201, title_template="", desc="", tags=[],
+        ),
+    )
+    effective, meta = desktop_bilibili.prepare_metadata(req)
+    assert effective.title_template == "How Distributed Consensus Actually Works"
+    assert meta["title"] == "How Distributed Consensus Actually Works"
+    assert meta["notice"] and meta["error_detail"]
+
+
 def test_curated_publish_log_folds_download_burn_and_upload_noise(tmp_path, monkeypatch):
     monkeypatch.setattr(media, "DATA_DIR", tmp_path)
     monkeypatch.setattr(media, "JOBS_DIR", tmp_path / "jobs")

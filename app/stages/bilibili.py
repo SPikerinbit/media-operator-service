@@ -416,15 +416,34 @@ def run_stage_bilibili_upload(job_id: str) -> None:
             report_stage_progress(job_id, "bilibili_upload", 2, "准备来源封面和投稿信息", status="running", force=True)
             if request.upload_settings.cover_mode == "source_cover" or (
                 request.upload_settings.auto_metadata and (
-                    is_http_url(request.original_title) or request.original_description is None)
+                    desktop_bilibili.is_placeholder_title(request.original_title, request.output_name)
+                    or request.original_description is None
+                )
                 and request.bilibili_metadata is None
             ):
                 source = bilibili_source_metadata(request.original_source, request.source_video_url)
                 request.source_thumbnail = str(source.get("thumbnail") or "")
-                request.original_title = str(source.get("title") or request.original_title)
+                if source.get("title") and not desktop_bilibili.is_placeholder_title(source.get("title"), request.output_name):
+                    request.original_title = str(source["title"])
+                elif source.get("title") and desktop_bilibili.is_placeholder_title(request.original_title, request.output_name):
+                    request.original_title = str(source["title"])
                 if "description" in source:
                     request.original_description = source.get("description")
             request.upload_settings, request.bilibili_metadata = desktop_bilibili.prepare_metadata(request)
+            if isinstance(request.bilibili_metadata, dict):
+                generated = request.bilibili_metadata.get("generated_fields") or []
+                meta_title = str(request.bilibili_metadata.get("title") or "").strip()
+                meta_zone = str(request.bilibili_metadata.get("zone") or request.bilibili_metadata.get("tid") or "").strip()
+                meta_notice = str(request.bilibili_metadata.get("notice") or "").strip()
+                if generated:
+                    summary_msg = f"DeepSeek 已生成投稿信息（{', '.join(generated)}）：{meta_title[:40]}"
+                    if meta_zone:
+                        summary_msg += f" · 分区 {meta_zone}"
+                    report_stage_progress(job_id, "bilibili_upload", 4, summary_msg, status="running", force=True)
+                if meta_notice:
+                    detail = str(request.bilibili_metadata.get("error_detail") or "").strip()
+                    warn_msg = f"投稿信息提示：{meta_notice}" + (f"（{detail}）" if detail else "")
+                    report_stage_progress(job_id, "bilibili_upload", 4, warn_msg, status="running", force=True)
             state = load_state(job_id)
             state.request.update({
                 "original_title": request.original_title, "upload_settings": request.upload_settings.model_dump(),

@@ -686,6 +686,10 @@ def _organize_bilibili(rows: list[dict[str, Any]], stage_status: str, result: di
             _emit(events, ts, "正在将稿件加入合集/系列", "info")
             continue
 
+        if msg.startswith("投稿信息提示："):
+            _emit(events, ts, msg, "warn")
+            continue
+
         _emit(events, ts, msg, "info")
 
     if chunk_events:

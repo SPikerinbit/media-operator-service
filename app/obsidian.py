@@ -15,6 +15,20 @@ from app import knowledge
 FOLDER = "Media Operator"
 LOCK = threading.Lock()
 ID_PATTERN = re.compile(r"[a-f0-9]{64}")
+_FILENAME_FORBIDDEN_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f#^\[\]]+')
+_PLACEHOLDER_TITLE_RE = re.compile(r"^(?:video|source)\d*$|^final$|^untitled$", re.I)
+_KNOWN_EXTENSIONS = {
+    ".srt", ".vtt", ".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v",
+    ".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".opus",
+    ".txt", ".md", ".markdown", ".epub", ".mobi", ".azw", ".azw3", ".kf8", ".prc",
+    ".pdf", ".docx", ".html", ".htm", ".xhtml", ".fb2",
+}
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+_EDGE_TRIM = " .-_·—，。；：、,"
 
 KIND_META = {
     "judgment": ("important", "核心判断"),
@@ -616,6 +630,113 @@ def _create(vault, path, text, note_id, snapshot):
     return record
 
 
+def _is_http_url(value):
+    parsed = urlsplit((value or "").strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _strip_known_extension(value):
+    text = (value or "").strip()
+    if not text:
+        return ""
+    suffix = PureWindowsPath(text).suffix.lower()
+    if suffix and suffix in _KNOWN_EXTENSIONS and len(text) > len(suffix):
+        return text[:-len(suffix)]
+    return text
+
+
+def _truncate_stem(text, limit):
+    if len(text) <= limit:
+        return text
+    chunk = text[:limit]
+    if text[limit:limit + 1].isascii() and text[limit:limit + 1].isalnum():
+        space = chunk.rfind(" ")
+        if space >= limit // 2:
+            chunk = chunk[:space]
+    return chunk.rstrip(_EDGE_TRIM)
+
+
+def _safe_note_stem(text, fallback, *, max_len=48, suffix=""):
+    clean = " ".join((text or "").split())
+    clean = _FILENAME_FORBIDDEN_RE.sub(" ", clean)
+    clean = " ".join(clean.split()).strip(_EDGE_TRIM)
+    if not clean:
+        clean = fallback
+        suffix = ""
+    bare_suffix = suffix[1:-1] if suffix.startswith("（") and suffix.endswith("）") else suffix
+    if suffix and (clean.endswith(suffix) or (bare_suffix and clean.endswith(bare_suffix))):
+        stem = _truncate_stem(clean, max_len) or fallback
+    elif suffix:
+        budget = max(12, max_len - len(suffix))
+        body = _truncate_stem(clean, budget) or fallback
+        stem = f"{body}{suffix}"
+    else:
+        stem = _truncate_stem(clean, max_len) or fallback
+    stem = stem.strip(" .")
+    head = stem.split(".", 1)[0].upper() if stem else ""
+    if not stem or stem.upper() in _WINDOWS_RESERVED or head in _WINDOWS_RESERVED:
+        stem = f"{stem}_" if stem else fallback
+    return stem
+
+
+def _usable_doc_title(doc):
+    raw = str(doc.get("title") or "").strip()
+    if raw and not _is_http_url(raw):
+        stripped = _strip_known_extension(raw).strip()
+        if stripped and not _PLACEHOLDER_TITLE_RE.fullmatch(stripped):
+            return stripped
+    if doc.get("source_kind") in {"local", "subtitle", "book"} and doc.get("source"):
+        local_stem = _strip_known_extension(PureWindowsPath(str(doc["source"])).name).strip()
+        if local_stem and not _PLACEHOLDER_TITLE_RE.fullmatch(local_stem):
+            return local_stem
+    return ""
+
+
+def _source_filename_stem(doc, source_id):
+    base = _usable_doc_title(doc)
+    return _safe_note_stem(base, f"素材-{source_id[:8]}", max_len=48, suffix="（素材）" if base else "")
+
+
+def _card_filename_stem(card, note_id):
+    for key in ("claim", "topic", "evidence", "example"):
+        raw = str(card.get(key) or "").strip()
+        if raw:
+            cleaned = _FILENAME_FORBIDDEN_RE.sub(" ", raw)
+            if " ".join(cleaned.split()).strip(_EDGE_TRIM):
+                return _safe_note_stem(raw, f"观点-{note_id[:8]}", max_len=48)
+    return f"观点-{note_id[:8]}"
+
+
+def _summary_filename_stem(doc, tree, note_id):
+    base = _usable_doc_title(doc)
+    if not base:
+        overview = tree.get("overview") or {}
+        base = str(overview.get("title") or "").strip()
+        if not base and overview.get("summary"):
+            first = re.split(r"[。！？\r\n]+", str(overview["summary"]).strip(), maxsplit=1)[0].strip()
+            base = first
+        if not base:
+            nodes = tree.get("nodes") or []
+            if nodes:
+                base = str(nodes[0].get("title") or "").strip()
+    return _safe_note_stem(base, f"摘要-{note_id[:8]}", max_len=48, suffix="（摘要）" if base else "")
+
+
+def _unique_note_path(vault, folder, stem, note_id, snapshot):
+    base = Path(FOLDER, folder)
+    candidates = [base / f"{stem}.md"]
+    candidates.extend(base / f"{stem} ({index}).md" for index in range(2, 51))
+    candidates.append(base / f"{stem}-{note_id[:8]}.md")
+    expected = {"media_operator_id": note_id, "media_operator_snapshot": snapshot}
+    for candidate in candidates:
+        target = _inside(vault, candidate)
+        if not target.exists():
+            return candidate
+        if _markers(target) == expected:
+            return candidate
+    raise ValueError("同名笔记过多，请先整理 Vault 中的同名文件后再重试")
+
+
 def _ensure_source(vault, doc, source_id, *, vault_role="viewpoint"):
     record = _receipt(vault, source_id)
     if record:
@@ -623,7 +744,7 @@ def _ensure_source(vault, doc, source_id, *, vault_role="viewpoint"):
         if not found:
             raise ValueError("找不到此前发布的素材笔记，请在 Obsidian 中恢复该笔记")
         return found.relative_to(vault)
-    path = Path(FOLDER, "素材", f"素材-{source_id[:20]}.md")
+    path = _unique_note_path(vault, "素材", _source_filename_stem(doc, source_id), source_id, source_id)
     _create(vault, path, _source_text(doc, source_id, vault_role=vault_role), source_id, source_id)
     return path
 
@@ -643,7 +764,7 @@ def _publish_card(vault, doc, card, source_id, new_version):
     status = "already_published" if record else "published"
     if record is None:
         source_path = _ensure_source(vault, doc, source_id, vault_role="viewpoint")
-        path = Path(FOLDER, "观点", f"观点-{note_id[:20]}.md")
+        path = _unique_note_path(vault, "观点", _card_filename_stem(card, note_id), note_id, snapshot)
         record = _create(vault, path, _card_text(doc, card, note_id, snapshot, source_path), note_id, snapshot)
     # A retry after interruption may already have a receipt. Clean only the exact recorded draft.
     cleared = bool(
@@ -652,7 +773,7 @@ def _publish_card(vault, doc, card, source_id, new_version):
         and knowledge.remove_published_draft(doc["id"], card)
     )
     return {"card_id": card["id"], "title": card["claim"], "status": status,
-            "publication_id": note_id, "cleared": cleared, "vault_kind": "viewpoint"}
+            "publication_id": note_id, "path": record["path"], "cleared": cleared, "vault_kind": "viewpoint"}
 
 
 def publish(vault, transcript_id, card_ids, new_version=False):
@@ -706,7 +827,7 @@ def publish_summary(vault, transcript_id, run_id=None, new_version=False):
         status = "already_published" if record else "published"
         if record is None:
             source_path = _ensure_source(vault, doc, source_id, vault_role="summary")
-            path = Path(FOLDER, "摘要", f"摘要-{note_id[:20]}.md")
+            path = _unique_note_path(vault, "摘要", _summary_filename_stem(doc, tree, note_id), note_id, snapshot)
             record = _create(vault, path, _summary_text(doc, tree, note_id, snapshot, source_path), note_id, snapshot)
 
         same_snapshot = record["snapshot"] == snapshot

@@ -246,8 +246,9 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
   }
   async function save(values:Editing,prepare?:string[]):Promise<LetterGroup>{
     for(const [id,node] of Object.entries(woodImg.current)){const box=node?.getBoundingClientRect();if(box&&box.width>0)woodHome.current[id]=box}
+    const options=lane==='publish'?optionsOf(values):values.options
     const result=await request<LetterGroup>('/desktop/inbox/groups/'+values.id,'PATCH',{
-      revision:values.revision,options:values.options,overrides:values.overrides,prepared:prepare||values.prepared,
+      revision:values.revision,options,overrides:values.overrides,prepared:prepare||values.prepared,
     });setDrafts(d=>({...d,[result.id]:result}));void refresh();return result
   }
   function restoreInheritance(){if(!entry||!group)return;const overrides={...group.overrides};delete overrides[entry.id];setDrafts(d=>({...d,[group.id]:{...group,overrides,prepared:[],dirty:true}}))}

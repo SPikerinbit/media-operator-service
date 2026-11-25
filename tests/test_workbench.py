@@ -52,6 +52,37 @@ def test_configuration_revision_and_explicit_start(workspace,monkeypatch):
     inbox.start_group(gid,inbox.Start(entry_ids=[entry['id']],revision=1,confirmed=True))
     assert len(captured)==1 and captured[0].item_overrides[entry['id']]['aspect_ratio']=='9:16'
     assert captured[0].bilibili_upload.enabled and captured[0].rights_confirmed
+    assert captured[0].bilibili_upload.auto_metadata is True
+    assert captured[0].bilibili_upload.tid is None
+    assert captured[0].bilibili_upload.title_template == ''
+    assert captured[0].item_overrides[entry['id']]['bilibili_upload']['auto_metadata'] is True
+    assert captured[0].item_overrides[entry['id']]['bilibili_upload']['title_template'] == ''
+
+
+def test_legacy_publish_group_without_bilibili_upload_still_enables_auto_metadata(workspace, monkeypatch):
+    gid = delivery('publish', ['https://example.com/legacy-auto'], 'legacy-auto')
+    entry = inbox.get_delivery(gid)['entries'][0]
+    # Simulate an older persisted delivery group whose options lacked bilibili_upload.
+    group = inbox.get_group(gid)
+    group['options'].pop('bilibili_upload', None)
+    group['prepared'] = ['output', 'style', 'publish', 'translation']
+    with knowledge.database() as db:
+        db.execute('UPDATE workbench_group SET document=? WHERE id=?', (json.dumps(group, ensure_ascii=False), gid))
+    captured = []
+    monkeypatch.setattr(
+        jobs,
+        'submit_desktop_batch',
+        lambda req: captured.append(req) or SimpleNamespace(
+            batch_id='legacy-batch', items=[SimpleNamespace(client_row_id=entry['id'], item_id='one')],
+        ),
+    )
+    inbox.start_group(gid, inbox.Start(entry_ids=[entry['id']], revision=0, confirmed=True))
+    assert len(captured) == 1
+    assert captured[0].bilibili_upload.enabled is True
+    assert captured[0].bilibili_upload.auto_metadata is True
+    assert captured[0].bilibili_upload.tid is None
+    assert captured[0].bilibili_upload.title_template == ''
+    assert captured[0].bilibili_upload.tags == []
 
 def test_notes_require_confirmation_and_remain_separate(workspace,monkeypatch):
     calls=[]

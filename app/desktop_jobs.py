@@ -681,11 +681,20 @@ def run_item(batch_id, item_id):
             upload = media.BilibiliUploadSettings.model_validate(settings.get("bilibili_upload") or {})
             publish = "bilibili_upload" in planned if managed else upload.enabled
             if publish:
+                from app import desktop_bilibili
+                preferred_title = next(
+                    (
+                        str(candidate).strip()
+                        for candidate in (result.get("title"), source_title, item.source_title)
+                        if candidate and not desktop_bilibili.is_placeholder_title(candidate, output_name)
+                    ),
+                    str(result.get("title") or source_title or item.source_title or output_name),
+                )
                 run("bilibili_upload", {
                     "final_video_url": result["final_video_url"], "original_source": item.source_value,
                     "source_video_url": result["source_video_url"], "english_srt_url": result["english_srt_url"],
                     "translate_model": settings.get("translate_model") or "",
-                    "output_name": output_name, "original_title": result.get("title", output_name),
+                    "output_name": output_name, "original_title": preferred_title,
                     "original_description": result.get("original_description"),
                     "upload_settings": {**upload.model_dump(), "enabled": True},
                 })
@@ -902,14 +911,24 @@ def queue_history_uploads(batch_id, item_ids, confirmed, defaults=None, use_curr
                 if not media.is_http_url(source):
                     raise HTTPException(400, f"第 {item.index} 项是转载，请在投稿参数中填写有效的来源网址")
             result = item.result or {}
+            from app import desktop_bilibili
+            fallback_name = item.output_name or f"source{item.index}"
+            preferred_title = next(
+                (
+                    str(candidate).strip()
+                    for candidate in (previous_request.get("original_title"), result.get("title"), item.source_title)
+                    if candidate and not desktop_bilibili.is_placeholder_title(candidate, fallback_name)
+                ),
+                str(previous_request.get("original_title") or result.get("title") or item.source_title or fallback_name),
+            )
             planned.append((item, media.StageBilibiliUploadRequest(
                 final_video_url=result["final_video_url"], original_source=item.source_value,
                 source_video_url=result.get("source_video_url") or "",
                 english_srt_url=result.get("english_srt_url") or "",
                 translate_model=previous_request.get("translate_model") or "",
                 bilibili_metadata=previous_request.get("bilibili_metadata"),
-                output_name=item.output_name or f"source{item.index}",
-                original_title=str(previous_request.get("original_title") or result.get("title") or item.output_name or f"source{item.index}"),
+                output_name=fallback_name,
+                original_title=preferred_title,
                 original_description=previous_request.get("original_description", result.get("original_description")),
                 upload_settings=upload, allow_automatic_retry=False,
                 operator_batch_id=batch_id, operator_item_id=item_id,

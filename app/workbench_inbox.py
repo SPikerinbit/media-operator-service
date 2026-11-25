@@ -376,12 +376,33 @@ def present(entry):
     return shown
 
 
+DEFAULT_BILIBILI_UPLOAD = {
+    'enabled': True,
+    'auto_metadata': True,
+    'tid': None,
+    'tags': [],
+    'desc': '',
+    'copyright': 2,
+    'source_mode': 'original_url',
+    'source': '',
+    'title_template': '',
+    'line': 'QN',
+    'collection_type': 'none',
+    'collection_id': '',
+    'cover_mode': 'source_cover',
+    'cover_source': 'frame',
+    'cover_time_percent': 50,
+    'cover_asset_url': '',
+}
+
+
 def default_options():
     prefs = desktop_config.settings()
     return {**(prefs.get('video_output_defaults') or {}),
             'subtitle_style': prefs.get('video_subtitle_style_defaults') or {},
             'subtitle_output_mode': (prefs.get('video_output_defaults') or {}).get('subtitle_output_mode', 'bilingual'),
-            'translate_model': prefs.get('ai_model', media.DEFAULT_TRANSLATE_MODEL)}
+            'translate_model': prefs.get('ai_model', media.DEFAULT_TRANSLATE_MODEL),
+            'bilibili_upload': dict(DEFAULT_BILIBILI_UPLOAD)}
 
 
 def merge(base, override):
@@ -391,12 +412,14 @@ def merge(base, override):
     return result
 
 
-def settings_payload(options):
+def settings_payload(options, *, include_upload_defaults=False):
     options = dict(options)
-    upload = dict(options.get('bilibili_upload') or {})
+    raw_upload = options.get('bilibili_upload')
+    upload = {**DEFAULT_BILIBILI_UPLOAD, **(raw_upload or {})} if include_upload_defaults else dict(raw_upload or {})
     if isinstance(upload.get('tags'), str):
         upload['tags'] = [tag.strip() for tag in re.split('[,，\n]', upload['tags']) if tag.strip()]
-    if upload.get('tid') == 0: upload['tid'] = None
+    if upload.get('tid') == 0:
+        upload['tid'] = None
     options['bilibili_upload'] = upload
     return options
 
@@ -770,9 +793,10 @@ def edit_group(ident: str, request: GroupEdit):
         sources=[source_of(e) for e in entries() if e['group_id']==ident and e.get('source') and e['status']!='rejected']
         if not sources:raise HTTPException(400,'本次投递没有可设置的稿件')
         try:
-            media.BatchCreateRequest.model_validate({**settings_payload(request.options),'sources':sources})
+            use_defaults = group['lane'] == 'publish'
+            media.BatchCreateRequest.model_validate({**settings_payload(request.options, include_upload_defaults=use_defaults), 'sources': sources})
             for override in request.overrides.values():
-                media.BatchCreateRequest.model_validate({**settings_payload(merge(request.options, override)),'sources':sources})
+                media.BatchCreateRequest.model_validate({**settings_payload(merge(request.options, override), include_upload_defaults=use_defaults), 'sources': sources})
         except ValidationError as error:
             raise HTTPException(422,'；'.join(e['msg'] for e in error.errors())) from error
         group.update(options=request.options, overrides=request.overrides, prepared=request.prepared, revision=group['revision']+1)
@@ -837,12 +861,12 @@ def start_group(ident: str, request: Start):
         if any(e['group_id'] != ident for e in chosen): raise HTTPException(400, '稿件不属于本次投递')
         if all(e.get('batch_id') for e in chosen): return {'batch_ids':list({e['batch_id'] for e in chosen})}
         if any(e['status']!='ready' or e.get('batch_id') for e in chosen): raise HTTPException(409, '只能开始尚未处理的稿件')
-        options=settings_payload(group['options'])
+        options = settings_payload(group['options'], include_upload_defaults=True)
         top_upload = dict(options.get('bilibili_upload') or {})
         options['bilibili_upload'] = {**top_upload, 'enabled': bool(top_upload.get('enabled', True))}
         sources, item_overrides = [], {}
         for entry in chosen:
-            item_opts = settings_payload(merge(group['options'], group['overrides'].get(entry['id'], {})))
+            item_opts = settings_payload(merge(group['options'], group['overrides'].get(entry['id'], {})), include_upload_defaults=True)
             upload = dict(item_opts.get('bilibili_upload') or {})
             enabled = bool(upload.get('enabled', True))
             item_opts['bilibili_upload'] = {**upload, 'enabled': enabled}

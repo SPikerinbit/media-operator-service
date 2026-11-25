@@ -377,11 +377,15 @@ class BilibiliUploadSettings(BaseModel):
     @model_validator(mode="after")
     def normalize(self) -> "BilibiliUploadSettings":
         tags = [str(item).strip()[:20] for item in self.tags if str(item).strip()]
-        if self.enabled and not tags and not DESKTOP:
+        if self.enabled and not tags and not DESKTOP and not self.auto_metadata:
             raise ValueError("bilibili tags are required when upload is enabled")
         object.__setattr__(self, "tags", tags[:10])
         title_template = self.title_template.strip()
-        object.__setattr__(self, "title_template", title_template if DESKTOP else title_template or "{output_name}")
+        object.__setattr__(
+            self,
+            "title_template",
+            title_template if (DESKTOP or self.auto_metadata) else title_template or "{output_name}",
+        )
         collection_id = (self.collection_id or self.series_id or "").strip()
         collection_type = self.collection_type
         if self.series_id and self.collection_type == "none":
