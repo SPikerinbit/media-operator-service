@@ -26,7 +26,8 @@ OUTPUTS = {
     "translate": "bilingual_srt_url",
     "burn": "final_video_url",
 }
-TRANSCRIPTION_SLOTS = threading.BoundedSemaphore(1)
+CPU_TRANSCRIPTION_SLOTS = threading.BoundedSemaphore(1)
+TRANSCRIPTION_SLOTS = CPU_TRANSCRIPTION_SLOTS
 BATCH_SLOTS = {}
 DOWNLOAD_CONTEXTS = {}
 
@@ -80,7 +81,7 @@ def reusable_media(cache_key, need_video):
     found = knowledge.cached_id(cache_key)
     if not found:
         return None
-    record = knowledge.read_transcript(found)
+    record = knowledge.transcript_metadata(found)
     playable = record.get("playable")
     if not playable:
         return None
@@ -143,12 +144,15 @@ def plan_batch(request):
                     "planned_stages": ["download"], "platform": info.get("platform"), "duration": info.get("duration"),
                 }
                 continue
-            stop = source.stop_after or ("transcribe" if request.knowledge_only else "bilibili_upload")
+            settings = media.batch_item_settings(request.model_dump(), source)
+            default_stop = "transcribe" if request.knowledge_only else (
+                "bilibili_upload" if (settings.get("bilibili_upload") or {}).get("enabled", True) else "burn"
+            )
+            stop = source.stop_after or default_stop
             if media_type != "video":
                 stop = "transcribe"
             if media_type == "unknown" and not source.allow_unknown_audio:
                 raise ValueError("未能识别媒体类型，请选择按字幕导入")
-            settings = media.batch_item_settings(request.model_dump(), source)
             steps = stages[:stages.index(stop) + 1]
             if stop != "translate" and settings.get("subtitle_output_mode") == "en_only" and "translate" in steps:
                 steps.remove("translate")
@@ -165,7 +169,7 @@ def plan_batch(request):
                                                        settings["source_language"], model, inference)
                 explicit = request.transcript_ids.get(row_id)
                 if explicit:
-                    transcript = knowledge.read_transcript(explicit)
+                    transcript = knowledge.transcript_metadata(explicit)
                     if not same_source(transcript["source"], source.source_value) or transcript["source_kind"] != source.source_kind:
                         raise ValueError("所选字幕与来源不匹配")
                     if inference == "gpu_only" and not previous:
@@ -231,7 +235,7 @@ def reusable_stage(item, stage, previous, payload):
     if previous.status != "succeeded":
         return None
     if stage != "bilibili_upload" and any(previous.request.get(key) != value for key, value in payload.items()
-                                        if key not in {'execution_id', 'operator_entry_id'}):
+                                        if key not in {'execution_id', 'operator_entry_id', 'operator_lane'}):
         return None
     result = previous.result or {}
     if stage == "transcribe":
@@ -320,7 +324,7 @@ def prepare_execution(batch, item, settings, download, transcript_id=None, exist
         excluded.append('download')
     transcript = None
     if transcript_id:
-        transcript = knowledge.read_transcript(transcript_id)
+        transcript = knowledge.transcript_metadata(transcript_id)
         path = media.artifact_path('plan_' + str(transcript_id), 'original.srt')
         path.parent.mkdir(parents=True, exist_ok=True)
         knowledge.subtitle_file(transcript_id, path)
@@ -336,7 +340,8 @@ def prepare_execution(batch, item, settings, download, transcript_id=None, exist
         if found:
             result.update(found['result']); excluded.append('transcribe')
             _, path = media.resolve_local_artifact_from_url(result['english_srt_url'])
-            transcript = {'cues': [{'text': c[2]} for c in knowledge.load_cues(path)]}
+            with path.open(encoding='utf-8-sig') as sample:
+                transcript = {'cues': [{'text': sample.read(8192)}]}
     if notes and transcript and not workbench_notes.language_of(result, transcript)[1]:
         excluded.append('translate')
     elif 'translate' in stages and result.get('english_srt_url'):
@@ -385,8 +390,10 @@ def stage_result(batch_id, item_id, stage, payload, transcript_id=None):
 
 
 def _stage_result_uncached(batch_id, item_id, stage, payload, transcript_id=None):
-    _, item = batch_item(batch_id, item_id)
-    payload = {**payload, "operator_batch_id": batch_id, "operator_item_id": item_id, 'execution_id': item.execution_id}
+    batch, item = batch_item(batch_id, item_id)
+    lane = "notes" if batch.request.get("knowledge_only") else "publish"
+    payload = {**payload, "operator_batch_id": batch_id, "operator_item_id": item_id,
+               "operator_lane": lane, "execution_id": item.execution_id}
     previous_id = item.stage_jobs.get(stage)
     if previous_id:
         try:
@@ -400,22 +407,28 @@ def _stage_result_uncached(batch_id, item_id, stage, payload, transcript_id=None
 
     state = media.create_stage_job(stage, payload)
     if stage == "transcribe":
-        with TRANSCRIPTION_SLOTS:
-            if transcript_id:
-                try:
-                    path = knowledge.subtitle_file(transcript_id, media.artifact_path(state.job_id, "english.srt"))
-                    media.update_batch_item(batch_id, item_id, work_event=work.event(stage, kind='reused', execution_id=item.execution_id))
-                    # Reuse completes the legacy stage without consuming this execution.
-                    state.request['work_reused'] = True
-                    media.save_state(state)
-                    media.report_stage_progress(state.job_id, stage, 100, "已复用原文字幕",
-                                                status="succeeded", force=True, result={
-                        "english_srt_url": media.public_file_url(state.job_id, path.name),
-                    })
-                except Exception as error:
-                    media.fail_job(state.job_id, stage, error)
-            else:
+        if transcript_id:
+            # Reusing an existing transcript never touches GPU or Whisper workers.
+            try:
+                path = knowledge.subtitle_file(transcript_id, media.artifact_path(state.job_id, "english.srt"))
+                media.update_batch_item(batch_id, item_id, work_event=work.event(stage, kind='reused', execution_id=item.execution_id))
+                # Reuse completes the legacy stage without consuming this execution.
+                state.request['work_reused'] = True
+                media.save_state(state)
+                media.report_stage_progress(state.job_id, stage, 100, "已复用原文字幕",
+                                            status="succeeded", force=True, result={
+                    "english_srt_url": media.public_file_url(state.job_id, path.name),
+                })
+            except Exception as error:
+                media.fail_job(state.job_id, stage, error)
+        else:
+            use_gpu = desktop_config.worker_environment().get("WHISPER_DEVICE") == "cuda"
+            if use_gpu:
+                # GPU concurrency is coordinated by app.gpu_queue so CPU audio pre-decode can overlap safely.
                 RUNNERS[stage](state.job_id)
+            else:
+                with CPU_TRANSCRIPTION_SLOTS:
+                    RUNNERS[stage](state.job_id)
     else:
         RUNNERS[stage](state.job_id)
 
@@ -459,7 +472,7 @@ def ensure_note_srt(result, body):
 def finish_note(batch_id, item_id, item, result, download_payload, transcript_id, explicit_transcripts,
                 cache_key, source_title, output_name, run):
     if explicit_transcripts.get(item.client_row_id) and transcript_id:
-        transcript = knowledge.read_transcript(transcript_id)
+        transcript = knowledge.transcript_metadata(transcript_id)
         if not same_source(transcript["source"], item.source_value) or transcript["source_kind"] != item.source_kind:
             raise ValueError("所选字幕与来源不匹配")
     if not transcript_id:
@@ -470,9 +483,9 @@ def finish_note(batch_id, item_id, item, result, download_payload, transcript_id
             title=source_title or result.get("title") or "图文笔记", cache_key=cache_key,
             media_type="note", asset_type="note", note_body=body, note_images=images,
         )
-        result["body"] = body
+        result["body"] = body[:4000]
     else:
-        record = knowledge.read_transcript(transcript_id)
+        record = knowledge.transcript_metadata(transcript_id)
         result["body"] = record.get("note_body") or result.get("body") or ""
         result["title"] = result.get("title") or record.get("title") or source_title
     result.update(transcript_id=transcript_id, media_type="note", asset_type="note", has_audio=False)
@@ -481,11 +494,7 @@ def finish_note(batch_id, item_id, item, result, download_payload, transcript_id
         from app import workbench_notes
         path = media.artifact_path('note_' + str(transcript_id), 'body.srt')
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Sequential slots are an internal translation transport only; UI references remain paragraphs.
-        cues = knowledge.read_transcript(transcript_id)['cues']
-        import srt
-        from datetime import timedelta
-        path.write_text(srt.compose([srt.Subtitle(c['number'],timedelta(seconds=c['number']*2),timedelta(seconds=c['number']*2+1),c['text']) for c in cues]), encoding='utf-8')
+        knowledge.subtitle_file(transcript_id,path)
         result['english_srt_url'] = media.public_file_url(path.parent.name, path.name)
         workbench_notes.complete(batch_id, item_id, result, batch.request, run)
     result.setdefault("images", [])
@@ -611,7 +620,7 @@ def run_item(batch_id, item_id):
             stage = "transcribe"
             raise ValueError("下载产物没有可用音轨，无法提取字幕")
         if explicit_transcripts.get(item.client_row_id):
-            transcript = knowledge.read_transcript(transcript_id)
+            transcript = knowledge.transcript_metadata(transcript_id)
             if not same_source(transcript["source"], item.source_value) or transcript["source_kind"] != item.source_kind:
                 raise ValueError("所选字幕与视频来源不匹配")
         run("transcribe", {

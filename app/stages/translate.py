@@ -133,6 +133,30 @@ def _validate_translation_items(data: Any, texts: list[str]) -> list[str]:
     return ordered
 
 
+def _chat_completions_url(api_base: str) -> str:
+    base = (api_base or "").strip().rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return f"{base}/chat/completions"
+
+
+def _post_translation_request(
+    client: httpx.Client,
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+) -> httpx.Response:
+    response = client.post(url, headers=headers, json=payload)
+    if (
+        response.status_code == 400
+        and "thinking" in payload
+        and "thinking" in (response.text or "").lower()
+    ):
+        fallback_payload = {k: v for k, v in payload.items() if k != "thinking"}
+        response = client.post(url, headers=headers, json=fallback_payload)
+    return response
+
+
 def _translate_lines_via_provider(
     texts: list[str],
     target_lang: str,
@@ -150,7 +174,12 @@ def _translate_lines_via_provider(
         )
 
     prompt = build_translation_json_user_prompt(texts, target_lang)
-    payload = {
+    url = _chat_completions_url(TRANSLATE_API_BASE)
+    headers = {
+        "Authorization": f"Bearer {TRANSLATE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload: dict[str, Any] = {
         "model": requested_model,
         "messages": [
             {
@@ -162,22 +191,35 @@ def _translate_lines_via_provider(
         "temperature": 0.1,
         "max_tokens": _estimate_translation_max_tokens(texts),
         "response_format": {"type": "json_object"},
+        "thinking": {"type": "disabled"},
     }
     with TRANSLATE_PROMPT_SEMAPHORE:
         with httpx.Client(timeout=120) as client:
-            response = client.post(
-                f"{TRANSLATE_API_BASE.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {TRANSLATE_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
+            response = _post_translation_request(client, url, headers, payload)
             response.raise_for_status()
             data = response.json()
             choice = (data.get("choices") or [{}])[0]
+            finish_reason = str(choice.get("finish_reason") or "")
             message = choice.get("message") or {}
             content = str(message.get("content") or "").strip()
+            reasoning = str(message.get("reasoning_content") or "").strip()
+            if not content and finish_reason == "length" and len(texts) == 1 and payload["max_tokens"] < 8192:
+                retry_payload = {
+                    **payload,
+                    "max_tokens": min(8192, max(int(payload["max_tokens"]) * 2, 4096)),
+                }
+                response = _post_translation_request(client, url, headers, retry_payload)
+                response.raise_for_status()
+                data = response.json()
+                choice = (data.get("choices") or [{}])[0]
+                finish_reason = str(choice.get("finish_reason") or "")
+                message = choice.get("message") or {}
+                content = str(message.get("content") or "").strip()
+                reasoning = str(message.get("reasoning_content") or "").strip()
+    if not content:
+        raise ValueError(
+            f"empty translation content (finish_reason={finish_reason!r}, reasoning_len={len(reasoning)})"
+        )
     json_text = _extract_json_object_text(content)
     parsed = json.loads(json_text)
     return _validate_translation_items(parsed, texts)

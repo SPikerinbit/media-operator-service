@@ -24,6 +24,31 @@ def proxy_dns(host, proxy, period):
         return tuple(record["data"] for record in response.json().get("Answer", []) if record.get("type") == 1)
 
 
+@lru_cache(maxsize=128)
+def direct_dns(host, period):
+    """Resolve a hostname via public IP-literal DoH when a TUN adapter returns RFC 2544 Fake-IPs."""
+    endpoints = (
+        ("https://223.5.5.5/resolve", {"name": host, "type": "A"}, {}),
+        ("https://1.1.1.1/dns-query", {"name": host, "type": "A"}, {"Accept": "application/dns-json"}),
+    )
+    last_error = None
+    with httpx.Client(timeout=4, trust_env=False) as client:
+        for url, params, headers in endpoints:
+            try:
+                response = client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                records = tuple(
+                    record["data"]
+                    for record in response.json().get("Answer", [])
+                    if record.get("type") == 1 and record.get("data")
+                )
+                if records:
+                    return records
+            except (httpx.HTTPError, ValueError) as error:
+                last_error = error
+    raise ValueError("DoH lookup failed") from last_error
+
+
 def public_target(value, upstream=None):
     parsed = urlsplit(value)
     if (parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username is not None
@@ -45,6 +70,16 @@ def public_target(value, upstream=None):
                 addresses = proxy_dns(host, proxy, int(time.monotonic() // 60))
             except (httpx.HTTPError, ValueError):
                 raise ValueError("链接必须指向可访问的公网地址") from None
+    elif not upstream and addresses and all(ipaddress.ip_address(address) in synthetic for address in addresses):
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            try:
+                addresses = direct_dns(host, int(time.monotonic() // 60))
+            except (httpx.HTTPError, ValueError):
+                raise ValueError(
+                    "检测到虚拟网卡或透明代理的保留 DNS 地址（198.18.x.x），请开启 Windows 系统 HTTP 代理或关闭 Fake-IP 模式后重试"
+                ) from None
     for address in addresses:
         ip = ipaddress.ip_address(address)
         if not ip.is_global or ip.is_multicast or ip.is_reserved:

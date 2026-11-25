@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 from app import knowledge, desktop_jobs as jobs, desktop_sources, desktop_config, share_text
 from app import workbench_cache as cache
+from app import workbench_logs
 from app import work_progress as work
 from app import main as media
 
@@ -70,6 +71,26 @@ def initialize():
     if not exists:
         import_history()
     cache.migrate_legacy()
+
+    # Only interrupted note-model work is resumable automatically. Uploads keep
+    # their existing manual recovery policy; explicit model errors stay failed.
+    for entry in entries():
+        if entry.get('lane')!='notes' or entry.get('status') in {'removed','cancelled'}:
+            continue
+        result=dict(entry.get('result') or {})
+        if entry.get('batch_id'):
+            try:
+                _,item=jobs.batch_item(entry['batch_id'],entry['item_id'])
+                result.update(item.result or {})
+            except (OSError,ValueError,StopIteration):
+                continue
+        transcript_id=result.get('transcript_id')
+        if not transcript_id: continue
+        with knowledge.database() as db:
+            pending=db.execute("SELECT 1 FROM note_run WHERE transcript_id=? AND status='running' LIMIT 1",(transcript_id,)).fetchone()
+        if pending:
+            update(entry['id'],result=result,status='running',message='正在恢复已保存的笔记检查点')
+            POOL.submit(start_notes,entry['id'],entry.get('run') or 1)
 
 
 def entries():
@@ -380,10 +401,10 @@ def settings_payload(options):
     return options
 
 
-def source_of(entry, notes=False):
+def source_of(entry, notes=False, upload_enabled=True):
     payload = {'source_kind': entry['kind'], 'source_value': entry.get('resolved_fetch_url') or entry['source'],
             'client_row_id': entry['id'], 'source_title': entry.get('title', '')[:500],
-            'stop_after': ('download' if entry.get('probe', {}).get('media_type') == 'note' else 'transcribe') if notes else 'bilibili_upload',
+            'stop_after': ('download' if entry.get('probe', {}).get('media_type') == 'note' else 'transcribe') if notes else ('bilibili_upload' if upload_enabled else 'burn'),
             'allow_muxed_audio': True, 'allow_unknown_audio': notes}
     session = SESSIONS.get(entry['id']) or ''
     if session:
@@ -406,6 +427,15 @@ def sync(entry, batches):
             merged.update(status=item.status, title=item.source_title or entry.get('title'),
                           stage=item.stage, message=item.message, task=task,
                           result=item.result or {}, reuse=(item.result or {}).get('reuse', []))
+            if item.status in {'failed','succeeded'} and entry.get('status') != item.status:
+                with LOCK:
+                    current=get_entry(entry['id'])
+                    if (current.get('status') != 'removed' and current.get('batch_id') == entry['batch_id']
+                            and current.get('item_id') == entry['item_id'] and current.get('run') == entry.get('run')):
+                        saved=update(entry['id'],status=item.status,stage=item.stage,message=item.message,
+                                     result=item.result or {},task=task)
+                        merged['revision']=saved['revision']
+
         except (OSError, ValueError, StopIteration):
             merged.update(status='blocked', message='任务记录不可用，原始输入已保留')
     return present(merged)
@@ -632,7 +662,7 @@ def finish_subtitle(ident, transcript_id, options):
     """Imported subtitles and reorganization use the same persisted stage pipeline."""
     from app import workbench_notes
     entry = get_entry(ident)
-    transcript = knowledge.read_transcript(transcript_id)
+    transcript = knowledge.transcript_metadata(transcript_id)
     result = {**(entry.get('result') or {}), 'transcript_id': transcript_id}
     if not media.TRANSLATE_API_KEY:
         update(ident, status='blocked', message='请配置 DeepSeek，字幕已导入', result=result)
@@ -753,11 +783,19 @@ def start_group(ident: str, request: Start):
         if all(e.get('batch_id') for e in chosen): return {'batch_ids':list({e['batch_id'] for e in chosen})}
         if any(e['status']!='ready' or e.get('batch_id') for e in chosen): raise HTTPException(409, '只能开始尚未处理的稿件')
         options=settings_payload(group['options'])
+        top_upload = dict(options.get('bilibili_upload') or {})
+        options['bilibili_upload'] = {**top_upload, 'enabled': bool(top_upload.get('enabled', True))}
+        sources, item_overrides = [], {}
+        for entry in chosen:
+            item_opts = settings_payload(merge(group['options'], group['overrides'].get(entry['id'], {})))
+            upload = dict(item_opts.get('bilibili_upload') or {})
+            enabled = bool(upload.get('enabled', True))
+            item_opts['bilibili_upload'] = {**upload, 'enabled': enabled}
+            item_overrides[entry['id']] = item_opts
+            sources.append(source_of(entry, upload_enabled=enabled))
         options.update(knowledge_only=False,notes_auto=False,rights_confirmed=True,batch_concurrency=2,
-                       publish_confirmed=[e['id'] for e in chosen],sources=[source_of(e) for e in chosen],
-                       item_overrides={e['id']:settings_payload(merge(group['options'],group['overrides'].get(e['id'],{}))) for e in chosen})
-        for values in [options, *options['item_overrides'].values()]:
-            values['bilibili_upload']={**values.get('bilibili_upload',{}),'enabled':True}
+                       publish_confirmed=[e['id'] for e in chosen],sources=sources,
+                       item_overrides=item_overrides)
         batch=jobs.submit_desktop_batch(media.BatchCreateRequest.model_validate(options))
         for item in batch.items:
             update(item.client_row_id,batch_id=batch.batch_id,item_id=item.item_id,status='queued',message='等待处理')
@@ -870,28 +908,13 @@ def undo_entry(ident: str):
 
 
 def _log_lines(entry):
-    lines = []
-    task = entry.get('task') or {}
-    for job_id in (task.get('stage_jobs') or {}).values():
-        path = media.stage_progress_log_path(job_id)
-        if path.is_file():
-            lines.extend(path.read_text(encoding='utf-8', errors='replace').splitlines())
-        folder = media.job_dir(job_id) if re.fullmatch(r'[a-zA-Z0-9_-]+', str(job_id)) else None
-        if folder is not None:
-            for name in ('yt-dlp.err.log', 'yt-dlp.out.log'):
-                extra = folder / name
-                if extra.is_file():
-                    lines.extend(extra.read_text(encoding='utf-8', errors='replace').splitlines())
-    return [scrub_log(line) for line in lines if str(line).strip()]
+    return workbench_logs.raw_log_lines(entry, scrub_log)
 
 
 @router.get('/entries/{ident}/log')
-def entry_log(ident: str, offset: int = 0, limit: int = 80):
-    offset = max(0, offset)
-    limit = min(200, max(1, limit))
+def entry_log(ident: str, offset: int = 0, limit: int = 80, raw: bool = False):
     entry = sync(get_entry(ident), {})
-    lines = _log_lines(entry)
-    return {'offset': offset, 'limit': limit, 'total': len(lines), 'lines': lines[offset:offset + limit]}
+    return workbench_logs.build_entry_log(entry, offset=offset, limit=limit, raw=raw, scrub=scrub_log)
 
 
 @router.get('/deliveries/{ident}')
@@ -935,7 +958,7 @@ def import_history():
         gid='imported-notes';group={'id':gid,'lane':'notes','created_at':media.now_iso(),'options':default_options(),'overrides':{},'prepared':[],'revision':0,'legacy':True}
         with knowledge.database() as db:db.execute('INSERT OR IGNORE INTO workbench_group VALUES (?,?,?)',(gid,gid,json.dumps(group,ensure_ascii=False)))
         for t in standalone:
-            full=knowledge.read_transcript(t['id'])
+            full=knowledge.transcript_metadata(t['id'])
             save_entry({'id':'transcript:'+str(t['id']),'group_id':gid,'lane':'notes','raw':full['source'],'source':full['source'],
                         'kind':full['source_kind'],'title':full['title'],'status':'succeeded','stage':'done','progress':100,
                         'run':1,'revision':1,'original_url':full['source'],'resolved_fetch_url':full['source'],

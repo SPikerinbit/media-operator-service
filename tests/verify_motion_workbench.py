@@ -83,26 +83,34 @@ with sync_playwright() as pw:
         api('/fixture/state',{'id':entry['id'],'batch_id':None,'status':'succeeded','result':current['result'],'title':'长标题保持两行，完整标题在选中详情。'*20})
         page.reload();page.wait_for_timeout(1000)
         page.locator('[data-entry-id="'+entry['id']+'"] .incoming-open').click()
-        page.locator('.notes-completion .note-desk').wait_for()
+        page.locator('.notes-completion .notes-content').wait_for()
         assert page.locator('.notes-links').count()==0
         for w,h in [(1920,1080),(1280,800),(1280,720),(853,533)]:
             page.set_viewport_size({'width':w,'height':h});page.wait_for_timeout(500)
-            measures=page.evaluate('''()=>{const q=document.querySelector('.workbench-queue.notes');return Object.fromEntries(['.selected-letter','.note-desk','.note-read','.source-scroll','.incoming-letter','.paper-process.notes'].map(s=>{let n=q.querySelector(s),r=n.getBoundingClientRect();return [s,{height:r.height,top:r.top,bottom:r.bottom,client:n.clientHeight,scroll:n.scrollHeight}]}))}''')
+            page.locator('#tab-notes-source').click();page.wait_for_timeout(150)
+            measures=page.evaluate('''()=>{const q=document.querySelector('.workbench-queue.notes');return Object.fromEntries(['.selected-letter','.notes-content','.note-read','.source-scroll','.incoming-letter','.paper-process.notes'].map(s=>{let n=q.querySelector(s),r=n.getBoundingClientRect();return [s,{height:r.height,top:r.top,bottom:r.bottom,client:n.clientHeight,scroll:n.scrollHeight}]}))}''')
             results['sizes'].append({'viewport':[w,h],'boxes':measures})
             assert measures['.selected-letter']['bottom']<=h+1,measures
             assert measures['.source-scroll']['height']<h and measures['.source-scroll']['scroll']>10000,measures
             assert measures['.incoming-letter']['height']<=80,measures
             start=page.get_by_role('button',name='重新整理',exact=True).bounding_box()
             assert start and start['y']+start['height']<=h, start
+            page.screenshot(path=str(out/f'notes-source-{w}x{h}.png'))
+            page.locator('#tab-notes-drafts').click();page.wait_for_timeout(150)
             page.screenshot(path=str(out/f'notes-{w}x{h}.png'))
         page.set_viewport_size({'width':1920,'height':1080});page.wait_for_timeout(300)
         cards=page.locator('.notes .shred-strip[data-card-id]')
         assert cards.count()==8
         outer=page.locator('.notes .selected-letter').evaluate('(n)=>n.scrollTop')
         cards.nth(7).click()
-        assert page.locator('.notes .source-scroll').evaluate('(n)=>n.scrollTop')>0
-        assert page.locator('.notes .selected-letter').evaluate('(n)=>n.scrollTop')==outer
+        page.wait_for_timeout(200)
+        assert page.locator('#tab-notes-drafts').get_attribute('aria-selected')=='true'
         assert page.locator('.notes .viewpoint-slip.is-linked').count()==1
+        page.locator('.notes .viewpoint-slip.is-linked .slip-ref-chip').first.click()
+        page.wait_for_function("() => document.querySelector('.notes .source-scroll')?.scrollTop > 0")
+        assert page.locator('.notes .note-cues li').count()<=64
+        assert page.locator('.notes .selected-letter').evaluate('(n)=>n.scrollTop')==outer
+        page.locator('#tab-notes-drafts').click();page.wait_for_timeout(150)
         page.get_by_role('button',name='下一组',exact=True).click();page.wait_for_timeout(250)
         assert page.locator('.notes .shred-strip[data-card-id]').count()==8
         # A push is allowed to remove the row while the HTTP response is delayed.
@@ -125,7 +133,7 @@ with sync_playwright() as pw:
         editor.fill('人工编辑：重新整理前必须保存')
         requests=[]
         page.on('request',lambda req:requests.append(req.post_data_json) if req.url.endswith('/start') else None)
-        for mode,label in [('curated','精华观点'),('comprehensive','大多数观点'),('summary','摘要')]:
+        for mode,label in [('curated','核心观点'),('comprehensive','大多数观点'),('summary','摘要')]:
             page.get_by_role('radio',name=label,exact=True).click()
             count=len(requests)
             page.wait_for_timeout(120);assert len(requests)==count

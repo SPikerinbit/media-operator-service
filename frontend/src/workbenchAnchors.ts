@@ -9,7 +9,7 @@ export type AtlasSpec = {
   frame_bounds?: Rect4[]; panels?: number; shows_back?: boolean
 }
 export type WorkbenchManifest = {
-  mailbox: { size: Norm; anchors: { slot: Norm; plaque: Norm; exit: Norm; slotFront?: Rect4; slotBack?: Rect4 }; camera: { scale: number }; visible_bounds?: Rect4 }
+  mailbox: { size: Norm; anchors: { slot: Norm; plaque: Norm; exit: Norm; flapHinge?: Norm; slotFront?: Rect4; slotBack?: Rect4 }; camera: { scale: number }; visible_bounds?: Rect4 }
   envelope: { size: Norm; anchors: { mouth: Norm; seal: Norm; hinge: Norm; pocket?: Rect4; crease?: Rect4; closed?: Norm }; camera: { scale: number }; visible_bounds?: Rect4 }
   flap: { size: Norm; anchors: { hinge: Norm }; camera: { scale: number }; animation_axis: { origin: Norm; axis: string; range_degrees: [number, number] } | null }
   wax?: { visible_bounds?: Rect4; camera?: { scale: number } }
@@ -47,7 +47,7 @@ const api = (globalThis as typeof globalThis & { WorkbenchAnchors: AnchorsApi })
 
 /** Anchors baked by the current manifest. Fetch refreshes them after first paint. */
 export const manifest: WorkbenchManifest = {
-  mailbox: { size: [1024, 1024], anchors: { slot: [0.4834, 0.41549], plaque: [0.48229, 0.57258], exit: [0.13112, 0.46891], slotFront: [0.16708, 0.39044, 0.63929, 0.03947], slotBack: [0.1837, 0.37612, 0.62021, 0.03515] }, camera: { scale: 4.05 }, visible_bounds: [0.08398, 0.22266, 0.91504, 0.79102] },
+  mailbox: { size: [1024, 1024], anchors: { slot: [0.5, 0.42795], plaque: [0.5, 0.59533], exit: [0.09241, 0.50211], flapHinge: [0.5, 0.39267], slotFront: [0.18608, 0.3908, 0.62784, 0.07429], slotBack: [0.18861, 0.3817, 0.62278, 0.06934] }, camera: { scale: 3.95 }, visible_bounds: [0.08105, 0.21582, 0.91895, 0.75] },
   envelope: { size: [1024, 1024], anchors: { mouth: [0.49906, 0.39927], seal: [0.49528, 0.62163], hinge: [0.5, 0.39707], pocket: [0.09, 0.46365, 0.82, 0.30464], crease: [0.08064, 0.38917, 0.91936, 0.40497], closed: [0.4934, 0.70064] }, camera: { scale: 3.8 }, visible_bounds: [0.07617, 0.3877, 0.9209, 0.85156] },
   flap: { size: [1024, 1024], anchors: { hinge: [0.5, 0.39707] }, camera: { scale: 3.8 }, animation_axis: { origin: [0.5, 0.39707], axis: 'x', range_degrees: [0, 180] } },
   paper: { size: [1024, 1024], camera: { scale: 4.25 }, visible_bounds: [0.14648, 0.04395, 0.85254, 0.96094] },

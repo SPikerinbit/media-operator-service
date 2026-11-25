@@ -18,14 +18,9 @@ SHARE_CLOCK = re.compile(r"^(\d{1,3})\.(\d{2})(?:\s|$)")
 
 
 def share_duration(text):
-    match = SHARE_CLOCK.match((text or "").lstrip())
-    if not match:
-        return None
-    minutes, seconds = int(match.group(1)), int(match.group(2))
-    if seconds >= 60:
-        return None
-    total = minutes * 60 + seconds
-    return total if 0 < total <= 6 * 3600 else None
+    # Douyin share blurbs begin with a random anti-spam copy token such as
+    # "4.35 复制打开抖音..." or "8.92 ..."; never misread it as video duration.
+    return None
 
 
 def clean_title(value):

@@ -17,7 +17,7 @@ export const defaultStyle = {
   background_opacity: 45, background_padding: 12,
 }
 export const defaultBili = {
-  enabled: false, auto_metadata: true, tid: 0, tags: '', desc: '', copyright: 2, source_mode: 'original_url',
+  enabled: true, auto_metadata: true, tid: 0, tags: '', desc: '', copyright: 2, source_mode: 'original_url',
   source: '', title_template: '', line: 'QN', collection_type: 'none', collection_id: '',
   cover_mode: 'source_cover', cover_source: 'frame', cover_time_percent: 50, cover_asset_url: '',
 }
@@ -183,8 +183,11 @@ function Bilibili({ options, change, row, configured, aiConfigured }: {
   const text = (key: 'tags'|'title_template'|'source', placeholder?: string, maxLength?: number) =>
     <input value={options[key]} placeholder={placeholder} maxLength={maxLength} onChange={(e) => set(key,e.target.value)} />
   return <div className="form-stack">
-    {!configured && <p className="muted">投稿凭据可在设置中配置。</p>}
-    <div className="form-stack upload-options">
+    <label className="check"><input type="checkbox" checked={options.enabled}
+      onChange={(event) => set('enabled', event.target.checked)}/>烧录完成后自动投稿到 B 站</label>
+    {!options.enabled && <p className="muted">当前模式：仅生成本地带字幕成片，不上传至 B 站。处理完成后可直接打开成片目录或导出字幕。</p>}
+    {options.enabled && !configured && <p className="muted">投稿凭据可在设置中配置。</p>}
+    {options.enabled && <div className="form-stack upload-options">
       <label className="check"><input type="checkbox" checked={options.auto_metadata}
         onChange={(event) => set('auto_metadata', event.target.checked)}/>用 DeepSeek 填写空白投稿信息</label>
       {options.auto_metadata && <p className="muted">{aiConfigured ?
@@ -213,7 +216,7 @@ function Bilibili({ options, change, row, configured, aiConfigured }: {
         }} options={[[ '', '不加入' ], ...collections.map((c) => [(c.collection_type || c.type) + ':' + c.id,c.name] as const)]}/></Field>
       <div className="toolbar compact"><CoverPicker row={row} options={options} change={change} />
         <span className="muted">{options.cover_mode === 'source_cover' ? '每条使用来源封面' : '已自定义封面'}</span></div>
-    </div>
+    </div>}
   </div>
 }
 

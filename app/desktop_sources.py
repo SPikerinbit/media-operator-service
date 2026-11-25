@@ -25,7 +25,7 @@ VIDEO_EXTS = {"avi", "flv", "m4v", "mkv", "mov", "mp4", "ts", "wmv"}
 SITES = (
     ("YouTube", ("youtube.com", "youtu.be")),
     ("B 站", ("bilibili.com", "b23.tv")),
-    ("抖音", ("douyin.com",)),
+    ("抖音", ("douyin.com", "iesdouyin.com")),
     ("小红书", ("xiaohongshu.com", "xhslink.com", "xhslink.cn")),
     ("小宇宙", ("xiaoyuzhoufm.com",)),
 )
@@ -355,14 +355,14 @@ def duration_matches(actual, expected):
     return expected_seconds * 0.5 <= actual_seconds <= expected_seconds * 1.5
 
 
-def browser_page(url):
+def browser_page(url, expected_aweme=""):
     from app import site_profiles
     from app.sites import resolve
 
     if not site_profiles.can_capture(url):
         return None
     try:
-        found = site_profiles.capture(url)
+        found = site_profiles.capture(url, expected_aweme=expected_aweme) if expected_aweme else site_profiles.capture(url)
     except Exception:
         return None
     parsed = resolve.parse_document(found.get("url") or url, found.get("html") or "")
@@ -370,11 +370,28 @@ def browser_page(url):
     parsed["html"] = found.get("html") or ""
     if found.get("duration") and not parsed.get("duration"):
         parsed["duration"] = found["duration"]
-    if parsed.get("platform") == "抖音" and found.get("media_urls"):
-        parsed["play_urls"] = list(found["media_urls"])
-        parsed["video_url"] = found["media_urls"][0]
-    if parsed.get("platform") == "抖音" and found.get("audio_urls"):
-        parsed["audio_url"] = found["audio_urls"][0]
+    if parsed.get("platform") == "抖音":
+        if found.get("aweme_id") and not parsed.get("aweme_id"):
+            parsed["aweme_id"] = parsed["video_id"] = found["aweme_id"]
+        if found.get("media_urls"):
+            parsed["play_urls"] = list(found["media_urls"])
+            parsed["video_url"] = found["media_urls"][0]
+        if found.get("audio_urls"):
+            parsed["audio_url"] = found["audio_urls"][0]
+        elif parsed.get("audio_url") is None:
+            parsed["audio_url"] = ""
+        for field in ("title", "author", "thumbnail"):
+            if found.get(field) and not parsed.get(field):
+                parsed[field] = found[field]
+        if found.get("images") and not parsed.get("images"):
+            parsed["images"] = list(found["images"])
+        if found.get("image_note") and not parsed.get("play_urls"):
+            parsed["image_note"] = True
+        if found.get("captcha_wall"):
+            parsed["captcha_wall"] = True
+        if parsed.get("aweme_id") and not parsed.get("canonical_url"):
+            prefix = "note" if parsed.get("image_note") else "video"
+            parsed["canonical_url"] = f"https://www.douyin.com/{prefix}/{parsed['aweme_id']}"
     elif parsed.get("audio_url") is None:
         parsed["audio_url"] = ""
     return parsed
@@ -386,22 +403,44 @@ def prepare_social(url, cookies):
     label = site(url)[0]
     if label not in {"抖音", "小红书"}:
         return url, {}
-    browser = browser_page(url) if label == "抖音" and resolve.classify(url).get("kind") == "short" else None
+    classified = resolve.classify(url)
+    resolved = None
+    browser = None
     try:
-        resolved = browser or resolve.resolve(url, fetch=lambda target: resolve.fetch_public(
+        resolved = resolve.resolve(url, fetch=lambda target: resolve.fetch_public(
             target, cookies=cookies or "", referer=referer_for(url),
         ))
     except Exception:
-        if not browser:
-            return url, {}
-        resolved = browser
-    if browser and resolved is not browser:
-        for key in ("canonical_url", "aweme_id", "video_id", "title", "author", "description", "duration"):
-            if browser.get(key) and not resolved.get(key):
-                resolved[key] = browser[key]
+        resolved = None
+
+    if label == "抖音":
+        expected_aweme = (resolved or {}).get("aweme_id") or classified.get("aweme_id") or ""
+        has_stream = bool(resolved and (resolved.get("media_urls") or resolved.get("video_url") or resolved.get("image_note")))
+        if not has_stream:
+            capture_url = (resolved or {}).get("canonical_url") or (
+                f"https://www.douyin.com/video/{expected_aweme}" if expected_aweme else url
+            )
+            browser = browser_page(capture_url, expected_aweme=expected_aweme)
+            if not browser and capture_url != url:
+                browser = browser_page(url, expected_aweme=expected_aweme)
+        if browser:
+            if resolved:
+                merged = dict(resolved)
+                for key, value in browser.items():
+                    if value not in (None, "", [], False) or key in {"play_urls", "video_url", "image_note", "captcha_wall"}:
+                        if key in {"play_urls", "video_url", "audio_url", "duration", "images", "image_note", "captcha_wall", "aweme_id", "video_id", "canonical_url"}:
+                            if value not in (None, "", []):
+                                merged[key] = value
+                        elif not merged.get(key):
+                            merged[key] = value
+                resolved = merged
+            else:
+                resolved = browser
+    if not resolved:
+        return url, {}
     if label == "抖音":
         chosen = []
-        for item in [resolved.get("video_url"), *(resolved.get("play_urls") or [])]:
+        for item in [*(resolved.get("play_urls") or []), *(resolved.get("media_urls") or []), resolved.get("video_url")]:
             if item and item not in chosen:
                 chosen.append(item)
         resolved["play_urls"] = chosen
@@ -438,10 +477,10 @@ def prepare_social(url, cookies):
         resolve.remember(canonical, canonical)
     elif label != "小红书":
         resolved["canonical_url"] = ""
-        canonical = "" if label == "抖音" and resolve.classify(url).get("kind") == "short" else url
+        canonical = "" if label == "抖音" and classified.get("kind") == "short" else url
     fetch = resolved.get("resolved_fetch_url") or resolved.get("url") or url
-    if label == "抖音" and resolve.classify(url).get("kind") == "short":
-        fetch = canonical if canonical and "/video/" in urlsplit(canonical).path else ""
+    if label == "抖音" and classified.get("kind") == "short":
+        fetch = canonical if canonical and ("/video/" in urlsplit(canonical).path or "/note/" in urlsplit(canonical).path) else ""
         resolved["resolved_fetch_url"] = fetch
         target = fetch or url
     elif label == "小红书":
@@ -456,6 +495,8 @@ def prepare_social(url, cookies):
     else:
         resolved["resolved_fetch_url"] = fetch
         target = fetch or canonical or url
+    if resolved.get("captcha_wall") and not resolved.get("play_urls") and not resolved.get("image_note"):
+        raise SourceError("session_required", "抖音触发了安全验证，请在设置中打开抖音登录窗完成验证后重试。")
     if resolved.get("login_wall") and not cookies:
         raise SourceError("session_required", f"尚未登录{label}。请在设置中登录{label}后重试。")
     return target, resolved
@@ -591,14 +632,17 @@ def resolve_notes(resolved):
 
 def inspect_online(url, cookies):
     target, resolved = prepare_social(url, cookies)
+    if site(url)[0] == "抖音" and resolved.get("image_note") and not resolved.get("play_urls"):
+        return note_info(url, resolved)
     if site(url)[0] == "抖音" and resolved.get("play_urls"):
         info = {
             "title": resolved.get("title"), "description": resolved.get("description"),
+            "author": resolved.get("author") or "", "thumbnail": resolved.get("thumbnail") or "",
+            "aweme_id": resolved.get("aweme_id") or "", "audio_url": resolved.get("audio_url") or "",
             "platform": "抖音", "media_type": "video", "audio_direct": False, "has_audio": True,
             "duration": resolved.get("duration"), "media_url": resolved.get("video_url") or resolved["play_urls"][0],
             "play_urls": resolved["play_urls"], "page_fallback": True,
             "canonical_url": resolved.get("canonical_url") or "", "page_notes": resolved.get("page_notes"),
-            "share_duration": resolved.get("share_duration"),
             "resolved_fetch_url": resolved.get("resolved_fetch_url") or url,
             "original_url": resolved.get("original_url") or url,
         }
@@ -827,6 +871,15 @@ def keep_ytdlp_log(folder, text=""):
 
 
 def finish_media(path, info, actual, request, folder, cookies="", referer=""):
+    if not request.audio_only and actual.get("media_type") == "video" and not actual.get("has_audio"):
+        audio_url = (info or {}).get("audio_url") or ""
+        if audio_url:
+            saved = download_bytes(audio_url, folder / "audio", referer, cookies or "", 2 * 1024 * 1024 * 1024)
+            audio = folder / saved
+            muxed = folder / "source-muxed.mp4"
+            media.run_command([media.FFMPEG_BIN, "-y", "-protocol_whitelist", "file,crypto,data",
+                               "-i", str(path), "-i", str(audio), "-c", "copy", str(muxed)], log_dir=folder)
+            return muxed, info, inspect_file(muxed)
     if request.audio_only and actual.get("media_type") == "video":
         if not actual.get("has_audio"):
             audio_url = (info or {}).get("audio_url") or ""
@@ -878,18 +931,27 @@ def take_download(folder, request):
 
 
 def download_candidates(urls, folder, cookies, progress, referer, expected, request, info):
+    import hashlib
     last = SourceError("no_stream", "下载到的不是正片")
-    for address in urls:
+    for index, address in enumerate(urls):
+        diagnostic = {'candidate': index, 'url_hash': hashlib.sha256(address.encode()).hexdigest(),
+                      'aweme_id': info.get('aweme_id'), 'expected_seconds': expected, 'actual_seconds': None}
         try:
             path = download_direct(address, folder, cookies, progress, referer)
             actual = inspect_file(path)
+            diagnostic['actual_seconds'] = actual.get('duration')
+            if duration_matches(actual.get('duration'), expected):
+                diagnostic['reason'] = 'accepted'
+                return finish_media(path, info, actual, request, folder, cookies, referer)
+            diagnostic['reason'] = 'duration_mismatch'
+            path.unlink(missing_ok=True)
+            last = SourceError("no_stream", "下载到的不是正片")
         except SourceError as error:
             last = error
-            continue
-        if duration_matches(actual.get("duration"), expected):
-            return finish_media(path, info, actual, request, folder, cookies, referer)
-        path.unlink(missing_ok=True)
-        last = SourceError("no_stream", "下载到的不是正片")
+            diagnostic['reason'] = str(error)
+        finally:
+            with (folder / 'candidate-durations.jsonl').open('a', encoding='utf-8') as log:
+                log.write(json.dumps(diagnostic, ensure_ascii=False) + '\n')
     raise last
 
 
@@ -898,13 +960,21 @@ def download_douyin(job_id, request, info, cookies, progress):
     folder.mkdir(parents=True, exist_ok=True)
     _target, resolved = prepare_social(request.source_value, cookies)
     info = apply_resolved(dict(info), resolved)
+    if resolved.get("aweme_id"):
+        info["aweme_id"] = resolved["aweme_id"]
     if resolved.get("audio_url"):
         info["audio_url"] = resolved["audio_url"]
-    player = resolved.get("duration") or info.get("duration")
-    share = info.get("share_duration") or resolved.get("share_duration")
-    expected = player if player and player >= 30 else (share or player)
-    info["duration"] = expected or info.get("duration")
-    urls = [item for item in [resolved.get("video_url"), *(resolved.get("play_urls") or [])] if item]
+    if resolved.get("thumbnail") and not info.get("thumbnail"):
+        info["thumbnail"] = resolved["thumbnail"]
+    if resolved.get("image_note") and not resolved.get("play_urls"):
+        note_payload = note_info(request.source_value, resolved)
+        return save_note(folder, {**info, **note_payload}, progress)
+    expected = resolved.get("duration") or info.get("duration")
+    info["duration"] = expected
+    urls = []
+    for item in [resolved.get("video_url"), *(resolved.get("play_urls") or [])]:
+        if item and item not in urls:
+            urls.append(item)
     if not urls:
         raise SourceError("no_stream", "没有从已登录播放器读到这条视频的播放地址。" + resolve_notes(resolved))
     return download_candidates(

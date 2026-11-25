@@ -343,6 +343,7 @@ def burn_subtitle(
     subtitle_style: SubtitleStyle | None = None,
     burn_encoder: BurnEncoder | None = None,
     output_name: str | None = None,
+    lane: str = "other",
     progress_callback: Callable[[int, str, str | None], None] | None = None,
 ) -> Path:
     selected_encoder = selected_burn_encoder(burn_encoder)
@@ -448,37 +449,44 @@ def burn_subtitle(
     use_cuda_decode = actual_encoder == "nvenc" and "cuda" in burn_ffmpeg_hwaccels()
     if progress_callback:
         progress_callback(10, "NVIDIA NVENC 编码" if actual_encoder == "nvenc" else "CPU 编码", None)
+    from app.gpu_queue import describe_holder, slot
+
+    def on_burn_gpu_wait(position: int, holder: dict[str, Any] | None) -> None:
+        if progress_callback:
+            progress_callback(10, f"等待显卡队列（第 {position} 位 · 当前：{describe_holder(holder)}）", None)
+
     try:
-        if use_cuda_decode:
-            try:
+        with slot(actual_encoder == "nvenc", lane=lane, operation="burn", label=job_id, on_wait=on_burn_gpu_wait):
+            if use_cuda_decode:
+                try:
+                    run_command_streaming(
+                        build_ffmpeg_burn_cmd(actual_encoder, cuda_decode=True),
+                        cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
+                        log_dir=job_dir(job_id),
+                        log_name=f"ffmpeg-burn-{actual_encoder}",
+                        on_stdout_line=handle_ffmpeg_progress,
+                    )
+                    decode = "cuda"
+                except Exception as exc:
+                    decode_fallback_error = str(exc)
+                    decode = "cpu"
+                    if progress_callback:
+                        progress_callback(12, "显卡解码失败，改用软件解码", decode_fallback_error[:500])
+                    run_command_streaming(
+                        build_ffmpeg_burn_cmd(actual_encoder, cuda_decode=False),
+                        cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
+                        log_dir=job_dir(job_id),
+                        log_name=f"ffmpeg-burn-{actual_encoder}",
+                        on_stdout_line=handle_ffmpeg_progress,
+                    )
+            else:
                 run_command_streaming(
-                    build_ffmpeg_burn_cmd(actual_encoder, cuda_decode=True),
+                    build_ffmpeg_burn_cmd(actual_encoder),
                     cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
                     log_dir=job_dir(job_id),
                     log_name=f"ffmpeg-burn-{actual_encoder}",
                     on_stdout_line=handle_ffmpeg_progress,
                 )
-                decode = "cuda"
-            except Exception as exc:
-                decode_fallback_error = str(exc)
-                decode = "cpu"
-                if progress_callback:
-                    progress_callback(12, "显卡解码失败，改用软件解码", decode_fallback_error[:500])
-                run_command_streaming(
-                    build_ffmpeg_burn_cmd(actual_encoder, cuda_decode=False),
-                    cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
-                    log_dir=job_dir(job_id),
-                    log_name=f"ffmpeg-burn-{actual_encoder}",
-                    on_stdout_line=handle_ffmpeg_progress,
-                )
-        else:
-            run_command_streaming(
-                build_ffmpeg_burn_cmd(actual_encoder),
-                cwd=job_dir(job_id) if DESKTOP else ROOT_DIR,
-                log_dir=job_dir(job_id),
-                log_name=f"ffmpeg-burn-{actual_encoder}",
-                on_stdout_line=handle_ffmpeg_progress,
-            )
     except Exception as exc:
         if actual_encoder != "nvenc":
             raise

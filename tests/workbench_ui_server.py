@@ -1,4 +1,5 @@
 """Isolated visual fixture. All network/media/AI/upload work is simulated."""
+import json
 import os
 import sys
 from pathlib import Path
@@ -58,11 +59,46 @@ for route in app.routes:
 @app.post('/fixture/cards')
 async def fixture_cards(request:Request):
     values=await request.json()
+    kinds=['judgment','fact','story','method','statement']
     with knowledge.database() as db:
         for index in range(values.get('count',3)):
-            db.execute("INSERT OR IGNORE INTO card(transcript_id,claim,evidence,example,refs,origin_key,quote_translation) VALUES(?,?,?,?,?,?,?)",
-                       (values['transcript_id'],f'测试观点 {index+1}','仅用于布局复验','','[1]',f'fixture-{index}',''))
+            db.execute("INSERT OR IGNORE INTO card(transcript_id,topic,kind,mode,claim,evidence,example,refs,origin_key,quote_translation) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                       (values['transcript_id'],'框架',kinds[index%len(kinds)],'curated',f'测试观点 {index+1}','仅用于布局复验','','[1]',f'fixture-{index}',''))
     return {'ok':True}
+@app.post('/fixture/summary-tree')
+async def fixture_summary_tree(request:Request):
+    from app import note_engine
+    note_engine.initialize()
+    values=await request.json()
+    tid=values['transcript_id']
+    run_id=f'fixture-summary-{tid}'
+    with knowledge.database() as db:
+        db.execute("INSERT OR REPLACE INTO note_run(id,transcript_id,mode,status,phase,version,updated,model,plan_json) VALUES(?,?,'summary','succeeded','done',?,?,?,?)",
+                   (run_id,tid,note_engine.VERSION,time.time(),'fixture',json.dumps({
+                       'total_tokens':18000,'leaf_count':4,'viewpoint_count':6,'summary_layers':2,'branching_factor':2,'top_count':2,'level_sizes':[4,2],'cost':0.75
+                   },ensure_ascii=False)))
+        leaves=[]
+        for i in range(1,5):
+            lid=db.execute("INSERT INTO note_node(run,key,level,position,cue,lo,hi,status,title,capsule,start_cue,end_cue,state_json) VALUES(?,?,0,?,1,0,10,'done',?,?,1,1,?)",
+                           (run_id,f'leaf-{i}',i,f'小节 {i}：具体展开',json.dumps(f'第 {i} 节具体拆解与条件分析。',ensure_ascii=False),json.dumps({'title':f'小节 {i}：具体展开','summary':f'第 {i} 节具体拆解与条件分析。','role':'leaf'},ensure_ascii=False))).fetchone()
+            lid=db.execute('SELECT last_insert_rowid()').fetchone()[0]
+            db.execute('INSERT OR IGNORE INTO note_span VALUES(?,1,1,0,10)',(lid,))
+            cid=db.execute("INSERT INTO note_candidate(run,node,topic,kind,claim,evidence,example,importance,specificity,identity) VALUES(?,?,?,?,?,?,?,3,3,?)",
+                           (run_id,lid,'机制','story' if i%2 else 'judgment',f'底层具象观点 {i}：先记录再迭代','来自测试语段','历史卡片盒案例',f'cand-{tid}-{i}')).lastrowid
+            db.execute('INSERT OR IGNORE INTO note_candidate_span VALUES(?,?,1)',(cid,lid))
+            leaves.append(lid)
+        branches=[]
+        for b_idx,pair in enumerate([(leaves[0],leaves[1]),(leaves[2],leaves[3])],1):
+            bid=db.execute("INSERT INTO note_node(run,key,level,position,status,title,capsule,start_cue,end_cue,state_json) VALUES(?,?,1,?,'done',?,?,1,1,?)",
+                           (run_id,f'branch-{b_idx}',b_idx*2-1,f'主题 {b_idx}：核心脉络',json.dumps(f'主题 {b_idx} 聚合压缩概述。',ensure_ascii=False),json.dumps({'title':f'主题 {b_idx}：核心脉络','summary':f'主题 {b_idx} 聚合压缩概述。','role':'branch'},ensure_ascii=False))).lastrowid
+            for child in pair: db.execute('INSERT OR IGNORE INTO note_edge VALUES(?,?)',(bid,child))
+            branches.append(bid)
+        root_id=db.execute("INSERT INTO note_node(run,key,level,position,status,title,capsule,start_cue,end_cue,state_json) VALUES(?,?,2,1,'done',?,?,1,1,?)",
+                           (run_id,'overview','全篇主旨',json.dumps('全篇多层级压缩总览，先记录下来想法才有机会成为作品。',ensure_ascii=False),json.dumps({'title':'全篇主旨','summary':'全篇多层级压缩总览，先记录下来想法才有机会成为作品。','role':'overview'},ensure_ascii=False))).lastrowid
+        for b in branches: db.execute('INSERT OR IGNORE INTO note_edge VALUES(?,?)',(root_id,b))
+        db.execute('UPDATE note_run SET root=? WHERE id=?',(root_id,run_id))
+        db.execute("INSERT OR REPLACE INTO note_active_mode(transcript_id,mode,run,updated) VALUES(?,'summary',?,?)",(tid,run_id,time.time()))
+    return {'ok':True,'root_id':root_id}
 @app.post('/fixture/long-notes')
 async def long_notes(request:Request):
     values=await request.json()

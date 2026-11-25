@@ -1,16 +1,27 @@
 import { useSyncExternalStore } from 'react'
-import { errorMessage, request, type Draft, type Publication, type Transcript } from './api'
+import { errorMessage, request, type Draft, type Publication, type SummaryPublication, type Transcript } from './api'
+import type { NotesMode } from './notesMode'
 
 type SaveState = 'dirty' | 'saving' | 'saved' | 'error'
 type Session = {
-  doc: Transcript | null; loading: boolean; error: string; edits: Record<number, Draft>;
-  saves: Record<number, SaveState>; selected: number[]; expanded: number | null;
-  results: Publication[]; busy: 'generate' | 'publish' | ''; activeCue?: number;
-  follow: boolean; panel: 'source' | 'drafts';
+  doc: Transcript | null
+  loading: boolean
+  error: string
+  edits: Record<number, Draft>
+  saves: Record<number, SaveState>
+  selected: number[]
+  expanded: number | null
+  results: Publication[]
+  summaryResult: SummaryPublication | null
+  busy: 'generate' | 'publish' | 'publish-summary' | 'translate-page' | ''
+  activeCue?: number
+  follow: boolean
+  panel: 'source' | 'drafts'
+  viewMode: NotesMode | ''
 }
 function createSession(id: number) {
   const storageKey = 'media-operator.pending-drafts.' + id
-  let pending: Record<number,Draft> = {}
+  let pending: Record<number, Draft> = {}
   try {
     const stored = JSON.parse(localStorage.getItem(storageKey) || '{}')
     for (const value of Object.values(stored)) {
@@ -19,29 +30,38 @@ function createSession(id: number) {
           && typeof draft.example === 'string' && Array.isArray(draft.refs)) pending[draft.id] = draft
     }
   } catch { /* The database still holds every previously acknowledged edit. */ }
-  let state: Session = {doc:null,loading:true,error:'',edits:{},saves:{},selected:[],expanded:null,
-    results:[],busy:'',follow:false,panel:'source'}
+  let state: Session = {
+    doc: null, loading: true, error: '', edits: {}, saves: {}, selected: [], expanded: null,
+    results: [], summaryResult: null, busy: '', follow: false, panel: 'drafts', viewMode: '',
+  }
   state.edits = pending
-  state.saves = Object.fromEntries(Object.keys(pending).map((key) => [key,'error']))
+  state.saves = Object.fromEntries(Object.keys(pending).map((key) => [key, 'error']))
   const listeners = new Set<() => void>()
   const timers = new Map<number, ReturnType<typeof setTimeout>>()
   const inflight = new Map<number, Promise<void>>()
   const path = '/desktop/knowledge/' + id
-  const scroll = {source:0,drafts:0,playback:0}
+  const scroll = { source: 0, drafts: 0, playback: 0 }
   const update = (patch: Partial<Session>) => {
-    state = {...state,...patch}
+    state = { ...state, ...patch }
     if (patch.edits) {
       try {
-        if (Object.keys(patch.edits).length) localStorage.setItem(storageKey,JSON.stringify(patch.edits))
+        if (Object.keys(patch.edits).length) localStorage.setItem(storageKey, JSON.stringify(patch.edits))
         else localStorage.removeItem(storageKey)
       } catch { /* In-memory editing and database saves remain available. */ }
     }
     listeners.forEach((listener) => listener())
   }
-  async function refresh() {
+  async function refresh(
+    cueAfter = state.doc?.cue_after || 0,
+    cardAfter = state.doc?.card_after || 0,
+    viewMode?: NotesMode | 'auto',
+  ) {
     const before = state.doc
+    const requestedMode = viewMode || state.viewMode || 'auto'
     try {
-      const doc = await request<Transcript>(path)
+      const doc = await request<Transcript>(
+        path + `?cue_after=${cueAfter}&card_after=${cardAfter}&view_mode=${requestedMode}`,
+      )
       // Preserve saves acknowledged while this refresh was in flight.
       if (before && state.doc && before !== state.doc) {
         doc.cards = doc.cards.map((card) => {
@@ -50,9 +70,22 @@ function createSession(id: number) {
           return old && current && current !== old ? current : card
         })
       }
-      update({doc,error:'',loading:false})
+      const nextViewMode = (viewMode && viewMode !== 'auto')
+        ? viewMode
+        : (state.viewMode || doc.view_mode || doc.active_mode || 'curated')
+      update({ doc, error: '', loading: false, viewMode: nextViewMode as NotesMode })
+    } catch (error) {
+      update({ error: errorMessage(error), loading: false })
+      throw error
     }
-    catch (error) {update({error:errorMessage(error),loading:false}); throw error}
+  }
+  async function setViewMode(mode: NotesMode) {
+    update({ viewMode: mode, selected: [], expanded: null })
+    await refresh(state.doc?.cue_after || 0, 0, mode)
+  }
+  async function saveTreeNode(nodeId: number, title: string, summary: string) {
+    const response = await request<Transcript>(path + '/tree-nodes/' + nodeId, 'PUT', { title, summary })
+    update({ doc: response })
   }
   function save(cardId: number): Promise<void> {
     clearTimeout(timers.get(cardId))
@@ -61,41 +94,51 @@ function createSession(id: number) {
       while (state.edits[cardId]) {
         const value = state.edits[cardId]
         if (!value.claim.trim()) {
-          update({saves:{...state.saves,[cardId]:'error'}})
+          update({ saves: { ...state.saves, [cardId]: 'error' } })
           throw new Error('请填写观点主题，当前编辑已保留')
         }
-        update({saves:{...state.saves,[cardId]:'saving'}})
+        update({ saves: { ...state.saves, [cardId]: 'saving' } })
         try {
-          const response = await request<Transcript>(path + '/cards/' + cardId,'PUT',{
-            claim:value.claim,evidence:value.evidence,example:value.example,quote_translation:value.quote_translation,
+          const response = await request<Transcript>(path + '/cards/' + cardId, 'PUT', {
+            claim: value.claim,
+            topic: value.topic ?? '',
+            kind: value.kind ?? '',
+            evidence: value.evidence,
+            example: value.example,
+            quote_translation: value.quote_translation,
           })
           // A different card can be saving simultaneously. Merge only the acknowledged card.
           const saved = response.cards.find((card) => card.id === cardId)
-          const edits = {...state.edits}
+          const edits = { ...state.edits }
           if (edits[cardId] === value) delete edits[cardId]
-          update({edits,saves:{...state.saves,[cardId]:edits[cardId] ? 'dirty' : 'saved'},
-            doc:state.doc && saved ? {...state.doc,cards:state.doc.cards.map((card) => card.id === cardId ? saved : card)} : state.doc})
+          update({
+            edits,
+            saves: { ...state.saves, [cardId]: edits[cardId] ? 'dirty' : 'saved' },
+            doc: state.doc && saved ? { ...state.doc, cards: state.doc.cards.map((card) => card.id === cardId ? saved : card) } : state.doc,
+          })
         } catch (error) {
-          update({saves:{...state.saves,[cardId]:'error'}})
+          update({ saves: { ...state.saves, [cardId]: 'error' } })
           throw error
         }
       }
     })().finally(() => inflight.delete(cardId))
-    inflight.set(cardId,work)
+    inflight.set(cardId, work)
     return work
   }
   function edit(value: Draft) {
-    update({edits:{...state.edits,[value.id]:value},saves:{...state.saves,[value.id]:'dirty'}})
+    update({ edits: { ...state.edits, [value.id]: value }, saves: { ...state.saves, [value.id]: 'dirty' } })
     clearTimeout(timers.get(value.id))
-    timers.set(value.id,setTimeout(() => {void save(value.id).catch(() => {})},800))
+    timers.set(value.id, setTimeout(() => { void save(value.id).catch(() => {}) }, 800))
   }
   void refresh().catch(() => {})
-  return {get:() => state,update,refresh,edit,save,scroll,
-    subscribe:(listener:() => void) => {listeners.add(listener); return () => {listeners.delete(listener)}}}
+  return {
+    get: () => state, update, refresh, setViewMode, saveTreeNode, edit, save, scroll,
+    subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+  }
 }
-const sessions = new Map<number,ReturnType<typeof createSession>>()
+const sessions = new Map<number, ReturnType<typeof createSession>>()
 export function useDraftSession(id: number) {
-  if (!sessions.has(id)) sessions.set(id,createSession(id))
+  if (!sessions.has(id)) sessions.set(id, createSession(id))
   const session = sessions.get(id)!
-  return [useSyncExternalStore(session.subscribe,session.get),session] as const
+  return [useSyncExternalStore(session.subscribe, session.get), session] as const
 }

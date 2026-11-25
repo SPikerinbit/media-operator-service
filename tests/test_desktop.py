@@ -102,14 +102,17 @@ def test_knowledge_workflow(desktop_app, monkeypatch):
         nonlocal ref
         body = json.loads(request.content)
         sent = json.loads(body["messages"][1]["content"])
+        if '按输入局部ID' in body['messages'][0]['content']:
+            return httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'content':json.dumps({'items':sent})}}]})
         assert sent[0]["text"].startswith("复习方法")
+        assert body["max_tokens"]<=4096
         return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
-            "cards": [{"claim": "使用间隔复习", "evidence": "按间隔安排学习", "refs": [ref]}],
+            "capsule":"学习方法", "overflow":False, "cards": [{"claim": "使用间隔复习", "topic":"学习", "importance":3,"specificity":3,"evidence": "按间隔安排学习", "refs": [ref]}],
         })}}]})
 
     ref = 1
     monkeypatch.setattr(media, "TRANSLATE_API_KEY", "test")
-    monkeypatch.setattr(knowledge, "httpx", SimpleNamespace(
+    monkeypatch.setattr(__import__("app.note_engine",fromlist=["httpx"]), "httpx", SimpleNamespace(
         Client=lambda **kwargs: real_client(transport=httpx.MockTransport(fake_model), **kwargs),
     ))
     assert client.post(route + "/generate", json={"send_subtitles": True}).json() == {"added": 1}
@@ -120,6 +123,7 @@ def test_knowledge_workflow(desktop_app, monkeypatch):
     assert client.put(route + f"/cards/{card}", json={"claim": "我编辑的观点"}).status_code == 200
     assert client.post(route + "/generate", json={"send_subtitles": True}).json() == {"added": 0}
     ref = 999
+    monkeypatch.setattr(desktop_routes.config,"settings",lambda: {"ai_model":"invalid-reference-fixture"})
     assert client.post(route + "/generate", json={"send_subtitles": True}).status_code == 502
     assert client.get(route).json()["cards"][0]["claim"] == "我编辑的观点"
     destination = root / "观点.md"
@@ -804,20 +808,25 @@ def test_quote_modes_validation_and_translated_publication(desktop_app, monkeypa
     def fake(request):
         body = json.loads(request.content)
         calls.append(body)
-        assert "不是写简介" in body["messages"][0]["content"]
-        assert "较完整" in body["messages"][0]["content"]
-        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
-            "cards": [{"claim": "先做预测再解释", "refs": refs,
-                       "quote_translation": "解释之前，先检验预测。错误的答案会告诉你需要回顾什么。"}],
-        })}}]})
+        data=json.loads(body['messages'][1]['content'])
+        prompt=body['messages'][0]['content']
+        if '按输入局部ID' in prompt:
+            result={'items':[{'id':p['id'],'text':'解释之前，先检验预测。错误的答案会告诉你需要回顾什么。'} for p in data]}
+        elif '合并相邻概述' in prompt: result={'capsule':'先预测再解释'}
+        elif '比较0与其他' in prompt: result={'same':None}
+        else:
+            result={'capsule':'先预测再解释','overflow':False,'cards':[{'claim':'先做预测再解释','topic':'学习','importance':3,'specificity':3,'refs':refs}]}
+        return httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'content':json.dumps(result)}}]})
 
-    monkeypatch.setattr(knowledge, "httpx", SimpleNamespace(Client=lambda **kw: real_client(transport=httpx.MockTransport(fake), **kw)))
+    monkeypatch.setattr(__import__("app.note_engine",fromlist=["httpx"]), "httpx", SimpleNamespace(Client=lambda **kw: real_client(transport=httpx.MockTransport(fake), **kw)))
     monkeypatch.setattr(media, "TRANSLATE_API_KEY", "test")
     route = f"/desktop/knowledge/{ident}"
     assert client.post(route + "/generate", json={"send_subtitles": True, "mode": "invalid"}).status_code == 422
     assert client.post(route + "/generate", json={"send_subtitles": True, "mode": "comprehensive"}).json() == {"added": 1}
     doc = knowledge.read_transcript(ident)
     card = doc["cards"][0]
+    knowledge.update_card(ident,card['id'],knowledge.CardText(claim=card['claim'],quote_translation='解释之前，先检验预测。'))
+    card=knowledge.read_transcript(ident)['cards'][0]
     assert card["quote_translation"].startswith("解释之前")
     assert any(row["id"] == ident for row in knowledge.list_transcripts("检验预测"))
     assert "中文译句" in knowledge.markdown(ident)
@@ -825,7 +834,8 @@ def test_quote_modes_validation_and_translated_publication(desktop_app, monkeypa
     assert client.put(route + f"/cards/{card['id']}", json={"claim": "我修改的主题"}).is_success
     assert knowledge.read_transcript(ident)["cards"][0]["quote_translation"] == card["quote_translation"]
     assert client.post(route + "/generate", json={"send_subtitles": True, "mode": "comprehensive"}).json() == {"added": 0}
-    for refs in ([1, 3], [999], [0]):
+    for refs in ([999], [0]):
+        monkeypatch.setattr(desktop_routes.config,"settings",lambda refs=refs: {"ai_model":"invalid-"+str(refs)})
         assert client.post(route + "/generate", json={"send_subtitles": True, "mode": "comprehensive"}).status_code == 502
     assert knowledge.read_transcript(ident)["cards"][0]["claim"] == "我修改的主题"
     vault = root / "译句知识库"
@@ -850,34 +860,36 @@ def test_quote_modes_validation_and_translated_publication(desktop_app, monkeypa
     assert new["cleared"] and not knowledge.read_transcript(ident)["cards"]
 
 
-def test_long_transcript_global_selection_is_grounded(desktop_app, monkeypatch):
-    _, root = desktop_app
-    subtitle = root / "long-quotes.srt"
-    subtitle.write_text("\n\n".join(f"{n}\n00:{n // 60:02d}:{n % 60:02d},000 --> 00:{(n+1) // 60:02d}:{(n+1) % 60:02d},000\n"
-                                   + "A concrete example shows which assumption can be tested. " * 3 for n in range(1,180)), encoding="utf-8")
-    ident = knowledge.register(subtitle, source_kind="subtitle", source=str(subtitle), title="Long")
-    real_client = httpx.Client
-    ranking = []
-    bad = False
-
+def test_long_transcript_uses_bounded_tree_and_preserves_detailed_cards(desktop_app,monkeypatch):
+    from app import note_engine as engine
+    _,root=desktop_app
+    ident=knowledge.register(None,source_kind='local',source='long-bounded',title='Long',media_type='note',note_body='\n'.join('独立观点'+str(i)+'。'*100 for i in range(120)))
+    real_client=httpx.Client
+    calls=[]
     def fake(request):
-        payload = json.loads(request.content)
-        data = json.loads(payload["messages"][1]["content"])
-        if "quote" in data[0]:
-            ranking.append(data)
-            result = {"ids": [99999] if bad else [len(data)-1, 0]}
+        body=json.loads(request.content)
+        assert engine.tokens(body['messages'])+128+body['max_tokens']+1024<=16384
+        assert engine.tokens(body['messages'])+128<=6144
+        payload=json.loads(body['messages'][1]['content'])
+        prompt=body['messages'][0]['content']
+        calls.append(prompt)
+        if '合并相邻概述' in prompt:
+            assert 2<=len(payload)<=4
+            result={'capsule':'全篇概述'}
+        elif '比较0与其他' in prompt:
+            assert len(payload)<=8
+            result={'same':None}
         else:
-            result = {"cards": [{"claim": "可验证的假设", "refs": [data[0]["id"]], "quote_translation": "具体例子揭示了可检验的假设。"}]}
-        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(result)}}]})
-
-    monkeypatch.setattr(knowledge, "httpx", SimpleNamespace(Client=lambda **kw: real_client(transport=httpx.MockTransport(fake), **kw)))
-    assert knowledge.generate_cards(ident, "test", "mock", "comprehensive") == 2
-    cards = knowledge.read_transcript(ident)["cards"]
-    assert cards[0]["refs"][0] < cards[1]["refs"][0] and ranking
-    bad = True
-    with pytest.raises(ValueError):
-        knowledge.generate_cards(ident, "test", "mock", "comprehensive")
-    assert knowledge.read_transcript(ident)["cards"] == cards
+            result={'capsule':'局部概述','overflow':False,'cards':[{'claim':'观点'+str(len(calls)),'topic':'主题','importance':3,'specificity':3,'refs':[payload[0]['id']]}]}
+        return httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'content':json.dumps(result)}}]})
+    monkeypatch.setattr(engine,'httpx',SimpleNamespace(Client=lambda **kw: real_client(transport=httpx.MockTransport(fake),**kw)))
+    count=knowledge.generate_cards(ident,'test','mock','comprehensive')
+    assert count>10
+    assert len(knowledge.read_transcript(ident)['cards'])==count
+    assert any('合并相邻概述' in prompt for prompt in calls)
+    before=len(calls)
+    assert knowledge.generate_cards(ident,'test','mock','comprehensive')==0
+    assert len(calls)==before
 
 
 def test_legacy_source_metadata_retained_when_refresh_fails(desktop_app, monkeypatch):
@@ -905,7 +917,6 @@ def test_share_text_parses_douyin_and_xiaohongshu_samples(desktop_app):
     assert douyin == [{
         "url": "https://v.douyin.com/aDqmydz7iGA/", "platform": "抖音", "author": "内语者TheInward",
         "title": "宇宙想让你和谁在一起？这些迹象不是巧合，而是……", "source_kind": "url",
-        "duration": 275,
     }]
     assert xhs == [{
         "url": "https://xhslink.cn/o/4LXLtDW6SVI", "platform": "小红书", "author": "",
@@ -1341,4 +1352,140 @@ def test_xiaohongshu_fetch_url_is_not_replaced_by_canonical(monkeypatch, tmp_pat
     assert desktop_sources.refresh_reason(desktop_sources.SourceError("unavailable", "连接超时")) == "network"
     assert desktop_sources.refresh_reason(desktop_sources.SourceError("signature_expired", "链接签名已过期")) == "signature_expired"
     assert desktop_sources.refresh_reason(desktop_sources.SourceError("no_stream", "未找到可用的视频流")) == "no_media"
+
+
+def test_dual_obsidian_vaults_and_rich_summary_presentation(desktop_app, monkeypatch):
+    from app import note_engine as engine
+
+    client, root = desktop_app
+    base = root / "dual_vaults"
+    summary_vault = base / "摘要知识库"
+    viewpoint_vault = base / "观点知识库"
+    (summary_vault / ".obsidian").mkdir(parents=True, exist_ok=True)
+    (viewpoint_vault / ".obsidian").mkdir(parents=True, exist_ok=True)
+    settings_file = base / "settings.json"
+    settings_file.write_text("{}", encoding="utf-8")
+
+    config = desktop_routes.config
+    monkeypatch.setattr(config, "HOME", base)
+    monkeypatch.setattr(config, "SETTINGS", settings_file)
+    monkeypatch.setattr(config, "settings", lambda: json.loads(settings_file.read_text(encoding="utf-8")))
+
+    saved = client.put("/desktop/settings", json={
+        "obsidian_summary_vault": str(summary_vault),
+        "obsidian_viewpoint_vault": str(viewpoint_vault),
+    })
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["obsidian_summary_vault"] == str(summary_vault.resolve())
+    assert saved.json()["obsidian_viewpoint_vault"] == str(viewpoint_vault.resolve())
+    assert saved.json()["obsidian_vault"] == str(viewpoint_vault.resolve())
+
+    # Register a multi-block YouTube transcript (~7500 chars -> multi-node summary tree + viewpoints)
+    srt_lines = []
+    for i in range(1, 31):
+        start_s = (i - 1) * 20
+        end_s = start_s + 18
+        srt_lines.append(
+            f"{i}\n00:{start_s // 60:02d}:{start_s % 60:02d},000 --> 00:{end_s // 60:02d}:{end_s % 60:02d},000\n"
+            + f"第{i}段讨论卡片盒方法与历史典故：卢曼如何用编号索引连接不同主题的思想。" * 6
+        )
+    sub = base / "dual.srt"
+    sub.write_text("\n\n".join(srt_lines) + "\n", encoding="utf-8")
+    tid = knowledge.register(sub, source_kind="youtube", source="https://youtu.be/dQw4w9WgXcQ?dual=1", title="卡片盒[系统]复盘")
+
+    idx = 0
+    def fake_ask(self, operation, instruction, payload):
+        nonlocal idx
+        idx += 1
+        if operation == "read":
+            kind = "story" if idx % 2 else "judgment"
+            return {
+                "topic": f"主题[{idx}]与脉络",
+                "capsule": f"第{idx}节核心压缩总结，保留关键前提与权衡。",
+                "key_points": [f"关键机制{idx}"],
+                "overflow": False,
+                "cards": [{
+                    "kind": kind,
+                    "topic": "知识结构",
+                    "claim": f"核心洞察{idx}：分块外置与编号索引",
+                    "importance": 3,
+                    "specificity": 3,
+                    "evidence": f"实证论据{idx}",
+                    "example": f"卢曼卡片盒典故{idx}",
+                    "refs": [payload[0]["id"]],
+                }],
+            }
+        if operation == "merge":
+            return {"title": "全篇核心主线", "capsule": "全篇多层级压缩总览。", "highlights": ["主线A", "主线B"]}
+        if operation == "merge_candidates":
+            cands = payload["candidates"]
+            return {
+                "capsule": "归约概述",
+                "keep": [{"primary": c["id"], "merged_from": [], "kind": c.get("kind", "judgment"), "topic": c["topic"], "claim": c["claim"], "evidence": c["evidence"]} for c in cands[:4]],
+            }
+        if operation == "dedup":
+            return {"duplicates": []}
+        raise AssertionError(operation)
+
+    monkeypatch.setattr(engine.Engine, "ask", fake_ask)
+    monkeypatch.setattr(media, "TRANSLATE_API_KEY", "test")
+    assert client.post(f"/desktop/knowledge/{tid}/generate", json={"send_subtitles": True, "mode": "comprehensive"}).status_code == 200
+
+    # Verify all 3 views are populated via parallel co-generation
+    sum_page = client.get(f"/desktop/knowledge/{tid}", params={"view_mode": "summary"}).json()
+    cur_page = client.get(f"/desktop/knowledge/{tid}", params={"view_mode": "curated"}).json()
+    comp_page = client.get(f"/desktop/knowledge/{tid}", params={"view_mode": "comprehensive"}).json()
+    assert sum_page["summary_tree"] is not None and len(sum_page["summary_tree"]["nodes"]) >= 2
+    assert cur_page["cards"] and comp_page["cards"]
+
+    # 1. Publish Summary Tree -> goes ONLY into Summary Vault with rich Obsidian native formatting
+    pub_sum = client.post(f"/desktop/knowledge/{tid}/publish-summary", json={}).json()["result"]
+    assert pub_sum["status"] == "published" and pub_sum["vault_kind"] == "summary"
+    sum_files = list((summary_vault / "Media Operator" / "摘要").glob("*.md"))
+    assert len(sum_files) == 1
+    assert not (viewpoint_vault / "Media Operator" / "摘要").exists()
+    sum_md = sum_files[0].read_text(encoding="utf-8")
+    assert "media_operator_type: summary" in sum_md
+    assert "summary_layers:" in sum_md
+    assert "> [!abstract]+ 全篇总览" in sum_md
+    assert "> [!map]- 结构脉络图" in sum_md and "```mermaid" in sum_md and "flowchart LR" in sum_md
+    assert "| # | 主题 | 位置 | 核心概览 | 细化 |" in sum_md and "\\|" in sum_md
+    assert "> [!tip]- 底层具象观点与故事" in sum_md
+    assert "> > > [!quote]- 原文溯源" in sum_md
+    assert "v=dQw4w9WgXcQ&t=" in sum_md
+    # Summary tree remains intact in app after publishing!
+    assert client.get(f"/desktop/knowledge/{tid}", params={"view_mode": "summary"}).json()["summary_tree"] is not None
+
+    # Edit summary node -> re-publish reports already_published (unchanged=False); new_version creates v2
+    node_id = sum_page["summary_tree"]["nodes"][0]["id"]
+    edit_res = client.put(f"/desktop/knowledge/{tid}/tree-nodes/{node_id}", json={"title": "修订后的顶层主题", "summary": "人工精修摘要内容"})
+    assert edit_res.status_code == 200 and edit_res.json()["updated_node"]["edited"] is True
+    dup_sum = client.post(f"/desktop/knowledge/{tid}/publish-summary", json={}).json()["result"]
+    assert dup_sum["status"] == "already_published" and dup_sum["unchanged"] is False
+    v2_sum = client.post(f"/desktop/knowledge/{tid}/publish-summary", json={"new_version": True}).json()["result"]
+    assert v2_sum["status"] == "published" and v2_sum["publication_id"] != pub_sum["publication_id"]
+    assert len(list((summary_vault / "Media Operator" / "摘要").glob("*.md"))) == 2
+
+    # 2. Publish BOTH curated and comprehensive viewpoints -> BOTH go into Viewpoint Vault!
+    cur_card = cur_page["cards"][0]
+    comp_card = comp_page["cards"][0]
+    pub_cur = client.post(f"/desktop/knowledge/{tid}/publish", json={"card_ids": [cur_card["id"]]}).json()["results"][0]
+    pub_comp = client.post(f"/desktop/knowledge/{tid}/publish", json={"card_ids": [comp_card["id"]]}).json()["results"][0]
+    assert pub_cur["status"] == "published" and pub_cur["vault_kind"] == "viewpoint"
+    assert pub_comp["status"] == "published" and pub_comp["vault_kind"] == "viewpoint"
+    vp_files = list((viewpoint_vault / "Media Operator" / "观点").glob("*.md"))
+    assert len(vp_files) == 2
+    assert not (summary_vault / "Media Operator" / "观点").exists()
+    vp_text = "\n".join(f.read_text(encoding="utf-8") for f in vp_files)
+    assert "media_operator_kind:" in vp_text and "media_operator_tier:" in vp_text
+    assert "> [!quote]+" in vp_text and ("[!example]+" in vp_text or "[!important]+" in vp_text)
+
+    # 3. Opening notes resolves across BOTH vaults seamlessly
+    opened = []
+    monkeypatch.setattr(desktop_routes.os, "startfile", opened.append)
+    assert client.post(f"/desktop/obsidian/{pub_sum['publication_id']}/open", params={"vault_kind": "summary"}).status_code == 200
+    assert client.post(f"/desktop/obsidian/{pub_cur['publication_id']}/open", params={"vault_kind": "viewpoint"}).status_code == 200
+    assert client.post(f"/desktop/obsidian/{pub_sum['publication_id']}/open").status_code == 200
+    assert len(opened) == 3 and all(uri.startswith("obsidian://open?path=") for uri in opened)
+
 

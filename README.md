@@ -1,12 +1,12 @@
 # Media Operator
 
-Media Operator 是跑在 Windows 上的本地桌面程序。它把本机文件，以及 YouTube、Bilibili、抖音、小红书、小宇宙的链接或分享文案，做成带字幕的视频，可以投稿到 B 站，也可以把原话整理成 Obsidian 笔记。0.5 的界面是一个双信箱工作台：首页同时收「投稿」和「笔记」。转录在本机完成。DeepSeek 翻译、投稿文案和观点摘录是可选项。
+Media Operator 是跑在 Windows 上的本地桌面程序。它把本机文件，以及 YouTube、Bilibili、抖音、小红书、小宇宙、微信读书的链接或分享文案，做成带字幕的视频（支持仅本地出片或自动投稿到 B 站），也可以把原话按三档整理成 Obsidian 笔记。1.0.0 版本提供统一的双信箱工作台、对齐的投稿与笔记三标签工位、Blender 渲染书桌视觉素材与原生 Windows 桌面集成。转录在本机完成；DeepSeek 或其他 OpenAI 兼容接口为可选项。
 
-当前版本 **0.5.0**。版本号以仓库根目录的 [`VERSION`](VERSION) 为准。发布线是 `main`。还没做的改动记在 [docs/PENDING.md](docs/PENDING.md)。
+当前版本 **1.0.0**。版本号以仓库根目录的 [`VERSION`](VERSION) 为准。发布线是 `main`。待验收边界与后续事项记在 [docs/PENDING.md](docs/PENDING.md)。
 
 ## English summary
 
-Media Operator is a Windows desktop app. It turns local files and links from YouTube, Bilibili, Douyin, Xiaohongshu, and Xiaoyuzhou into subtitled videos, can upload those videos to Bilibili, and can file source-grounded notes into an Obsidian vault. Version 0.5 is a workbench with two inboxes, one for publishing and one for notes. Transcription runs locally. DeepSeek is optional. The release line is `main` at 0.5.0. Pending work is listed in [docs/PENDING.md](docs/PENDING.md).
+Media Operator is a local-first Windows desktop app. It turns local files and links from YouTube, Bilibili, Douyin, Xiaohongshu, Xiaoyuzhou, and WeRead into subtitled videos (local-only export or Bilibili upload), and organizes source-grounded notes into an Obsidian vault. Version 1.0.0 features a unified 4-icon sidebar, geometrically aligned Publish and 3-tab Notes workspaces, Blender 4.5 3D icon and study-desk props, storage/cache management, custom OpenAI-compatible AI endpoints, window geometry persistence, Windows taskbar progress, background completion notifications, and keyboard shortcuts. Transcription runs locally. The release line is `main` at 1.0.0. Release notes and manual verification boundaries are tracked in [docs/PENDING.md](docs/PENDING.md).
 
 下面是给使用者的说明。安装包未签名。桌面窗口只连接本机 `127.0.0.1`，密钥放在 Windows 凭据管理器里。
 
@@ -46,13 +46,12 @@ FFmpeg、ffprobe、yt-dlp 或 Deno 检测失败时，重新运行安装程序即
 
 侧栏从上到下是 **信箱**、**投稿**、**笔记**、**设置**。先把设置补齐，再投递。
 
-1. **资料目录**：「设置 → 常规与目录」选择一个绝对路径。任务、媒体和未发布草稿都放在这里。换目录后需要重启应用。这里也可以导出一份脱敏诊断 JSON。
-2. **转录模型**：「设置 → 转录与本地资源」点「检测本地环境」，再下载要用的 Whisper 模型。下载完成后可离线转录。缺少模型时，任务会在处理前提示。默认使用 `small`。
-3. **DeepSeek**（翻译、投稿文案、观点摘录才需要）：「设置 → DeepSeek」填写模型名和 API Key，点「保存 DeepSeek 设置」。密钥进 Windows 凭据管理器，不写入设置文件。留空表示保留已保存的密钥。未配置时，默认模型名是 `deepseek-flash`。
-4. **B 站投稿**：「设置 → B 站投稿」填入创作中心凭据：`SESSDATA`、`bili_jct`、`buvid3`、`DedeUserID`、`ac_time_value`。留空保留已保存的值。这是凭据字段，不是在应用里打开 B 站登录页。
+1. **资料目录与存储**：「设置 → 常规与目录」可选择资料目录、一键在资源管理器打开资料目录或日志目录、查看各类磁盘占用并清理临时缓存，也可导出脱敏诊断 JSON。换目录后需要重启应用。
+2. **转录模型**：「设置 → 转录与本地资源」点「检测本地环境」（同时显示系统网络代理状态与磁盘剩余空间），下载或删除本地 Whisper 模型，并查看显卡与双线调度状态。下载完成后可离线转录，默认使用 `small`。
+3. **DeepSeek / AI 接口**（翻译、投稿文案、观点摘录才需要）：「设置 → DeepSeek」支持默认 DeepSeek 或任意 OpenAI 兼容对话接口地址、模型名和 API Key，并提供一键「测试连接」。密钥进 Windows 凭据管理器，不写入设置文件。留空表示保留已保存的密钥。
+4. **账号与凭据**：「设置 → 账号与凭据」可在应用内直接登录抖音、小红书、B 站与微信读书，也支持导入 Netscape Cookie 临时会话；B 站投稿凭据亦可在「设置 → B 站投稿」高级区手动填写。
 5. **Obsidian**（只要笔记发布）：先在 Obsidian 里打开或创建一个库，再在「设置 → Obsidian」选择该库的根目录。目录里必须有 `.obsidian`。发布的观点和来源笔记写入其中的 `Media Operator` 文件夹。
-6. **抖音 / 小红书**：公开链接读不到时，到「设置 → 站点登录」。可以打开站点登录窗口，或导入 Netscape Cookie 文本。导入或登录后的一小时内，该站点的链接会带上这次登录。YouTube、B 站和小宇宙不走这个登录页。
-7. **NVIDIA**（可选）：仍在「转录与本地资源」的「转录加速」里选择安装目录。确认后首次下载约 1.2 GB。装好后勾选「使用 NVIDIA 加速」。自动模式优先用 GPU；GPU 失败时改用 CPU。严格 GPU 模式不会回退，见下文。
+6. **NVIDIA**（可选）：仍在「转录与本地资源」的「转录加速」里选择安装目录。确认后首次下载约 1.2 GB。装好后勾选「使用 NVIDIA 加速」。自动模式优先用 GPU；GPU 失败时改用 CPU。严格 GPU 模式不会回退，遇显存不足会自动以 `batch_size=1` 在同卡重试。
 
 在线素材的预览和下载走 Windows 系统代理。系统代理拒绝连接时，界面会提示检查代理或网络，详细原因留在本地任务记录里。
 
@@ -81,28 +80,37 @@ FFmpeg、ffprobe、yt-dlp 或 Deno 检测失败时，重新运行安装程序即
 | --- | --- |
 | 输出 | 字幕是原文、译文还是双语；素材语言；画幅（原比例、16:9、9:16、1:1）；烧录编码；Whisper 模型和推理模式；清晰度、帧率、文件名 |
 | 字幕样式 | 字体、字号、字重、位置、颜色、描边、双语顺序、可选背景条 |
-| 投稿信息 | 封面与投稿内容。需要已保存的 B 站凭据；空白字段可交给 DeepSeek |
+| 投稿信息 | 可勾选「烧录完成后自动投稿到 B 站」或关闭以仅生成本地成片；启用投稿时配置封面与投稿内容，空白字段可交给 AI 生成 |
 | 翻译上下文 | 背景说明和术语。翻译时才会用到 |
 
 可以改「本次投递」里的全部稿件，也可以只改「当前稿件」。单条改过之后，点「恢复继承」回到本次投递的设置。改完一块后点「保存并放入火盆」，或一次点「使用当前设置备齐」。
 
-四块都在火盆里之后，点「开始处理」。确认条会写明将生成字幕和成片并提交 B 站。勾选「我已确认素材使用权限及本次投稿信息」，再点 **确认并点火**。未勾选时不能提交。
+四块都在火盆里之后，点「开始处理」。确认条会按当前模式写明「烧录并提交 B 站」或「仅生成本地字幕与成片」。勾选确认后点 **确认并点火**。
 
-处理中的阶段名称是：获取素材、Whisper 转录、生成中文译文、烧录字幕、提交 B 站。列表可以按全部、待处理、处理中、已完成筛选，也可以搜索标题。
-
-成功后出现稿件卡，写着「投稿成功，等待审核」。点卡片会打开 B 站稿件链接。旁边的放映机播放成片。
+右侧通过 **设置 | 预览 | 记录** 三个下划线标签页切换。成片完成后自动切到「预览」标签，在书桌监视器中直接播放成片，并提供「打开成片目录」与「导出字幕」按钮；若启用了 B 站投稿，还会展示稿件卡并可直接打开 B 站稿件链接。
 
 失败或受阻时可以 **重试**，或「打开相关设置」。如果失败阶段是 B 站上传，会先弹出「确认上次投稿结果」：请到 B 站稿件管理确认没有成功，勾选「已检查，尚未投稿成功」，才能重试上传。这样是为了避免同一条成片投两次。
 
 ### 笔记队列
 
-打开侧栏 **笔记**。标题是「笔记工作台」。
+打开侧栏 **笔记**。标题是「笔记工作台」，左侧碎纸机工位与投稿火盆工位保持对称对齐。
 
-笔记信箱收下视频、音频、字幕文件（SRT、VTT）和分享文案。识别成功后进入「待确认档位」。在笔记工作台选择摘要、精华观点或大多数观点，点击「开始整理」后才获取原文、导入字幕或转录并提取观点。每条任务使用启动时确认的档位；完成后可以保存编辑并「重新整理」，复用已有原文。没有 DeepSeek 密钥时，确认后仍可取得原文，随后提示补充配置。
+笔记信箱收下视频、音频、字幕文件（SRT、VTT）、微信读书和分享文案。识别成功后在碎纸机下方水平三档拨片选择 **摘要**、**精华观点** 或 **大多数观点**，点击「开始整理」后才获取原文、导入字幕或转录并提取观点。完成后可以保存编辑并「重新整理」，复用已有原文。
 
-同一条素材如果投稿侧已经下载、转写或翻译过，笔记侧会复用这些结果，只继续整理。
+右侧与投稿页对称，通过 **观点 | 原文译文 | 记录** 三个标签页切换：
 
-完成后，工作台一边是原文，一边是观点卡片。点时间戳回到原话。卡片上的译句、主题和说明可以改，改完会自动保存。点「发布到 Obsidian」后，每张卡写成一篇观点笔记，并链到共享素材页。发布成功并核对写入之后，对应的本地草稿会清掉。再次发布同一内容会指回原来的笔记。选择另存新版本会写成独立文件。发布失败的草稿可以重试。
+- **观点**：浏览、筛选、勾选、手动「+ 新建观点」、删除或一键「复制」Markdown，也可点「写入 Obsidian」或「导出 Markdown」。点击卡片正文仅高亮当前卡；点击时间戳跳到「原文译文」并高亮对应段落，同时出现「← 返回观点」。
+- **原文译文**：内置书桌音频/视频播放器（支持倍速与自动跟随滚动）、原文与译文双语检索、以及按页补译。
+- **记录**：查看该任务的完整后台处理日志。
+
+### 快捷键与桌面集成
+
+- `Ctrl + 1`–`4`：切换信箱 / 投稿 / 笔记 / 设置
+- `Ctrl + K` 或 `/`：聚焦搜索框或信纸输入行
+- `Ctrl + Enter`：投递当前信箱信件
+- `Space`：播放 / 暂停当前视音频
+- `Esc`：关闭当前浮层、确认条或新建表单
+- 窗口尺寸、位置与最大化状态在关闭时自动记忆，下次启动按当前显示器安全恢复；任务运行中同步 Windows 任务栏进度，窗口未聚焦时完成或失败会给出系统通知。
 
 ### 删除和撤销
 

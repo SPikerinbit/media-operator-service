@@ -202,6 +202,7 @@ def run_stage_transcribe(job_id: str) -> None:
                 language=request.language,
                 model_name=request.whisper_model,
                 inference_mode=request.whisper_inference_mode,
+                lane=request.operator_lane,
                 progress_callback=lambda progress, message, raw=None: report_stage_progress(
                     job_id, "transcribe", progress, message, status="running", raw=raw
                 ),
@@ -313,6 +314,7 @@ def run_stage_burn(job_id: str) -> None:
                 subtitle_style=request.subtitle_style,
                 burn_encoder=request.burn_encoder,
                 output_name=request.output_name,
+                lane=request.operator_lane,
                 progress_callback=lambda progress, message, raw=None: report_stage_progress(
                     job_id, "burn", progress, message, status="running", raw=raw
                 ),

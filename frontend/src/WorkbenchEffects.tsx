@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useReducedMotion } from 'motion/react'
 import { advanceProgress, bowlMouth, currentManifest, woodLanding } from './workbenchAnchors'
 import type { Box } from './workbenchAnchors'
 import type { Lane } from './workbenchState'
 import { bindFrame } from './workbenchScheduler'
-import { mountPetalFlame, warmEdge, type PetalFlame } from './workbenchFire'
+import { mountPetalFlame, type PetalFlame } from './workbenchFire'
 
 import { paperSurface, paperSeed, paintBurn, type PaperMark } from './paperModel'
 import { sceneMachine, scenePaper, type PaperProcessHandle } from './paperScene'
@@ -22,15 +22,30 @@ export function ContactShadow({ name }: { name: string }) {
 }
 
 export type StripLink = { id: number; refs: number[] }
-export function BrazierLogs({box, ids=[0,1,2,3]}:{box:Box;ids?:number[]}) {
-  const spec=currentManifest(), mouth=bowlMouth(box,spec)
-  return <div className="bowl-well" data-bowl-well style={{left:mouth.cx-mouth.rx,top:mouth.cy-mouth.ry,width:mouth.rx*2,height:mouth.ry*2}}>
-    {ids.map(index=>{
-      const spot=woodLanding(box,spec,index)
-      return <span key={index} className="task-log" style={{left:spot.x-(mouth.cx-mouth.rx),top:spot.y-(mouth.cy-mouth.ry),width:box.width*.22,height:box.height*.145,transform:`translate(-50%,-50%) rotate(${spot.rot}deg)`}}><img alt="" src={asset(`wood-${index}-light-beauty`)}/></span>
+
+/** Unclipped log holder seated behind brazier-light-front (z:5) so wood stacks cleanly without 20px top chop. */
+export function BrazierLogs({ box, ids = [0, 1, 2, 3] }: { box: Box; ids?: number[] }) {
+  const spec = currentManifest()
+  return <div className="bowl-well" data-bowl-well style={{ left: 0, top: 0, width: '100%', height: '100%' }}>
+    {ids.map(index => {
+      const spot = woodLanding(box, spec, index)
+      return <span
+        key={index}
+        className="task-log"
+        style={{
+          left: spot.x,
+          top: spot.y,
+          width: box.width * .22,
+          height: box.height * .145,
+          transform: `translate(-50%,-50%) rotate(${spot.rot}deg)`,
+        }}
+      >
+        <img alt="" src={asset(`wood-${index}-light-beauty`)} />
+      </span>
     })}
   </div>
 }
+
 let smokeImage: HTMLImageElement | null = null
 function drawSmoke(ctx: CanvasRenderingContext2D, x: number, y: number, t: number) {
   if (!smokeImage) {
@@ -46,28 +61,70 @@ function drawSmoke(ctx: CanvasRenderingContext2D, x: number, y: number, t: numbe
   ctx.drawImage(smokeImage, col * fw, row * fh, fw, fh, x - 36, y - 90 - t * 20, 72, 80)
 }
 
+// LRU cache for shredder strip crop textures so React renders never synchronously invoke canvas.toDataURL().
+const stripTextureCache = new Map<string, string>()
+let scratchStripCanvas: HTMLCanvasElement | null = null
+
+function cachedStripTexture(surface: HTMLCanvasElement, surfaceKey: string, cardId: number): string {
+  const key = `${surfaceKey}:${cardId}`
+  const hit = stripTextureCache.get(key)
+  if (hit) return hit
+  if (!scratchStripCanvas) {
+    scratchStripCanvas = document.createElement('canvas')
+    scratchStripCanvas.width = 30
+    scratchStripCanvas.height = 34
+  }
+  const ctx = scratchStripCanvas.getContext('2d')
+  if (!ctx) return ''
+  const index = paperSeed(String(cardId))
+  ctx.clearRect(0, 0, 30, 34)
+  ctx.drawImage(surface, index % 350, (index >>> 8) % 486, 30, 34, 0, 0, 30, 34)
+  const dataUrl = scratchStripCanvas.toDataURL('image/png')
+  if (stripTextureCache.size >= 160) {
+    const oldest = stripTextureCache.keys().next().value
+    if (oldest) stripTextureCache.delete(oldest)
+  }
+  stripTextureCache.set(key, dataUrl)
+  return dataUrl
+}
+
 type Fragment = { row: number; column: number; born: number; ash: boolean }
 const SMOKE_MS = 1600
 export function PaperProcess({ lane, stage, progress, progressKnown = true, status, title, mark = 'clean', active = true,
-  parked = false, arrived = true, links = [], replaySmoke = 0, onSmoked, onStrip, frameKey = '', paperId = frameKey,
+  parked = false, arrived = true, links = [], activeCard = null, replaySmoke = 0, onSmoked, onStrip, frameKey = '', paperId = frameKey,
   processRef, logs = [0, 1, 2, 3], showPaper = true }: {
   lane: Lane; stage?: string; progress: number; progressKnown?: boolean; status: string; title: string; mark?: PaperMark
-  active?: boolean; parked?: boolean; arrived?: boolean; links?: StripLink[]; replaySmoke?: number
+  active?: boolean; parked?: boolean; arrived?: boolean; links?: StripLink[]; activeCard?: number | null; replaySmoke?: number
   onSmoked?: () => void; onStrip?: (link: StripLink) => void; frameKey?: string; paperId?: string
   processRef?: React.RefObject<PaperProcessHandle | null>; logs?: number[]; showPaper?: boolean
 }) {
   const canvas = useRef<HTMLCanvasElement>(null), fireNode = useRef<HTMLCanvasElement>(null), root = useRef<HTMLDivElement>(null)
   const flame = useRef<PetalFlame | null>(null), paint = useRef<(now: number, force?: boolean) => boolean>(() => false)
   const reduced = Boolean(useReducedMotion())
-  const live = useRef({progress, progressKnown, status, active, parked, arrived, replaySmoke, reduced, showPaper, onSmoked})
-  live.current = {progress, progressKnown, status, active, parked, arrived, replaySmoke, reduced, showPaper, onSmoked}
-  const surface = paperSurface(paperId, title, mark), paper = useRef(surface)
+  const live = useRef({ progress, progressKnown, status, active, parked, arrived, replaySmoke, reduced, showPaper, onSmoked })
+  live.current = { progress, progressKnown, status, active, parked, arrived, replaySmoke, reduced, showPaper, onSmoked }
+  const surface = useMemo(() => paperSurface(paperId, title, mark), [paperId, title, mark])
+  const surfaceKey = `${paperId}:${title}:${mark}`
+  const paper = useRef(surface)
   paper.current = surface
   const [box, setBox] = useState<Box | null>(null)
   const geometry = useRef<Box | null>(null)
   const shown = useRef(0), target = useRef(0), emitted = useRef(0), fragments = useRef<Fragment[]>([])
   const seed = paperSeed(paperId)
   const job = 'paper:' + lane + ':' + frameKey
+
+  const visibleStrips = useMemo(() => {
+    if (lane !== 'notes') return []
+    return links.slice(0, 8).map(link => {
+      const hash = paperSeed(String(link.id))
+      return {
+        link,
+        rot: (hash % 39) - 19,
+        lift: (hash >>> 4) % 5,
+        texture: cachedStripTexture(surface, surfaceKey, link.id),
+      }
+    })
+  }, [lane, links, surface, surfaceKey])
 
   useLayoutEffect(() => {
     shown.current = arrived && progressKnown ? Math.min(status === 'succeeded' ? 1 : .99, progress / 100) : 0
@@ -85,6 +142,8 @@ export function PaperProcess({ lane, stage, progress, progressKnown = true, stat
     let last = performance.now(), smokeStart = 0, replayToken = 0
     let pendingSuccess = live.current.status !== 'succeeded'
     let lastDraw = '', wasAway = !live.current.active || document.hidden
+    let hostTop = 0
+    const refreshHostTop = () => { hostTop = host.getBoundingClientRect().top }
     const resize = () => {
       const dpr = Math.min(devicePixelRatio || 1, 2)
       node.width = Math.round(Math.max(1, host.clientWidth) * dpr)
@@ -92,6 +151,7 @@ export function PaperProcess({ lane, stage, progress, progressKnown = true, stat
       context.setTransform(dpr, 0, 0, dpr, 0, 0)
       const local = sceneMachine(lane, host.clientWidth, host.clientHeight)
       geometry.current = local; setBox(local); lastDraw = ''
+      refreshHostTop()
     }
     let transient = false
     const draw = (now: number, force = false, landing = false) => {
@@ -106,18 +166,18 @@ export function PaperProcess({ lane, stage, progress, progressKnown = true, stat
       else if (wasAway || state.reduced) {
         shown.current = target.current; emitted.current = Math.floor(shown.current * 48); fragments.current = []; wasAway = false
       } else if (!landing && !state.parked && ['running', 'succeeded'].includes(state.status)) {
-        shown.current += (target.current - shown.current) * (1 - Math.exp(-dt / 95))
+        shown.current += (target.current - shown.current) * (1 - Math.exp(-dt / 85))
         if (Math.abs(target.current - shown.current) < .0001) shown.current = target.current
       }
       const visual = shown.current
       const row = Math.floor(visual * 48)
       if (state.arrived && !state.parked && !state.reduced && ['running', 'succeeded'].includes(state.status)) {
         for (let i = emitted.current; i < row; i++) for (let column = 0; column < (lane === 'notes' ? 8 : 3); column++) {
-          fragments.current.push({row: i, column, born: now, ash: lane === 'publish'})
+          fragments.current.push({ row: i, column, born: now, ash: lane === 'publish' })
         }
       }
       emitted.current = Math.max(emitted.current, row)
-      fragments.current = fragments.current.filter(f => now - f.born < 1150)
+      fragments.current = fragments.current.filter(f => now - f.born < (f.ash ? 760 : 1080))
       if (pendingSuccess && state.status === 'succeeded' && visual === 1) {
         pendingSuccess = false; smokeStart = now; replayToken = state.replaySmoke; state.onSmoked?.()
       } else if (!pendingSuccess && state.replaySmoke && state.replaySmoke !== replayToken) {
@@ -136,21 +196,25 @@ export function PaperProcess({ lane, stage, progress, progressKnown = true, stat
           }
         }
         for (const fragment of fragments.current) {
-          const t = Math.min(1, (now - fragment.born) / 1050), sign = fragment.column % 2 ? 1 : -1
+          const t = Math.min(1, (now - fragment.born) / (fragment.ash ? 720 : 1020)), sign = fragment.column % 2 ? 1 : -1
           context.save()
           if (fragment.ash && 'edgeY' in pose) {
-            context.translate(pose.x + pose.width * ((fragment.row * 7 + fragment.column * 13) % 31) / 31 + Math.sin(t * 5) * 7, pose.edgeY - t * 40)
-            context.globalAlpha = (1 - t) * .55; context.rotate(t * sign * 4)
-            context.fillStyle = '#6a4a32'; context.fillRect(-1, -1, 2, 3)
+            context.translate(pose.x + pose.width * ((fragment.row * 7 + fragment.column * 13) % 31) / 31 + Math.sin(t * 5) * 7, pose.edgeY - t * 44)
+            context.globalAlpha = (1 - t) * .62; context.rotate(t * sign * 4)
+            context.fillStyle = t < 0.3 ? '#d87a2e' : '#5f4430'
+            context.fillRect(-1.2, -1.2, 2.4, 3.2)
           } else if ('output' in pose) {
             const x = pose.output.x - pose.width / 2 + (fragment.column + .5) * pose.width / 8
-            const fall = Math.min(1, t * 1.4)
-            context.translate(x + sign * Math.sin(t * 4) * 6, pose.output.y + (pose.tray.y - pose.output.y) * fall * fall)
-            context.rotate(sign * t * (1.5 + fragment.row % 3))
-            context.scale(Math.max(.12, Math.abs(Math.cos(t * Math.PI * 2))), 1)
-            context.globalAlpha = t > .85 ? (1 - t) / .15 : 1
+            const fall = Math.min(1, t * 1.45)
+            // Soft bounce settle as paper scrap lands in the shredder tray.
+            const landingY = pose.tray.y + ((fragment.row * 11 + fragment.column * 7) % 10) - 4
+            const bounce = fall >= 1 ? Math.sin(Math.min(1, (t - 0.69) / 0.31) * Math.PI) * -4 : 0
+            context.translate(x + sign * Math.sin(t * 4.5) * 6, pose.output.y + (landingY - pose.output.y) * fall * fall + bounce)
+            context.rotate(sign * Math.min(1, fall) * (1.4 + fragment.row % 3))
+            context.scale(Math.max(.18, Math.abs(Math.cos(Math.min(1, fall) * Math.PI * 1.8))), 1)
+            context.globalAlpha = t > .84 ? (1 - t) / .16 : 1
             const sy = 520 * (1 - (fragment.row + 1) / 48), sw = 380 / 8
-            const dw = pose.width / 8 * .9, dh = Math.max(3, pose.height / 48)
+            const dw = pose.width / 8 * .92, dh = Math.max(3.5, pose.height / 48)
             context.drawImage(paper.current, fragment.column * sw, sy, sw, 520 / 48, -dw / 2, -dh / 2, dw, dh)
           }
           context.restore()
@@ -173,18 +237,18 @@ export function PaperProcess({ lane, stage, progress, progressKnown = true, stat
       }
       if (lane === 'publish' && flame.current && fireNode.current) {
         const mouth = bowlMouth(local, currentManifest()), fire = fireNode.current
-        const width = mouth.rx * 1.6, height = width * 1.05
+        const width = mouth.rx * 2.2, height = width * 1.05
         const size = width + 'x' + height
         if (fire.dataset.size !== size) {
           fire.dataset.size = size; fire.style.width = width + 'px'; fire.style.height = height + 'px'; flame.current.resize(width, height)
         }
-        fire.style.transform = `translate3d(${mouth.cx - width / 2}px,${mouth.cy - height * .8}px,0)`
+        fire.style.transform = `translate3d(${mouth.cx - width / 2}px,${mouth.cy - height * .79}px,0)`
         const lit = state.status === 'running' && state.arrived
-        flame.current.set({intensity: lit ? .85 : 0, loop: !state.reduced && lit, reduced: state.reduced, hidden: !lit})
+        flame.current.set({ intensity: lit ? .88 : 0, loop: !state.reduced && lit, reduced: state.reduced, hidden: !lit })
       }
       host.dataset.shown = visual.toFixed(4); host.dataset.emitted = String(emitted.current)
       host.dataset.fragments = String(fragments.current.length)
-      host.dataset.edge = String(('edgeY' in pose ? pose.edgeY : pose.feed.y) + host.getBoundingClientRect().top)
+      host.dataset.edge = String(('edgeY' in pose ? pose.edgeY : pose.feed.y) + hostTop)
       const changing = state.arrived && !state.parked && ['running', 'succeeded'].includes(state.status) && Math.abs(target.current - visual) > .0001
       return changing || fragments.current.length > 0 || smoking
     }
@@ -195,25 +259,29 @@ export function PaperProcess({ lane, stage, progress, progressKnown = true, stat
         if (!host.isConnected || host.closest('[inert]') || !geometry.current) return null
         const pose = scenePaper(lane, geometry.current), rect = host.getBoundingClientRect()
         const sx = rect.width / host.clientWidth, sy = rect.height / host.clientHeight
-        return {x: rect.left + pose.x * sx, y: rect.top + pose.y * sy, width: pose.width * sx, height: pose.height * sy}
+        return { x: rect.left + pose.x * sx, y: rect.top + pose.y * sy, width: pose.width * sx, height: pose.height * sy }
       },
       land: () => { live.current.arrived = true; shown.current = 0; emitted.current = 0; draw(performance.now(), true, true) },
     }
     if (processRef) processRef.current = handle
     draw(performance.now(), true)
     let stop = bindFrame(job, draw)
-    const observer = new ResizeObserver(() => {resize(); draw(performance.now(), true)})
+    const observer = new ResizeObserver(() => { resize(); draw(performance.now(), true) })
     observer.observe(host)
+    window.addEventListener('resize', refreshHostTop)
     const visibility = () => {
-      if (document.hidden) { wasAway = true; flame.current?.set({hidden:true, loop:false, reduced:live.current.reduced, intensity:0}); return }
+      if (document.hidden) { wasAway = true; flame.current?.set({ hidden: true, loop: false, reduced: live.current.reduced, intensity: 0 }); return }
+      refreshHostTop()
       stop(); stop = bindFrame(job, draw)
     }
     document.addEventListener('visibilitychange', visibility)
-    return () => { stop(); observer.disconnect(); document.removeEventListener('visibilitychange', visibility)
-      if (processRef?.current === handle) processRef.current = null }
+    return () => {
+      stop(); observer.disconnect(); window.removeEventListener('resize', refreshHostTop); document.removeEventListener('visibilitychange', visibility)
+      if (processRef?.current === handle) processRef.current = null
+    }
   }, [lane, frameKey, job, processRef])
   useEffect(() => {
-    if (!active) flame.current?.set({hidden:true, loop:false, reduced:live.current.reduced, intensity:0})
+    if (!active) flame.current?.set({ hidden: true, loop: false, reduced: live.current.reduced, intensity: 0 })
     paint.current(performance.now(), true)
     return bindFrame(job, now => paint.current(now))
   }, [progress, progressKnown, status, arrived, parked, active, reduced, showPaper, surface, replaySmoke, job])
@@ -222,22 +290,31 @@ export function PaperProcess({ lane, stage, progress, progressKnown = true, stat
   const pose = box ? scenePaper(lane, box) : null
   const mouth = lane === 'publish' && box ? bowlMouth(box, currentManifest()) : null
   return <div ref={root} className={'paper-process ' + lane} data-paper-key={frameKey} data-mark={mark} data-arrived={arrived ? '1' : '0'} data-burning={lane === 'publish' && status === 'running' && arrived ? '1' : '0'}>
-    {mouth && box && <i className="process-warmth" style={{left:mouth.cx-mouth.rx*1.2,top:mouth.cy,width:mouth.rx*2.4,height:box.height*.18}}/>}
-    <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} className="process-machine" style={box || undefined}/>
-    {mouth && box && <BrazierLogs box={box} ids={logs}/>}
-    <canvas ref={canvas} className="process-paper" aria-hidden="true"/>
-    {lane === 'publish' && <canvas ref={fireNode} className="flame-layer" aria-hidden="true"/>}
-    {showStrips && pose && 'tray' in pose && <div className="strip-tray" style={{left:pose.tray.x-pose.width*.65,top:pose.tray.y-8,width:pose.width*1.3}}>
-      {links.slice(0,8).map(link => {
-        const index = paperSeed(String(link.id))
-        const crop = document.createElement('canvas'); crop.width = 30; crop.height = 34
-        crop.getContext('2d')?.drawImage(surface, index % 350, (index >>> 8) % 486, 30, 34, 0, 0, 30, 34)
-        return <button type="button" key={link.id} className="shred-strip" data-card-id={link.id} data-refs={link.refs.join(' ')}
-          style={{transform:`rotate(${index % 39-19}deg)`,width:16,height:18,backgroundImage:`url(${crop.toDataURL()})`}}
-          onClick={() => onStrip?.(link)} aria-label={'碎纸 ' + link.id}/>
-      })}
+    {mouth && box && <i className="process-warmth" style={{ left: mouth.cx - mouth.rx * 1.25, top: mouth.cy - mouth.ry * 0.4, width: mouth.rx * 2.5, height: box.height * .2 }} />}
+    <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} className="process-machine" style={box || undefined} />
+    {mouth && box && <BrazierLogs box={box} ids={logs} />}
+    <canvas ref={canvas} className="process-paper" aria-hidden="true" />
+    {lane === 'publish' && <canvas ref={fireNode} className="flame-layer" aria-hidden="true" />}
+    {showStrips && pose && 'tray' in pose && <div className="strip-tray" style={{ left: pose.tray.x - pose.width * .65, top: pose.tray.y - 8, width: pose.width * 1.3 }}>
+      {visibleStrips.map(({ link, rot, lift, texture }) => (
+        <button
+          type="button"
+          key={link.id}
+          className={'shred-strip' + (activeCard === link.id ? ' is-linked' : '')}
+          data-card-id={link.id}
+          data-refs={link.refs.join(' ')}
+          style={{
+            transform: `translateY(${-lift}px) rotate(${rot}deg)`,
+            width: 17,
+            height: 19,
+            backgroundImage: texture ? `url(${texture})` : undefined,
+          }}
+          onClick={() => onStrip?.(link)}
+          aria-label={'碎纸 ' + link.id}
+        />
+      ))}
     </div>}
-    <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} layer="front" className="process-machine foreground" style={box || undefined}/>
+    <Prop name={lane === 'publish' ? 'brazier' : 'shredder'} layer="front" className="process-machine foreground" style={box || undefined} />
   </div>
 }
 
@@ -267,51 +344,23 @@ export function CoverArt({ cover, video }: { cover?: string; video?: string }) {
 export function DeskTV({ url, children, caption, active = true, label = '成片放映' }: {
   url?: string; children?: React.ReactNode; caption?: string; active?: boolean; label?: string
 }) {
-  const [state,setState]=useState<'loading'|'ready'|'error'>('loading')
-  const [attempt,setAttempt]=useState(0)
-  const video=useRef<HTMLVideoElement>(null)
-  useEffect(()=>{setState('loading');setAttempt(0)},[url])
-  useEffect(()=>{if(!active)video.current?.pause()},[active])
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [attempt, setAttempt] = useState(0)
+  const video = useRef<HTMLVideoElement>(null)
+  useEffect(() => { setState('loading'); setAttempt(0) }, [url])
+  useEffect(() => { if (!active) video.current?.pause() }, [active])
   return <figure className="desk-tv" aria-label={label}>
     <div className="tv-bezel">
       <div className="tv-screen">
         {url ? <>
-          <video ref={video} key={url+attempt} src={url} controls playsInline preload="metadata" onLoadedData={()=>setState('ready')} onError={()=>setState('error')}/>
-          {state==='loading'&&<span className="tv-status" role="status">正在载入成片</span>}
-          {state==='error'&&<div className="tv-status" role="alert">成片播放失败<button type="button" onClick={()=>{setState('loading');setAttempt(value=>value+1)}}>重新载入</button></div>}
+          <video ref={video} key={url + attempt} src={url} controls playsInline preload="metadata" onLoadedData={() => setState('ready')} onError={() => setState('error')} />
+          {state === 'loading' && <span className="tv-status" role="status">正在载入成片</span>}
+          {state === 'error' && <div className="tv-status" role="alert">成片播放失败<button type="button" onClick={() => { setState('loading'); setAttempt(value => value + 1) }}>重新载入</button></div>}
         </> : children || <span>成片将在这里放映</span>}
       </div>
-      <div className="tv-controls" aria-hidden="true"><i className={'tv-lamp'+(url&&state==='ready'?' is-on':'')}/><span>MEDIA OPERATOR</span><i className="tv-speaker"/><i className="tv-dial"/></div>
+      <img className="tv-frame-art" src={asset('desk-tv-frame')} alt="" draggable={false} aria-hidden="true" />
+      <i className={'tv-lamp' + (url && state === 'ready' ? ' is-on' : '')} aria-hidden="true" />
     </div>
-    <i className="tv-foot" aria-hidden="true"/>
-    <figcaption><strong>{label}</strong>{caption&&<span>{caption}</span>}</figcaption>
+    <figcaption><strong>{label}</strong>{caption && <span>{caption}</span>}</figcaption>
   </figure>
-}
-
-export function DeskProjector({ url }: { url?: string }) {
-  const [open, setOpen] = useState(false)
-  const video = useRef<HTMLVideoElement>(null)
-  const place = useRef(0)
-  const reduced = useReducedMotion()
-  function toggle() {
-    if (!url) return
-    if (open) {
-      place.current = video.current?.currentTime || 0
-      video.current?.pause()
-    } else requestAnimationFrame(() => {
-      if (!video.current) return
-      video.current.currentTime = place.current
-      void video.current.play().catch(() => {})
-    })
-    setOpen(value => !value)
-  }
-  return <div className={'desk-projector' + (open ? ' is-open' : '') + (reduced ? ' is-reduced' : '')}>
-    <button type="button" className="projector-hit" aria-expanded={open} aria-label={open ? '收起投影幕' : '展开投影幕放映成片'} onClick={toggle} disabled={!url}>
-      <img src={asset('projector-light-body')} alt="" />
-    </button>
-    <div className="projector-screen">
-      <img className="screen-plate" src={asset('projector-light-screen-open')} alt="" />
-      {url && <video ref={video} src={url} controls playsInline preload="metadata" />}
-    </div>
-  </div>
 }

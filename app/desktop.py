@@ -17,6 +17,7 @@ import uvicorn
 
 from app.defaults import DEFAULT_TRANSLATE_MODEL
 from app import desktop_config as config
+from app import desktop_native as native_win
 
 # Paper and ink. The title bar stays on this light pair unless forced-colors is active.
 WINDOW_PALETTE = ("#FEFEFC", "#FEFEFC", "#28373C")
@@ -49,7 +50,7 @@ def prepare():
         "MEDIA_BUNDLED_FONTS": str(bundled_fonts),
         "ALLOW_PLACEHOLDER_ARTIFACTS": "false",
         "TRANSLATE_PROVIDER": "deepseek",
-        "TRANSLATE_API_BASE": "https://api.deepseek.com",
+        "TRANSLATE_API_BASE": config.settings().get("ai_api_base") or "https://api.deepseek.com",
         "TRANSLATE_MODEL": config.settings().get("ai_model", DEFAULT_TRANSLATE_MODEL),
     })
 
@@ -105,6 +106,7 @@ class NativeFiles:
     def __init__(self, webview):
         self._webview = webview
         self._window = None
+        self._taskbar = native_win.TaskbarProgress()
 
     def choose_media(self, multiple=False):
         return self._window.create_file_dialog(
@@ -123,6 +125,12 @@ class NativeFiles:
 
     def set_window_theme(self, dark, forced_colors):
         theme_title_bar(self._window, forced_colors is True)
+
+    def set_taskbar_progress(self, state="none", percent=0):
+        self._taskbar.update(native_win.window_hwnd(self._window), str(state or "none"), int(percent or 0))
+
+    def notify_complete(self, title, body):
+        return native_win.notify_if_unfocused(native_win.window_hwnd(self._window), str(title or ""), str(body or ""))
 
 
 def windows_dark_theme():
@@ -191,6 +199,16 @@ def window_options(webview):
         width = min(1440, max(1, int(available_width) - 28))
         height = min(940, max(1, int(available_height) - 28))
         options.update(width=width, height=height, min_size=(min(950, width), min(680, height)))
+    restored = native_win.clamp_window_bounds(config.settings().get("window_bounds"), native_win.monitor_work_rects())
+    if restored:
+        options.update(
+            width=restored["width"],
+            height=restored["height"],
+            x=restored["x"],
+            y=restored["y"],
+            min_size=(min(950, restored["width"]), min(680, restored["height"])),
+            maximized=restored["maximized"],
+        )
     return options
 
 
@@ -216,12 +234,34 @@ def run_window():
             raise RuntimeError("应用服务启动失败")
 
         bridge = NativeFiles(webview)
+        initial = window_options(webview)
         window = webview.create_window(
             "Media Operator", f"{origin}/desktop/connect?token={token}", js_api=bridge,
-            **window_options(webview),
+            **initial,
         )
         bridge._window = window
+        normal_bounds = {
+            "x": int(initial.get("x", 40)),
+            "y": int(initial.get("y", 40)),
+            "width": int(initial.get("width", 1440)),
+            "height": int(initial.get("height", 940)),
+        }
+
+        def record_normal_bounds(*_args):
+            hwnd = native_win.window_hwnd(window)
+            if native_win.is_window_maximized(hwnd):
+                return
+            try:
+                w, h = int(window.width), int(window.height)
+                x, y = int(window.x), int(window.y)
+                if w >= 600 and h >= 400 and x > -16000 and y > -16000:
+                    normal_bounds.update(x=x, y=y, width=w, height=h)
+            except Exception:
+                pass
+
         window.events.shown += lambda: theme_title_bar(window, False)
+        window.events.resized += record_normal_bounds
+        window.events.moved += record_normal_bounds
         webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
         def allow_close():
             from app import desktop_gpu, desktop_jobs, desktop_models, desktop_routes, obsidian
@@ -231,6 +271,14 @@ def run_window():
                     or desktop_models.is_running() or obsidian.LOCK.locked()):
                 ctypes.windll.user32.MessageBoxW(None, "还有任务正在运行。请等待任务完成后再关闭。", "Media Operator", 0x40)
                 return False
+            try:
+                hwnd = native_win.window_hwnd(window)
+                maximized = native_win.is_window_maximized(hwnd)
+                if not maximized:
+                    record_normal_bounds()
+                config.update({"window_bounds": {**normal_bounds, "maximized": maximized}}, {})
+            except Exception:
+                pass
             return True
 
         window.events.closing += allow_close

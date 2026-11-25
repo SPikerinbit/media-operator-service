@@ -10,9 +10,12 @@ from app import main as media, desktop_config, desktop_routes, site_profiles
 
 @pytest.fixture
 def transcription(tmp_path, monkeypatch):
+    from app import gpu_queue
     monkeypatch.setattr(media, 'DESKTOP', True)
     monkeypatch.setattr(media, 'JOBS_DIR', tmp_path)
     monkeypatch.setattr(media, 'whisper_model_status', lambda _: {'available': True})
+    monkeypatch.setattr(gpu_queue, 'query_vram_mb', lambda **_: {'total_mb': 12288, 'free_mb': 9000, 'used_mb': 3288})
+    monkeypatch.setattr(gpu_queue, 'RELEASE_COOLDOWN_SECONDS', 0.0)
     monkeypatch.setattr(desktop_config, 'worker_environment', lambda: {
         'WHISPER_DEVICE': 'cuda', 'WHISPER_COMPUTE_TYPE': 'int8_float16', 'MEDIA_GPU_DLL_DIR': 'gpu',
     })
@@ -45,12 +48,20 @@ def test_gpu_failure_uses_one_fresh_cpu_attempt_and_never_rewinds(transcription,
 def test_strict_gpu_preserves_failure_and_does_not_use_cpu(transcription, monkeypatch):
     attempts = []
     def fail(_cmd, **kwargs):
-        attempts.append(kwargs['env']['WHISPER_DEVICE'])
+        attempts.append((
+            kwargs['env']['WHISPER_DEVICE'],
+            kwargs['env'].get('MEDIA_WHISPER_RETRY_BATCH_SIZE'),
+            kwargs['env'].get('MEDIA_WHISPER_FORCE_STANDARD'),
+        ))
         raise RuntimeError('CUDA out of memory')
     monkeypatch.setattr(media, 'run_command_streaming', fail)
     with pytest.raises(RuntimeError, match='CUDA out of memory'):
         media.transcribe_video('strict', transcription/'source.mp4', inference_mode='gpu_only')
-    assert attempts == ['cuda']
+    assert attempts == [
+        ('cuda', None, None),
+        ('cuda', '1', None),
+        ('cuda', '1', '1'),
+    ]
     assert media.artifact_path('strict', 'whisper_gpu_failure.json').is_file()
 
 
@@ -82,7 +93,7 @@ def test_cancellation_does_not_trigger_cpu_fallback(transcription, monkeypatch):
 
 
 def test_heartbeat_reports_device_and_actual_activity_age(transcription, monkeypatch):
-    clock = iter([0, 16, 16, 16])
+    clock = iter([0, 0, 16, 16, 16])
     monkeypatch.setattr(media.time, 'monotonic', lambda: next(clock))
     messages = []
     def run(_cmd, **kwargs):
@@ -143,3 +154,64 @@ def test_cancelling_only_targets_the_active_transcription(tmp_path, monkeypatch)
     monkeypatch.setattr(inbox.jobs, 'batch_item', lambda *_: (None, item))
     assert inbox.cancel_transcription('letter')['ok']
     assert media.artifact_path('stage_transcribe_cancel', 'cancel-transcription.requested').is_file()
+
+def test_oom_retries_fresh_gpu_worker_at_batch_one(transcription,monkeypatch):
+    attempts=[]
+    def run(_cmd,**kwargs):
+        attempts.append(dict(kwargs['env']))
+        if len(attempts)==1: raise RuntimeError('CUDA out of memory')
+        assert kwargs['env']['MEDIA_WHISPER_RETRY_BATCH_SIZE']=='1'
+        assert kwargs['env']['WHISPER_DEVICE']=='cuda'
+        media.artifact_path('batch-one','english.srt').write_text('subtitles',encoding='utf-8')
+    monkeypatch.setattr(media,'run_command_streaming',run)
+    media.transcribe_video('batch-one',transcription/'source.mp4',inference_mode='gpu_only')
+    assert len(attempts)==2
+    assert media.artifact_path('batch-one','whisper_oom_retry.json').is_file()
+
+
+def test_oom_escalates_to_standard_cuda_after_batch_one_fails(transcription, monkeypatch):
+    attempts = []
+
+    def run(_cmd, **kwargs):
+        attempts.append(dict(kwargs['env']))
+        if len(attempts) == 1:
+            raise RuntimeError('CUDNN_STATUS_ALLOC_FAILED')
+        if len(attempts) == 2:
+            assert kwargs['env']['MEDIA_WHISPER_RETRY_BATCH_SIZE'] == '1'
+            raise RuntimeError('Unable to allocate GPU buffer')
+        assert kwargs['env']['MEDIA_WHISPER_FORCE_STANDARD'] == '1'
+        assert kwargs['env']['WHISPER_DEVICE'] == 'cuda'
+        media.artifact_path('std-cuda', 'english.srt').write_text('subtitles', encoding='utf-8')
+
+    monkeypatch.setattr(media, 'run_command_streaming', run)
+    media.transcribe_video('std-cuda', transcription / 'source.mp4', inference_mode='gpu_only')
+    assert len(attempts) == 3
+    retry_meta = json.loads(media.artifact_path('std-cuda', 'whisper_oom_retry.json').read_text(encoding='utf-8'))
+    assert retry_meta['tier'] == 'cuda_standard' and retry_meta['forced_standard'] is True
+
+
+def test_audio_predecode_runs_before_gpu_slot_and_cleans_up(transcription, monkeypatch):
+    from app import gpu_queue
+
+    source = transcription / 'real_source.mp4'
+    source.write_bytes(b'fake-mp4')
+    events = []
+
+    def fake_extract(_src, target_wav, **_kwargs):
+        events.append(('extract', gpu_queue.snapshot(include_vram=False)['busy']))
+        target_wav.write_bytes(b'RIFF' + b'\x00' * 64)
+        return target_wav
+
+    def fake_worker(cmd, **_kwargs):
+        events.append(('worker', gpu_queue.snapshot(include_vram=False)['busy']))
+        assert '--predecoded-wav' in cmd
+        wav_path = cmd[cmd.index('--predecoded-wav') + 1]
+        assert wav_path.endswith('whisper_input_16k.wav')
+        media.artifact_path('predecode-job', 'english.srt').write_text('subtitles', encoding='utf-8')
+
+    monkeypatch.setattr(media, 'extract_audio_wav', fake_extract)
+    monkeypatch.setattr(media, 'run_command_streaming', fake_worker)
+
+    media.transcribe_video('predecode-job', source, inference_mode='auto', lane='notes')
+    assert events == [('extract', False), ('worker', True)]
+    assert not (media.job_dir('predecode-job') / 'whisper_input_16k.wav').exists()

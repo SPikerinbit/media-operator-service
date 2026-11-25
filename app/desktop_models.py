@@ -160,3 +160,44 @@ def prepare(data, name, proxy):
 def is_running():
     with LOCK:
         return any(model["running"] for model in PROGRESS.values())
+
+
+def remove_model(data: Path, name: str) -> int:
+    """Safely remove downloaded local Whisper model weights inside data/models."""
+    if name not in MODELS:
+        raise ValueError("不支持的 Whisper 模型")
+    with LOCK:
+        if any(model.get("running") for model in PROGRESS.values()):
+            raise RuntimeError("正在下载模型，请等待完成后再删除")
+    root = (data / "models").resolve()
+    revision = MODELS[name][0]
+    hub = root / "huggingface" / "hub"
+    repositories = [model_repo(name)]
+    if name == "large-v3-turbo":
+        repositories.append("mobiuslabsgmbh/faster-whisper-large-v3-turbo")
+    targets = [
+        root / f"faster-whisper-{name}",
+        root / f"faster-whisper-{name}-verified",
+        root / f".download-{name}",
+        root / name,
+        *(hub / ("models--" + repo.replace("/", "--")) / "snapshots" / revision for repo in repositories),
+    ]
+    freed = 0
+    for target in targets:
+        try:
+            resolved = target.resolve()
+        except OSError:
+            continue
+        if root not in resolved.parents or not resolved.exists():
+            continue
+        if resolved.is_dir():
+            for child in resolved.rglob("*"):
+                if child.is_file():
+                    try:
+                        freed += child.stat().st_size
+                    except OSError:
+                        pass
+            shutil.rmtree(resolved, ignore_errors=True)
+    with LOCK:
+        PROGRESS.pop(name, None)
+    return freed

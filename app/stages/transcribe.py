@@ -481,26 +481,40 @@ def build_timing_diagnostics(
     }
 
 
+def extract_audio_wav(
+    source_path: Path,
+    target_wav: Path,
+    *,
+    log_dir: Path | None = None,
+    on_tick: Callable[[], None] | None = None,
+) -> Path:
+    cmd = [
+        FFMPEG_BIN,
+        "-y",
+        "-i",
+        str(source_path),
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-vn",
+        "-f",
+        "wav",
+        str(target_wav),
+    ]
+    if log_dir is not None:
+        run_command_streaming(cmd, log_dir=log_dir, log_name="whisper-predecode", on_tick=on_tick)
+    else:
+        run_command(cmd)
+    return target_wav
+
+
 def decode_audio_for_whisper(source_path: Path) -> tuple[np.ndarray, int]:
     temp_wav: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
             temp_wav = Path(temp_file.name)
-        cmd = [
-            FFMPEG_BIN,
-            "-y",
-            "-i",
-            str(source_path),
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-vn",
-            "-f",
-            "wav",
-            str(temp_wav),
-        ]
-        run_command(cmd)
+        extract_audio_wav(source_path, temp_wav)
         with wave.open(str(temp_wav), "rb") as wav_file:
             sample_rate = wav_file.getframerate()
             channels = wav_file.getnchannels()
@@ -602,6 +616,22 @@ def whisper_model_status(model_name: str) -> dict[str, Any]:
     }
 
 
+_CUDA_OOM_KEYWORDS = (
+    "out of memory",
+    "cuda_error_out_of_memory",
+    "cublas_status_alloc_failed",
+    "cudnn_status_alloc_failed",
+    "alloc_failed",
+    "unable to allocate",
+    "memory allocation",
+)
+
+
+def _is_cuda_oom(error: BaseException) -> bool:
+    text = str(error).lower()
+    return any(word in text for word in _CUDA_OOM_KEYWORDS)
+
+
 def transcribe_video(
     job_id: str,
     source_path: Path,
@@ -609,6 +639,7 @@ def transcribe_video(
     language: str = "en",
     model_name: str | None = None,
     inference_mode: str | None = None,
+    lane: str = "other",
     progress_callback: Callable[[int, str, str | None], None] | None = None,
 ) -> Path:
     whisper_cli = WHISPER_BIN or shutil.which("whisper") or ""
@@ -641,6 +672,7 @@ def transcribe_video(
             raise RuntimeError("whisper finished but no .srt file was produced")
         return produced[0]
 
+    predecoded_wav: Path | None = None
     try:
         job_dir(job_id).mkdir(parents=True, exist_ok=True)
         cancellation = artifact_path(job_id, "cancel-transcription.requested")
@@ -701,16 +733,95 @@ def transcribe_video(
 
         if DESKTOP:
             from app.desktop_config import worker_environment
-            env = worker_environment()
+            env = dict(worker_environment())
             if mode == "gpu_only" and env["WHISPER_DEVICE"] != "cuda":
                 raise RuntimeError("严格 GPU 模式需要可用且已启用的 NVIDIA 转录环境。请到设置检测。")
         else:
             env = None
+
+        # Pre-decode audio on CPU before entering the GPU admission queue so FFmpeg never holds VRAM.
+        if DESKTOP and env and env.get("WHISPER_DEVICE") == "cuda" and source_path.is_file():
+            if cancellation.exists():
+                raise RuntimeError("转录已取消，可重试恢复；已完成的素材会保留。")
+            candidate_wav = job_dir(job_id) / "whisper_input_16k.wav"
+            try:
+                if progress_callback:
+                    shown_progress = max(shown_progress, 4)
+                    progress_callback(shown_progress, "提取音频（不占用 GPU）", None)
+                def predecode_tick() -> None:
+                    if cancellation.exists():
+                        raise RuntimeError("转录已取消，可重试恢复；已完成的素材会保留。")
+                extract_audio_wav(source_path, candidate_wav, log_dir=job_dir(job_id), on_tick=predecode_tick)
+                if candidate_wav.is_file() and candidate_wav.stat().st_size > 44:
+                    predecoded_wav = candidate_wav
+                    cmd.extend(["--predecoded-wav", str(predecoded_wav)])
+            except RuntimeError as predecode_err:
+                if "转录已取消" in str(predecode_err):
+                    raise
+                candidate_wav.unlink(missing_ok=True)
+            except OSError:
+                candidate_wav.unlink(missing_ok=True)
+
+        from app.gpu_queue import describe_holder, plan_whisper_gpu, slot
+
+        def on_gpu_wait(position: int, holder: dict[str, Any] | None) -> None:
+            if progress_callback:
+                holder_text = describe_holder(holder)
+                progress_callback(shown_progress, f"等待显卡队列（第 {position} 位 · 当前：{holder_text}）", None)
+
+        def execute_worker(log_name: str, *, apply_vram_plan: bool = False) -> None:
+            is_cuda = bool(env and env.get("WHISPER_DEVICE") == "cuda")
+            with slot(is_cuda, cancellation.exists, lane=lane, operation="transcribe", label=job_id, on_wait=on_gpu_wait):
+                nonlocal last_activity, last_heartbeat
+                if apply_vram_plan and is_cuda and env is not None:
+                    plan = plan_whisper_gpu(requested_model, WHISPER_BATCH_SIZE)
+                    env["MEDIA_WHISPER_BATCH_SIZE"] = str(plan["batch_size"])
+                    if plan["mode"] == "standard":
+                        env["MEDIA_WHISPER_FORCE_STANDARD"] = "1"
+                last_activity = time.monotonic()
+                last_heartbeat = last_activity
+                run_command_streaming(
+                    cmd, cwd=ROOT_DIR, log_dir=job_dir(job_id), log_name=log_name,
+                    on_stdout_line=handle_whisper_line, on_stderr_line=handle_whisper_line, env=env, on_tick=heartbeat,
+                )
+
         try:
-            run_command_streaming(
-                cmd, cwd=ROOT_DIR, log_dir=job_dir(job_id), log_name="whisper",
-                on_stdout_line=handle_whisper_line, on_stderr_line=handle_whisper_line, env=env, on_tick=heartbeat,
-            )
+            try:
+                execute_worker("whisper", apply_vram_plan=True)
+            except RuntimeError as error:
+                if cancellation.exists() or not env or env.get("WHISPER_DEVICE") != "cuda" or not _is_cuda_oom(error):
+                    raise
+                last_oom: RuntimeError = error
+                # Tier 2: fresh CUDA worker with batch_size=1.
+                if env.get("MEDIA_WHISPER_RETRY_BATCH_SIZE") != "1":
+                    env["MEDIA_WHISPER_RETRY_BATCH_SIZE"] = "1"
+                    env["MEDIA_WHISPER_BATCH_SIZE"] = "1"
+                    artifact_path(job_id, "whisper_oom_retry.json").write_text(json.dumps({
+                        "tier": "batch_1", "error": str(error), "batch_size": 1, "updated_at": now_iso(),
+                    }, ensure_ascii=False), encoding="utf-8")
+                    if progress_callback:
+                        progress_callback(shown_progress, "显存紧张，切换低显存批处理重试（batch=1）", None)
+                    try:
+                        execute_worker("whisper-gpu-batch1")
+                        last_oom = None  # type: ignore[assignment]
+                    except RuntimeError as batch1_error:
+                        if cancellation.exists() or not _is_cuda_oom(batch1_error):
+                            raise
+                        last_oom = batch1_error
+                # Tier 3: fresh CUDA worker in minimal-VRAM standard single-stream mode (beam=1).
+                if last_oom is not None:
+                    if env.get("MEDIA_WHISPER_FORCE_STANDARD") == "1":
+                        raise last_oom
+                    env["MEDIA_WHISPER_RETRY_BATCH_SIZE"] = "1"
+                    env["MEDIA_WHISPER_BATCH_SIZE"] = "1"
+                    env["MEDIA_WHISPER_FORCE_STANDARD"] = "1"
+                    artifact_path(job_id, "whisper_oom_retry.json").write_text(json.dumps({
+                        "tier": "cuda_standard", "error": str(last_oom), "batch_size": 1,
+                        "forced_standard": True, "updated_at": now_iso(),
+                    }, ensure_ascii=False), encoding="utf-8")
+                    if progress_callback:
+                        progress_callback(shown_progress, "显存仍不足，改用标准单流 CUDA 模式重试", None)
+                    execute_worker("whisper-gpu-standard")
         except RuntimeError as gpu_error:
             if cancellation.exists() or not env or env.get("WHISPER_DEVICE") != "cuda":
                 raise
@@ -725,7 +836,11 @@ def transcribe_video(
             env["WHISPER_DEVICE"] = "cpu"
             env["WHISPER_COMPUTE_TYPE"] = ""
             env.pop("MEDIA_GPU_DLL_DIR", None)
+            env.pop("MEDIA_WHISPER_RETRY_BATCH_SIZE", None)
+            env.pop("MEDIA_WHISPER_FORCE_STANDARD", None)
+            env.pop("MEDIA_WHISPER_BATCH_SIZE", None)
             last_activity = time.monotonic()
+            last_heartbeat = last_activity
             run_command_streaming(
                 cmd, cwd=ROOT_DIR, log_dir=job_dir(job_id), log_name="whisper-cpu",
                 on_stdout_line=handle_whisper_line, on_stderr_line=handle_whisper_line, env=env, on_tick=heartbeat,
@@ -766,3 +881,9 @@ def transcribe_video(
         raise RuntimeError(
             f"no usable whisper backend available for model={requested_model}: {exc}"
         ) from exc
+    finally:
+        if predecoded_wav is not None:
+            try:
+                predecoded_wav.unlink(missing_ok=True)
+            except OSError:
+                pass

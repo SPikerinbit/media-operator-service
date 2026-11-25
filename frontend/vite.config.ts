@@ -12,5 +12,18 @@ export default defineConfig({
   plugins: [react(), tailwind(), ...(process.env.WORKBENCH_FIXTURE === '1' ? [fixturePlugin()] : [])],
   base: '/static/desktop-ui/',
   define: { __APP_VERSION__: JSON.stringify(version) },
-  build: { outDir: '../app/static/desktop-ui', emptyOutDir: true, target: 'chrome110' },
+  build: {
+    outDir: '../app/static/desktop-ui',
+    emptyOutDir: true,
+    target: 'chrome110',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/react') || id.includes('node_modules/react-dom')) return 'vendor-react'
+          if (id.includes('node_modules/motion') || id.includes('node_modules/framer-motion')) return 'vendor-motion'
+          if (id.includes('node_modules/lucide-react')) return 'vendor-icons'
+        },
+      },
+    },
+  },
 })

@@ -8,6 +8,9 @@ from pathlib import Path
 import os
 import sys
 import traceback
+import wave
+
+import numpy as np
 
 # Keep handles alive for transitive CUDA DLL loading on Windows.
 _cuda_dll_handles = []
@@ -57,8 +60,31 @@ def progress(percent: int, message: str) -> None:
     print(f"WHISPER_PROGRESS\t{_progress}\t{message}", flush=True)
 
 
+def load_predecoded_wav(path: Path) -> tuple[np.ndarray, int]:
+    with wave.open(str(path), "rb") as wav_file:
+        sample_rate = wav_file.getframerate()
+        channels = wav_file.getnchannels()
+        sample_width = wav_file.getsampwidth()
+        frames = wav_file.readframes(wav_file.getnframes())
+    if channels != 1:
+        raise RuntimeError(f"unexpected channel count in predecoded audio: {channels}")
+    if sample_width == 2:
+        audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    elif sample_width == 4:
+        audio = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+    else:
+        raise RuntimeError(f"unsupported sample width in predecoded audio: {sample_width}")
+    return audio, sample_rate
+
+
 def main() -> None:
     global _runtime_path, _runtime, _progress
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
     if sys.argv[1:] == ["--check-gpu"]:
         from app.desktop_config import GPU_LIBRARIES
         for dll in GPU_LIBRARIES:
@@ -71,6 +97,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--source", required=True)
+    parser.add_argument("--predecoded-wav", default="")
     parser.add_argument("--language", default="en")
     parser.add_argument("--model", default="small")
     parser.add_argument("--inference-mode", default="standard", choices=["auto", "standard", "batched", "auto_repair", "gpu_only"])
@@ -87,14 +114,31 @@ def main() -> None:
         raise RuntimeError("CUDA is required for this transcription")
     if inference_mode in {"auto", "gpu_only"}:
         inference_mode = "batched" if gpu else "standard"
+    forced_standard = os.getenv("MEDIA_WHISPER_FORCE_STANDARD") == "1"
+    if forced_standard:
+        inference_mode = "standard"
     batch_size = max(WHISPER_BATCH_SIZE, 8) if gpu and args.model in {"base", "small"} else WHISPER_BATCH_SIZE
+    configured_batch = os.getenv("MEDIA_WHISPER_BATCH_SIZE", "").strip()
+    if configured_batch.isdigit() and int(configured_batch) > 0:
+        batch_size = int(configured_batch)
+    retry_batch = os.getenv("MEDIA_WHISPER_RETRY_BATCH_SIZE", "").strip()
+    if retry_batch.isdigit() and int(retry_batch) > 0:
+        batch_size = int(retry_batch)
     model_ref = resolve_whisper_model_ref(args.model)
     if DESKTOP:
         status = whisper_model_status(args.model)
         if not status["available"]:
             raise RuntimeError("Local model files are missing or incomplete")
         model_ref = status["path"]
-    progress(5, f"加载 Whisper {args.model} · {'NVIDIA GPU' if gpu else 'CPU'}")
+    # Load or decode audio on CPU before allocating CUDA VRAM so FFmpeg never stalls GPU memory.
+    predecoded_path = Path(args.predecoded_wav) if args.predecoded_wav else None
+    if predecoded_path and predecoded_path.is_file():
+        progress(8, "读取预解码音频")
+        audio, _sample_rate = load_predecoded_wav(predecoded_path)
+    else:
+        progress(8, "decoding audio for whisper")
+        audio, _sample_rate = decode_audio_for_whisper(Path(args.source))
+    progress(18, f"加载 Whisper {args.model} · {'NVIDIA GPU' if gpu else 'CPU'}")
     model = WhisperModel(
         model_ref,
         device=str(runtime["device"]),
@@ -104,16 +148,15 @@ def main() -> None:
         num_workers=int(runtime["num_workers"]),
         local_files_only=DESKTOP,
     )
-    progress(18, "decoding audio for whisper")
-    audio, _sample_rate = decode_audio_for_whisper(Path(args.source))
     progress(28, "audio decoded")
     effective_vad = WHISPER_VAD_ENABLED and inference_mode != "standard"
+    effective_beam = 1 if (gpu and forced_standard) else WHISPER_BEAM_SIZE
     kwargs = {
         "language": None if args.language == "auto" else args.language,
         "word_timestamps": WHISPER_WORD_TIMESTAMPS,
         "vad_filter": effective_vad,
-        "beam_size": WHISPER_BEAM_SIZE,
-        "best_of": WHISPER_BEST_OF,
+        "beam_size": effective_beam,
+        "best_of": 1 if (gpu and forced_standard) else WHISPER_BEST_OF,
         "temperature": 0.0,
         "condition_on_previous_text": WHISPER_CONDITION_ON_PREVIOUS_TEXT,
         "compression_ratio_threshold": WHISPER_COMPRESSION_RATIO_THRESHOLD,
@@ -241,9 +284,11 @@ def main() -> None:
                 "batched_inference": WHISPER_BATCHED_INFERENCE,
                 "requested_inference_mode": args.inference_mode,
                 "actual_mode": transcribe_mode,
+                "forced_standard": forced_standard,
+                "predecoded_wav": bool(predecoded_path and predecoded_path.is_file()),
                 "batch_size": batch_size,
-                "beam_size": WHISPER_BEAM_SIZE,
-                "best_of": WHISPER_BEST_OF,
+                "beam_size": effective_beam,
+                "best_of": kwargs["best_of"],
                 "condition_on_previous_text": WHISPER_CONDITION_ON_PREVIOUS_TEXT,
                 "compression_ratio_threshold": WHISPER_COMPRESSION_RATIO_THRESHOLD,
                 "log_prob_threshold": WHISPER_LOG_PROB_THRESHOLD,

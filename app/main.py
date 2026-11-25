@@ -521,6 +521,7 @@ class StageTranscribeRequest(BaseModel):
     title: str | None = None
     operator_batch_id: str = Field(default="")
     operator_item_id: str = Field(default="")
+    operator_lane: str = Field(default="other")
 
     @field_validator("whisper_inference_mode", mode="before")
     @classmethod
@@ -556,6 +557,7 @@ class StageBurnRequest(BaseModel):
     output_name: str | None = None
     operator_batch_id: str = Field(default="")
     operator_item_id: str = Field(default="")
+    operator_lane: str = Field(default="other")
 
     @field_validator(
         "aspect_ratio",

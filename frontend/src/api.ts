@@ -82,8 +82,12 @@ export type Settings = {
   onboarding_complete?: boolean
   data_dir: string
   active_data_dir: string
+  log_dir?: string
   obsidian_vault: string
+  obsidian_viewpoint_vault?: string
+  obsidian_summary_vault?: string
   ai_model: string
+  ai_api_base?: string
   has_ai_key: boolean
   has_bilibili_credentials: boolean
   gpu_enabled: boolean
@@ -91,22 +95,165 @@ export type Settings = {
   gpu_install_dir: string
   gpu: { running: boolean; message: string }
   site_logins?: SiteLogin[]
+  version?: string
+}
+export type StorageSnapshot = {
+  data_dir: string
+  log_dir: string
+  models_bytes: number
+  jobs_bytes: number
+  cleanable_bytes: number
+  database_bytes: number
+  total_bytes: number
+  free_bytes: number
+}
+export type GpuQueueSnapshot = {
+  busy: boolean
+  holder?: { lane: string; operation: string; label: string; elapsed_seconds: number } | null
+  holder_text?: string
+  waiting_count: number
+  waiting_by_lane: Record<string, number>
+  vram?: { total_mb: number; free_mb: number; used_mb: number } | null
 }
 export type LocalResources = {
   models: {name:string; available:boolean; size:number; download:{running?:boolean; percent?:number; message?:string}}[]
   checks?: {label:string; ready:boolean}[]
   free_bytes?: number
+  proxy?: string
+  storage?: StorageSnapshot
+  gpu_queue?: GpuQueueSnapshot
+}
+export type ViewpointKind = 'statement' | 'judgment' | 'fact' | 'story' | 'method' | ''
+export const VIEWPOINT_KINDS: { id: Exclude<ViewpointKind, ''>; label: string; short: string }[] = [
+  { id: 'statement', label: '核心陈述', short: '陈述' },
+  { id: 'judgment', label: '判断', short: '判断' },
+  { id: 'fact', label: '启发性事实', short: '事实' },
+  { id: 'story', label: '典故/故事', short: '典故故事' },
+  { id: 'method', label: '方法/框架', short: '方法' },
+]
+export const VIEWPOINT_KIND_LABELS: Record<string, string> = {
+  statement: '陈述',
+  judgment: '判断',
+  fact: '启发性事实',
+  story: '典故/故事',
+  method: '方法/框架',
 }
 export type TranscriptSummary = { id: number; title: string; source_kind: SourceKind | 'subtitle'; source: string; created_at: string }
-export type Cue = { number: number; start_ms: number; end_ms: number; text: string }
-export type Draft = { id: number; claim: string; evidence: string; example: string; quote_translation: string; refs: number[] }
+export type Cue = { translation?: string; truncated?: boolean; number: number; start_ms: number; end_ms: number; text: string }
+export type Draft = { id: number; topic?: string; kind?: ViewpointKind; mode?: string; claim: string; evidence: string; example: string; quote_translation: string; refs: number[] }
+export type SummaryViewpoint = {
+  id: number
+  kind: ViewpointKind
+  topic: string
+  claim: string
+  evidence: string
+  example: string
+  quote_translation: string
+  importance: number
+  specificity: number
+  refs: number[]
+}
+export type SummaryTreeNode = {
+  id: number
+  level: number
+  depth: number
+  role: 'overview' | 'branch' | 'leaf'
+  title: string
+  summary: string
+  highlights: string[]
+  start_cue: number | null
+  end_cue: number | null
+  start_ms: number | null
+  end_ms: number | null
+  edited: boolean
+  children: SummaryTreeNode[]
+  viewpoints: SummaryViewpoint[]
+}
+export type SummaryTreePlan = {
+  total_tokens: number
+  leaf_count: number
+  viewpoint_count: number
+  summary_layers: number
+  branching_factor: number
+  top_count: number
+  level_sizes: number[]
+  cost: number
+}
+export type SummaryTree = {
+  run_id: string
+  root_id: number
+  plan: SummaryTreePlan
+  overview: SummaryTreeNode | null
+  nodes: SummaryTreeNode[]
+}
+export type ModeAvailability = {
+  available: boolean
+  run_id?: string | null
+  status: string
+  count: number
+  viewpoint_count?: number
+  layers?: number
+  plan?: SummaryTreePlan | null
+  can_reuse_leaves: boolean
+  updated?: number
+}
+export type LanguageProfile = {
+  lang_class: 'zh_native' | 'mixed' | 'foreign'
+  lang_code: string
+  cjk_ratio: number
+  foreign_cue_ratio: number
+  total_chars: number
+}
 export type Transcript = TranscriptSummary & { source: string; playable: boolean; media_type?: MediaType;
-  asset_type?: 'audio' | 'video' | 'note'; cues: Cue[]; cards: Draft[]; images?: string[]; body?: string; description?: string }
+  note_run?: {phase:string;status:string;completed_blocks:number;total_blocks:number;input_tokens:number;output_tokens:number;detected_language?:string;translation_strategy?:string;saved_tokens?:number};
+  language_profile?: LanguageProfile;
+  active_mode?: 'summary' | 'curated' | 'comprehensive' | '';
+  view_mode?: 'summary' | 'curated' | 'comprehensive';
+  modes?: Record<'summary' | 'curated' | 'comprehensive', ModeAvailability>;
+  summary_tree?: SummaryTree | null;
+  prev_card?: number; cue_after?: number; card_after?: number; next_cue?: number | null; next_card?: number | null; cue_count?: number; card_count?: number; asset_type?: 'audio' | 'video' | 'note'; cues: Cue[]; cards: Draft[]; images?: string[]; body?: string; description?: string }
 export type Publication = {
   card_id: number; title?: string; status: 'published' | 'already_published' | 'failed';
-  publication_id?: string; cleared?: boolean; message?: string;
+  publication_id?: string; cleared?: boolean; message?: string; vault_kind?: 'viewpoint' | 'summary';
 }
-export type EntryLog = { offset: number; limit: number; total: number; lines: string[] }
+export type SummaryPublication = {
+  transcript_id: number
+  title: string
+  status: 'published' | 'already_published'
+  publication_id: string
+  path: string
+  unchanged: boolean
+  vault_kind: 'summary'
+  message: string
+}
+export type LogEvent = { time: string; clock: string; level: 'info' | 'success' | 'warn' | 'error'; text: string }
+export type LogStage = {
+  stage: string
+  label: string
+  status: 'succeeded' | 'running' | 'failed' | 'queued' | 'reused' | 'skipped' | 'pending'
+  progress: number
+  duration_seconds?: number | null
+  duration_label?: string
+  collapsed_count?: number
+  events: LogEvent[]
+}
+export type EntryLog = {
+  offset: number
+  limit: number
+  total: number
+  lines: string[]
+  raw?: boolean
+  raw_total?: number
+  folded_count?: number
+  stages?: LogStage[]
+  overview?: {
+    lane: string
+    status: string
+    total_duration_label?: string
+    folded_count?: number
+    raw_total?: number
+  }
+}
 export type RemovalRow = { id: string; ok: boolean; kept?: boolean; status?: string; message?: string; cancelled?: number; undo_until?: number }
 
 type NativeBridge = {
@@ -114,6 +261,8 @@ type NativeBridge = {
   choose_folder(): Promise<string>
   save_as(filename: string): Promise<string>
   set_window_theme?(dark: boolean, forcedColors: boolean): Promise<void>
+  set_taskbar_progress?(state: 'none' | 'indeterminate' | 'normal' | 'error' | 'paused', percent?: number): Promise<void>
+  notify_complete?(title: string, body: string): Promise<boolean>
 }
 declare global { interface Window { pywebview?: { api?: NativeBridge } } }
 

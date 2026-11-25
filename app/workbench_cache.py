@@ -60,8 +60,11 @@ def identity(source, canonical=None):
         return 'bilibili:' + url.path.rstrip('/').rsplit('/', 1)[-1] + ':p' + (query.get('p') or ['1'])[0]
     if host.endswith('xiaohongshu.com') and ('/explore/' in url.path or '/discovery/item/' in url.path):
         return 'xiaohongshu:' + url.path.rstrip('/').rsplit('/', 1)[-1]
-    if host.endswith('douyin.com') and ('/video/' in url.path or '/note/' in url.path):
-        return 'douyin:' + url.path.rstrip('/').rsplit('/', 1)[-1]
+    if host.endswith(('douyin.com', 'iesdouyin.com')):
+        from app.sites.resolve import classify as classify_url
+        parsed_douyin = classify_url(value)
+        if parsed_douyin.get('aweme_id'):
+            return 'douyin:' + parsed_douyin['aweme_id']
     return urlunsplit((url.scheme.lower(), url.netloc.lower(), url.path, url.query, ''))
 
 
@@ -70,7 +73,7 @@ def digest(value):
 
 
 def signature(stage, source, payload):
-    clean = {k: v for k, v in payload.items() if k not in {'operator_batch_id', 'operator_item_id', 'operator_entry_id', 'execution_id', 'title', 'output_name', 'retain_cover', 'allow_muxed_audio', 'rights_confirmed'}}
+    clean = {k: v for k, v in payload.items() if k not in {'operator_batch_id', 'operator_item_id', 'operator_entry_id', 'operator_lane', 'execution_id', 'title', 'output_name', 'retain_cover', 'allow_muxed_audio', 'rights_confirmed'}}
     # A source artifact's content, not the transient job URL, determines downstream compatibility.
     for key in ('english_srt_url', 'bilingual_srt_url'):
         if clean.get(key):
@@ -103,7 +106,7 @@ def _files_ok(stage, result):
             if stage == 'transcribe':
                 knowledge.load_cues(path)
         if stage == 'extract':
-            knowledge.read_transcript(result['transcript_id'])
+            knowledge.transcript_metadata(result['transcript_id'])
     except (OSError, ValueError, KeyError, FileNotFoundError):
         return False
     return True
@@ -303,7 +306,7 @@ def _adopt_item(batch, item, lane):
 
 
 def _adopt_transcript(transcript_id):
-    record = knowledge.read_transcript(transcript_id)
+    record = knowledge.transcript_metadata(transcript_id)
     source = record.get('source') or ''
     if not source:
         return

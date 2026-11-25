@@ -1,17 +1,19 @@
-/** Shared study-room motion. Springs overshoot about 5% and then settle. */
+/** Shared study-room motion. Responsive, instant-takeoff curves with refined physical settle. */
 
 export const SPRING = {
-  /** Landing and flights. ζ ≈ 0.70 → ~5% overshoot. */
-  soft: { stiffness: 180, damping: 18.8, mass: 1 },
-  /** Drawers and pushed desks. Heavier, slower to leave, ~3% overshoot. */
-  mass: { stiffness: 92, damping: 14.2, mass: 1.7 },
-  /** Button and wax release. */
-  press: { stiffness: 460, damping: 30, mass: 1 },
+  /** Fast, crisp physical flights: page turn, wood throw, returned tears (~330ms). */
+  snappy: { stiffness: 320, damping: 28, mass: 1 },
+  /** Landing and gentle settles (~420ms, subtle ~3% overshoot). */
+  soft: { stiffness: 240, damping: 24, mass: 1 },
+  /** Weighted parcels and routing letters — decisive takeoff without sluggish lag. */
+  mass: { stiffness: 185, damping: 22, mass: 1.15 },
+  /** Button, wax seal stamp, and mechanical detent. */
+  press: { stiffness: 520, damping: 34, mass: 1 },
 } as const
 
 export type Spring = { stiffness: number; damping: number; mass: number }
 
-/** Unit step response. 0 at t=0, passes 1, settles near 1. */
+/** Unit step response. 0 at t=0, smoothly reaches 1 with optional light overshoot. */
 export function springAt(ms: number, spring: Spring = SPRING.soft) {
   const t = Math.max(0, ms) / 1000
   const w0 = Math.sqrt(spring.stiffness / spring.mass)
@@ -26,11 +28,11 @@ export function springAt(ms: number, spring: Spring = SPRING.soft) {
 }
 
 export function springSettled(ms: number, spring: Spring = SPRING.soft) {
-  const min = spring.mass > 1.2 ? 420 : 240
-  return ms > min && Math.abs(springAt(ms, spring) - 1) < 0.0035
+  const min = spring.mass > 1.1 ? 260 : 180
+  return ms > min && Math.abs(springAt(ms, spring) - 1) < 0.004
 }
 
-/** C2 ramp from 0 to 1 between a and b. Overlapping windows keep multi-stage motion moving. */
+/** C2 quintic smootherstep from 0 to 1 between a and b. */
 export function ramp(u: number, a: number, b: number) {
   if (u <= a) return 0
   if (u >= b) return 1
@@ -38,8 +40,38 @@ export function ramp(u: number, a: number, b: number) {
   return t * t * t * (t * (t * 6 - 15) + 10)
 }
 
+/** Smooth C1 ease-out with immediate initial velocity (zero start lag). */
+export function easeOutCubic(t: number) {
+  const u = Math.min(1, Math.max(0, t))
+  const inv = 1 - u
+  return 1 - inv * inv * inv
+}
+
+/** Stronger deceleration ease-out for crisp flights and settles. */
+export function easeOutQuart(t: number) {
+  const u = Math.min(1, Math.max(0, t))
+  const inv = 1 - u
+  return 1 - inv * inv * inv * inv
+}
+
+/** Gravity shut + two damped metallic rebounds for the top-hinged 3D mailbox flap (always >= 0 deg). */
+export function flapBounceAngle(t: number, openDeg = 72) {
+  const u = Math.min(1, Math.max(0, t))
+  if (u < 0.34) {
+    const k = u / 0.34
+    return openDeg * (1 - k * k)
+  }
+  if (u < 0.72) {
+    const k = (u - 0.34) / 0.38
+    return 14 * Math.sin(Math.PI * k)
+  }
+  const k = (u - 0.72) / 0.28
+  return 3.5 * Math.sin(Math.PI * k)
+}
+
 export function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t
 }
 
-export const EASE_SPRING = 'cubic-bezier(.18, 1.28, .32, 1)'
+export const EASE_SETTLE = 'cubic-bezier(0.22, 1, 0.36, 1)'
+export const EASE_SPRING = 'cubic-bezier(0.22, 1.10, 0.36, 1)'

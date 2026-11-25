@@ -68,6 +68,7 @@ with sync_playwright() as playwright:
         raise AssertionError(entry)
     transcript = entry['result']['transcript_id']
     api('/fixture/cards', {'transcript_id': transcript, 'count': 4})
+    api('/fixture/summary-tree', {'transcript_id': transcript})
     publish_group = api('/desktop/inbox/deliveries', {
         'request_id': 'ui-publish-' + token, 'lane': 'publish',
         'entries': [{'id':'publish', 'text':'https://example.com/video-config-'+token}],
@@ -88,14 +89,14 @@ with sync_playwright() as playwright:
     generate_requests = []
     page.on('request', lambda request: generate_requests.append(request.post_data_json)
             if request.url.endswith('/start') else None)
-    for mode, label in [('summary', '摘要'), ('curated', '精华观点'), ('comprehensive', '大多数观点')]:
+    for mode, label in [('summary', '摘要'), ('curated', '核心观点'), ('comprehensive', '大多数观点')]:
         before = len(generate_requests)
         page.locator('.shredder-station').get_by_role('radio', name=label, exact=True).click()
         page.wait_for_timeout(100)
         assert len(generate_requests) == before, 'Changing mode must not generate'
         with page.expect_response('**/inbox/groups/*/start') as pending:
             page.get_by_role('button', name='重新整理', exact=True).click()
-        assert pending.value.ok
+        assert pending.value.ok, (mode, pending.value.status, pending.value.text())
         assert generate_requests[-1]['notes_mode'] == mode
         results['modes'].append(generate_requests[-1])
         page.get_by_role('button',name='重新整理',exact=True).wait_for(state='visible')
@@ -106,8 +107,48 @@ with sync_playwright() as playwright:
     page.keyboard.press('ArrowRight')
     expect(page.locator('.shredder-station').get_by_role('radio', name='摘要', exact=True)).to_have_attribute('aria-checked', 'true')
 
+    # Verify unified 4-icon sidebar (no legacy brass .sidebar-mail-slot)
+    assert page.locator('.sidebar-mail-slot').count() == 0
+    icon_boxes = page.locator('.sidebar .nav-icon').evaluate_all('(els)=>els.map(e=>e.getBoundingClientRect())')
+    assert len(icon_boxes) == 4
+    assert all(abs(b['width'] - icon_boxes[0]['width']) < 1 and abs(b['height'] - icon_boxes[0]['height']) < 1 for b in icon_boxes)
+
+    # Verify Publish vs Notes left-station geometric alignment at 1920x1080
+    page.get_by_role('button', name='投稿', exact=True).click()
+    page.wait_for_timeout(1100)
+    pub_station = page.locator('.publish-station').bounding_box()
+    pub_scene = page.locator('.publish-scene').bounding_box()
+    page.get_by_role('button', name='笔记', exact=True).click()
+    page.wait_for_timeout(1100)
+    note_station = page.locator('.shredder-station').bounding_box()
+    note_scene = page.locator('.notes-scene').bounding_box()
+    assert abs(pub_station['width'] - note_station['width']) <= 2, (pub_station, note_station)
+    assert abs(pub_scene['height'] - note_scene['height']) <= 2, (pub_scene, note_scene)
+
+    # Verify 整理 / 原文 / 记录 tabs & 摘要 tree view + 核心观点 list switching
+    assert '整理' in page.locator('#tab-notes-drafts').inner_text()
+    assert '原文' in page.locator('#tab-notes-source').inner_text() and '译文' not in page.locator('#tab-notes-source').inner_text()
+    page.locator('.organize-mode-bar').get_by_role('tab', name='摘要').click()
+    page.locator('.summary-tree-pane .tree-node').first.wait_for()
+    page.locator('.summary-tree-pane .tree-toggle-btn').first.click()
+    page.locator('.summary-tree-pane .tree-branch-children').first.wait_for()
+    page.locator('.summary-tree-pane .tree-branch-children .tree-toggle-btn').first.click()
+    page.wait_for_timeout(150)
+    page.screenshot(path=str(out/'notes-summary-tree-1920x1080.png'))
+    page.locator('.organize-mode-bar').get_by_role('tab', name='核心观点').click()
+    page.locator('.viewpoint-slip').first.wait_for()
+    page.wait_for_timeout(420)
+    page.screenshot(path=str(out/'notes-viewpoints-1920x1080.png'))
+
+    # Clicking card body keeps user on 整理; clicking timestamp switches to 原文 and locates cue
     page.locator('.viewpoint-slip .slip-body').first.click()
+    assert page.locator('#tab-notes-drafts').get_attribute('aria-selected') == 'true'
     assert page.locator('.note-read .sentence[aria-pressed="true"]').count() == 1
+    page.locator('.viewpoint-slip .slip-ref-chip').first.click()
+    page.wait_for_timeout(200)
+    assert page.locator('#tab-notes-source').get_attribute('aria-selected') == 'true'
+    page.get_by_role('button', name='← 返回整理', exact=True).click()
+    assert page.locator('#tab-notes-drafts').get_attribute('aria-selected') == 'true'
     page.locator('.viewpoint-slip').first.get_by_role('button', name='编辑', exact=True).click()
     editor = page.locator('.viewpoint-slip').first.get_by_label('主题', exact=True)
     editor.fill('人工编辑保持不变')
@@ -139,17 +180,14 @@ with sync_playwright() as playwright:
             assert metrics['contentOverflow'] <= 1, (width, view, metrics)
             assert not metrics['inactiveFocusable']
             if view == 'notes':
-                tabs = page.locator('.note-panel-tabs')
-                if tabs.is_visible():
-                    tabs.get_by_role('button', name='原文', exact=True).click()
+                page.locator('#tab-notes-source').click()
                 source = page.locator('.note-read')
                 assert source.bounding_box()['width'] >= 220
                 export = source.get_by_role('button', name='导出 Markdown', exact=True)
                 export.scroll_into_view_if_needed()
                 assert export.bounding_box()['y'] + export.bounding_box()['height'] <= height + 1
-                if tabs.is_visible():
-                    tabs.get_by_role('button', name='观点', exact=True).click()
-                    page.get_by_role('button', name='重新整理', exact=True).scroll_into_view_if_needed()
+                page.locator('#tab-notes-drafts').click()
+                page.get_by_role('button', name='重新整理', exact=True).scroll_into_view_if_needed()
                 tray = page.locator('.strip-tray')
                 assert tray.count() == 1
                 assert tray.evaluate('(el)=>el.getBoundingClientRect().right<=el.parentElement.getBoundingClientRect().right+1')
@@ -165,9 +203,102 @@ with sync_playwright() as playwright:
 
     page.set_viewport_size({'width': 1440, 'height': 940})
     page.get_by_role('button', name='信箱', exact=True).click()
-    page.wait_for_timeout(1100)
+    page.wait_for_timeout(600)
     assert page.locator('.home-mode').count() == 0
+
+    # Verify 1.0.2 fullscreen scaling: Home mailbox/paper & Settings expand proportionally at 1920x1080 vs 1440x940
+    home_1440 = page.evaluate("""() => {
+      const mail = document.querySelector('.letter-station.publish .desk-mailbox').getBoundingClientRect();
+      const paper = document.querySelector('.letter-station.publish .writing-paper').getBoundingClientRect();
+      const flapImg = document.querySelector('.letter-station.publish .slot-flap img');
+      return { mailW: mail.width, paperW: paper.width, flapLoaded: Boolean(flapImg && flapImg.complete && flapImg.naturalWidth > 0) };
+    }""")
+    assert home_1440['flapLoaded'], ('3D mailbox flap layer failed to load', home_1440)
+    page.set_viewport_size({'width': 1920, 'height': 1080})
+    page.wait_for_timeout(300)
+    home_1920 = page.evaluate("""() => {
+      const mail = document.querySelector('.letter-station.publish .desk-mailbox').getBoundingClientRect();
+      const paper = document.querySelector('.letter-station.publish .writing-paper').getBoundingClientRect();
+      return { mailW: mail.width, paperW: paper.width, scrollH: document.documentElement.scrollHeight, innerH: window.innerHeight };
+    }""")
+    assert home_1920['mailW'] > home_1440['mailW'] * 1.15, ('Home mailbox did not scale up in fullscreen', home_1440, home_1920)
+    assert home_1920['paperW'] > home_1440['paperW'] * 1.15, ('Home paper did not scale up in fullscreen', home_1440, home_1920)
+    page.screenshot(path=str(out/'home-fullscreen-1920x1080.png'))
+    page.get_by_role('button', name='设置', exact=True).click()
+    page.wait_for_timeout(500)
+    settings_1920 = page.evaluate("""() => {
+      const layout = document.querySelector('.settings-layout').getBoundingClientRect();
+      const body = document.querySelector('.settings-body').getBoundingClientRect();
+      return { layoutW: layout.width, bodyW: body.width };
+    }""")
+    assert settings_1920['layoutW'] > 1550, ('Settings layout did not expand to fullscreen', settings_1920)
+    page.screenshot(path=str(out/'settings-fullscreen-1920x1080.png'))
+    page.locator('.settings-nav').get_by_role('button', name='Obsidian').click()
+    page.wait_for_timeout(200)
+    assert page.locator('.obsidian-vault-card').count() == 2
+    page.screenshot(path=str(out/'settings-obsidian-dual-1920x1080.png'))
+    results['fullscreen_scaling'] = {'home_1440': home_1440, 'home_1920': home_1920, 'settings_1920': settings_1920}
+
+    # Verify 1.0.2 floating Toast: clicking 打开成片目录 causes ZERO brazier/content shift and auto-dismisses
+    page.get_by_role('button', name='投稿', exact=True).click()
+    page.wait_for_timeout(500)
+    page.locator('[data-entry-id="'+publish_entry['id']+'"] .incoming-open').click()
+    # Prepare & run the simulated publish group so shape_result yields a real local final_video_url artifact
+    patch_r = page.request.patch(
+        origin + '/desktop/inbox/groups/' + publish_group,
+        data={'revision': 0, 'options': {}, 'overrides': {}, 'prepared': ['output', 'style', 'publish', 'translation']},
+        headers={'Origin': origin},
+    )
+    assert patch_r.ok, patch_r.text()
+    rev = patch_r.json()['revision']
+    api('/desktop/inbox/groups/' + publish_group + '/start', {
+        'revision': rev, 'confirmed': True, 'entry_ids': [publish_entry['id']],
+    })
+    for _ in range(120):
+        cur = next(item for item in page.request.get(origin + '/desktop/inbox/queue').json()['entries'] if item['id'] == publish_entry['id'])
+        if cur['status'] == 'succeeded' and cur.get('result', {}).get('final_video_url'):
+            break
+        assert cur['status'] not in {'failed', 'blocked', 'rejected'}, cur
+        page.wait_for_timeout(200)
+    else:
+        raise AssertionError(('Publish fixture never reached succeeded with final_video_url', cur))
+    page.locator('.publish .letter-state.succeeded').wait_for(state='visible', timeout=8000)
+    page.locator('#tab-preview').click()
+    page.wait_for_timeout(250)
+    page.route('**/desktop/open-path', lambda route: route.fulfill(status=200, json={'ok': True}))
+    before_toast = page.evaluate("""() => ({
+      brazier: document.querySelector('.publish .publish-scene').getBoundingClientRect().toJSON(),
+      content: document.querySelector('.publish .publish-content').getBoundingClientRect().toJSON(),
+    })""")
+    page.get_by_role('button', name='打开成片目录', exact=True).click()
+    page.locator('.publish .workbench-toast').wait_for(state='visible')
+    page.screenshot(path=str(out/'publish-toast-visible.png'))
+    during_toast = page.evaluate("""() => ({
+      brazier: document.querySelector('.publish .publish-scene').getBoundingClientRect().toJSON(),
+      content: document.querySelector('.publish .publish-content').getBoundingClientRect().toJSON(),
+    })""")
+    assert abs(during_toast['brazier']['top'] - before_toast['brazier']['top']) < 0.5, (before_toast, during_toast)
+    assert abs(during_toast['content']['top'] - before_toast['content']['top']) < 0.5, (before_toast, during_toast)
+    page.locator('.publish .workbench-toast').wait_for(state='detached', timeout=5000)
+    page.unroute('**/desktop/open-path')
+    results['toast_zero_shift_and_auto_dismiss'] = True
+
+    page.set_viewport_size({'width': 1440, 'height': 940})
+    page.get_by_role('button', name='信箱', exact=True).click()
+    page.wait_for_timeout(500)
     page.locator('.letter-station.publish input.rule-input').first.fill('https://example.com/video-'+token)
+    page.evaluate("""() => {
+      window.__flapAngles = [];
+      let live = true;
+      window.__stopFlapSample = () => { live = false; };
+      function sample() {
+        if (!live) return;
+        const el = document.querySelector('.letter-station.publish .slot-flap');
+        if (el) window.__flapAngles.push(el.style.transform || getComputedStyle(el).transform);
+        requestAnimationFrame(sample);
+      }
+      requestAnimationFrame(sample);
+    }""")
     page.get_by_role('button', name='投递投稿信件', exact=True).click()
     page.wait_for_function("() => document.querySelector('.letter-station.publish').dataset.phase==='fold'")
     page.wait_for_timeout(430)
@@ -178,14 +309,30 @@ with sync_playwright() as playwright:
     }''')
     assert hinge['gap'] < 2, ('Open flap detached from its hinge',hinge)
     results['open_flap_hinge'] = hinge
+    page.wait_for_function("() => document.querySelector('.letter-station.publish').dataset.phase==='insert'")
+    page.wait_for_timeout(320)
+    page.screenshot(path=str(out/'home-mailbox-flap-open.png'))
     page.set_viewport_size({'width': 1280, 'height': 800})
     page.wait_for_function("() => document.querySelector('.letter-station.publish').dataset.phase==='idle'")
+    flap_samples = page.evaluate("() => { window.__stopFlapSample?.(); return window.__flapAngles || []; }")
+    assert any('rotateX(' in s for s in flap_samples), ('3D mailbox flap did not animate during delivery', flap_samples[:10])
+    results['mailbox_flap_animated'] = True
     assert page.locator('.fold-sheet,.routing-letter,.cast-shadow').count() == 0
     assert page.locator('.letter-station.publish').get_attribute('data-phase') == 'idle'
     page.emulate_media(reduced_motion='reduce')
     page.get_by_role('button', name='设置', exact=True).click()
     page.wait_for_timeout(100)
     assert page.locator('.is-deck-in,.is-deck-out').count() == 0
+    # Verify global Ctrl+1..4 navigation shortcuts
+    page.keyboard.press('Control+2')
+    page.wait_for_timeout(80)
+    assert page.locator('main#workspace').get_attribute('data-view') == 'publish'
+    page.keyboard.press('Control+3')
+    page.wait_for_timeout(80)
+    assert page.locator('main#workspace').get_attribute('data-view') == 'notes'
+    page.keyboard.press('Control+4')
+    page.wait_for_timeout(80)
+    assert page.locator('main#workspace').get_attribute('data-view') == 'settings'
     assert not results['errors'], results['errors']
     browser.close()
 

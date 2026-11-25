@@ -1,4 +1,4 @@
-import { Home, Settings2 } from 'lucide-react'
+import { Clapperboard, FileText, Inbox, Settings2 } from 'lucide-react'
 import { MotionConfig, useReducedMotion } from 'motion/react'
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -6,7 +6,7 @@ import { errorMessage, request, type Settings as Preferences } from './api'
 import { Settings, type SettingsSection } from './Settings'
 import { WorkbenchHome } from './WorkbenchHome'
 import { WorkbenchQueue } from './WorkbenchQueue'
-import { useInbox } from './workbenchState'
+import { entryLabel, useInbox, workKnown, workProgress } from './workbenchState'
 import { SetupGuide } from './SetupGuide'
 import './styles.css'
 import './studio.css'
@@ -15,7 +15,12 @@ import './study.css'
 import './workspaceLayout.css'
 
 type View='home'|'publish'|'notes'|'settings'
-const navigation=[{id:'home',label:'信箱'},{id:'publish',label:'投稿'},{id:'notes',label:'笔记'},{id:'settings',label:'设置'}] as const
+const navigation=[
+  {id:'home',label:'信箱',Icon:Inbox},
+  {id:'publish',label:'投稿',Icon:Clapperboard},
+  {id:'notes',label:'笔记',Icon:FileText},
+  {id:'settings',label:'设置',Icon:Settings2},
+] as const
 const order: View[] = ['home', 'publish', 'notes', 'settings']
 function fromHash():View {const value=location.hash.slice(1).split('/')[0];return value==='video'?'publish':value==='knowledge'?'notes':['home','publish','notes','settings'].includes(value)?value as View:'home'}
 function metaphor(from: View, to: View) {
@@ -32,12 +37,105 @@ function App(){
   useEffect(()=>{const update=(event:Event)=>{const {ids,on}=(event as CustomEvent<{ids:string[];on:boolean}>).detail;setPendingLetters(current=>on?[...new Set([...current,...ids])]:current.filter(id=>!ids.includes(id)))};window.addEventListener('delivery-pending',update);return()=>window.removeEventListener('delivery-pending',update)},[])
   const [leaving,setLeaving]=useState<View|null>(null)
   const [deck,setDeck]=useState<{kind:string;dir:number}>({kind:'drawer',dir:1})
+  const deckTimer=useRef<number|null>(null)
   const [welcome,setWelcome]=useState(false)
   const reduced=useReducedMotion()
   const viewRef=useRef(view)
   const workspace=useRef<HTMLElement>(null)
+  const entryStates=useRef<Map<string,string>>(new Map())
+  const hydratedRef=useRef(false)
   viewRef.current=view
   useEffect(()=>{if(reduced)setLeaving(null)},[reduced])
+  useEffect(()=>{
+    const activeEntries=inbox.data.entries.filter(e=>['running','starting','queued'].includes(e.status))
+    const api=window.pywebview?.api
+    if(api?.set_taskbar_progress){
+      if(!activeEntries.length){
+        void api.set_taskbar_progress('none',0)?.catch(()=>{})
+      }else{
+        const known=activeEntries.filter(e=>workKnown(e))
+        if(known.length){
+          const pct=Math.round(known.reduce((sum,e)=>sum+workProgress(e),0)/known.length)
+          void api.set_taskbar_progress('normal',Math.max(2,Math.min(99,pct)))?.catch(()=>{})
+        }else{
+          void api.set_taskbar_progress('indeterminate',0)?.catch(()=>{})
+        }
+      }
+    }
+    const prev=entryStates.current
+    if(!hydratedRef.current){
+      if(inbox.data.entries.length||inbox.data.groups.length){
+        inbox.data.entries.forEach(e=>prev.set(e.id,e.status))
+        hydratedRef.current=true
+      }
+      return
+    }
+    for(const item of inbox.data.entries){
+      const old=prev.get(item.id)
+      if(old&&['running','starting','queued'].includes(old)&&['succeeded','failed'].includes(item.status)){
+        const laneName=item.lane==='publish'?'投稿':'笔记'
+        const ok=item.status==='succeeded'
+        void api?.notify_complete?.(
+          ok?`${laneName}任务已完成`:`${laneName}任务已暂停`,
+          `${entryLabel(item)}${ok?' 已处理完成':(item.message?'：'+item.message:'')}`,
+        )?.catch(()=>{})
+      }
+    }
+    prev.clear()
+    inbox.data.entries.forEach(e=>prev.set(e.id,e.status))
+  },[inbox.data.entries,inbox.data.groups.length])
+  useEffect(()=>{
+    const timer=window.setTimeout(()=>{hydratedRef.current=true},1500)
+    return()=>clearTimeout(timer)
+  },[])
+  useEffect(()=>{
+    function onKeyDown(event:KeyboardEvent){
+      if(welcome||event.isComposing)return
+      const target=event.target as HTMLElement|null
+      const typing=Boolean(target&&(['INPUT','TEXTAREA','SELECT'].includes(target.tagName)||target.isContentEditable))
+      if((event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey){
+        const idx={'1':0,'2':1,'3':2,'4':3}[event.key]
+        if(idx!==undefined){
+          event.preventDefault();show(order[idx]);return
+        }
+        if(event.key.toLowerCase()==='k'){
+          event.preventDefault()
+          if(viewRef.current==='home'){
+            document.querySelector<HTMLInputElement>('.home-view .rule-input')?.focus()
+          }else{
+            window.dispatchEvent(new CustomEvent('workbench-focus-search',{detail:{view:viewRef.current}}))
+          }
+          return
+        }
+      }
+      if(!typing&&!event.ctrlKey&&!event.metaKey&&!event.altKey){
+        if(event.key==='/'){
+          event.preventDefault()
+          if(viewRef.current==='home'){
+            document.querySelector<HTMLInputElement>('.home-view .rule-input')?.focus()
+          }else{
+            window.dispatchEvent(new CustomEvent('workbench-focus-search',{detail:{view:viewRef.current}}))
+          }
+          return
+        }
+        if(event.key===' '&&!target?.closest('button,a,[role="radio"],[role="tab"],summary')){
+          const activePane=workspace.current?.querySelector<HTMLElement>(`.${viewRef.current}-view, .lane-view:not([inert])`)
+          const media=[...(activePane?.querySelectorAll<HTMLMediaElement>('video,audio')||[])].find(el=>el.offsetParent!==null||el.tagName==='AUDIO')
+          if(media&&media.src){
+            event.preventDefault()
+            if(media.paused)void media.play().catch(()=>{})
+            else media.pause()
+            return
+          }
+        }
+      }
+      if(event.key==='Escape'){
+        window.dispatchEvent(new CustomEvent('workbench-escape'))
+      }
+    }
+    window.addEventListener('keydown',onKeyDown)
+    return()=>window.removeEventListener('keydown',onKeyDown)
+  },[welcome])
   useEffect(()=>{
     const forced=matchMedia('(forced-colors: active)')
     const sync=()=>void window.pywebview?.api?.set_window_theme?.(false,forced.matches)?.catch(()=>{})
@@ -50,19 +148,22 @@ function App(){
   }).catch(e=>setError(errorMessage(e)))},[])
   useEffect(()=>{
     const base=import.meta.env.BASE_URL
-    ;['workbench/materials/walnut.webp','workbench/materials/leather.webp','workbench/materials/linen.webp','workbench/materials/paper.webp','workbench/materials/brass.webp','workbench/mailbox-light-body.webp','workbench/mailbox-light-front.webp','workbench/mailbox-light-slot-front.webp','workbench/mailbox-light-slot-back.webp','workbench/envelope-light-front.webp','workbench/envelope-light-body.webp','workbench/brazier-light-body.webp','workbench/brazier-light-front.webp','workbench/shredder-light-body.webp','workbench/shredder-light-front.webp','workbench/trash-light-body.webp','workbench/trash-light-front.webp'].forEach(path=>{const img=new Image();img.src=base+path})
+    ;['workbench/materials/paper.webp','workbench/materials/brass.webp','workbench/mailbox-light-body.webp','workbench/mailbox-light-front.webp','workbench/mailbox-light-flap.webp','workbench/mailbox-light-slot-front.webp','workbench/mailbox-light-slot-back.webp','workbench/envelope-light-front.webp','workbench/envelope-light-body.webp','workbench/brazier-light-body.webp','workbench/brazier-light-front.webp','workbench/shredder-light-body.webp','workbench/shredder-light-front.webp','workbench/shred-switch-plate.webp','workbench/desk-tv-frame.webp','workbench/trash-light-body.webp','workbench/trash-light-front.webp'].forEach(path=>{const img=new Image();img.src=base+path;void img.decode?.().catch(()=>{})})
     let alive=true
     requestAnimationFrame(()=>requestAnimationFrame(()=>{if(alive)setWarm(true)}))
     return()=>{alive=false}
   },[])
   useEffect(()=>{const change=()=>show(fromHash());window.addEventListener('hashchange',change);return()=>window.removeEventListener('hashchange',change)},[])
+  useEffect(()=>()=>{if(deckTimer.current!=null)window.clearTimeout(deckTimer.current)},[])
   function show(next:View){
     const current=viewRef.current
     if(next===current)return
     const dir=order.indexOf(next)>=order.indexOf(current)?1:-1
     setDeck({kind:metaphor(current,next),dir})
+    if(deckTimer.current!=null){window.clearTimeout(deckTimer.current);deckTimer.current=null}
     if(!matchMedia('(prefers-reduced-motion: reduce)').matches){
       setLeaving(current)
+      deckTimer.current=window.setTimeout(()=>{deckTimer.current=null;setLeaving(null)},460)
     }
     else setLeaving(null)
     setView(next);setVisited(v=>v.includes(next)?v:[...v,next]);history.replaceState(null,'','#'+next)
@@ -81,14 +182,17 @@ function App(){
   useEffect(()=>{if(!leaving&&!welcome)workspace.current?.focus({preventScroll:true})},[view,leaving,welcome])
   function pageAccess(id:View){return {inert:view!==id||welcome,'aria-hidden':view!==id||welcome,
     onAnimationEnd:(event:React.AnimationEvent<HTMLDivElement>)=>{
-      if(event.target===event.currentTarget&&view===id)setLeaving(null)
+      if(event.target===event.currentTarget&&view===id){
+        if(deckTimer.current!=null){window.clearTimeout(deckTimer.current);deckTimer.current=null}
+        setLeaving(null)
+      }
     }}}
   return <MotionConfig reducedMotion="user"><a className="skip-link" href="#workspace">跳到工作区</a><div className="shell workbench-shell">
-    <aside className="sidebar"><div className="workbench-brand" title="Media Operator">M<span>O</span></div><nav aria-label="工作台">{navigation.map(({id,label})=>{
+    <aside className="sidebar"><div className="workbench-brand" title="Media Operator">M<span>O</span></div><nav aria-label="工作台">{navigation.map(({id,label,Icon})=>{
       const count=inbox.data.entries.filter(e=>e.lane===id&&!pendingLetters.includes(e.client_id||'')&&['ready','running','queued','blocked','failed','identifying','starting'].includes(e.status)).length
       return <button type="button" className="nav-item" key={id} aria-label={label} aria-current={view===id?'page':undefined} onClick={()=>show(id)}>
-        {id==='home'?<Home size={20} aria-hidden="true"/>:id==='settings'?<Settings2 size={20} aria-hidden="true"/>:<span className="sidebar-mail-slot" aria-hidden="true"><span className="slot-mouth" data-mail-slot={id}/><i/></span>}
-        <span>{label}</span>{count>0&&<small className="nav-count">{count}</small>}</button>
+        <span className="nav-icon" data-mail-slot={id==='publish'||id==='notes'?id:undefined} aria-hidden="true"><Icon size={20} strokeWidth={1.75}/></span>
+        <span>{label}</span>{count>0&&<small key={count} className="nav-count">{count}</small>}</button>
     })}</nav><small className="sidebar-version">{__APP_VERSION__}</small></aside>
     <main ref={workspace} id="workspace" className={'workspace'+(leaving?' is-decking':'')} data-view={view} data-motion={deck.kind} data-dir={deck.dir} tabIndex={-1}><div className="workspace-content">
       {(error||inbox.error)&&<div className="notice error" role="alert">{error||inbox.error}<button type="button" onClick={()=>void inbox.refresh()}>重新连接</button></div>}

@@ -16,6 +16,7 @@ from pathlib import Path
 LOGGER = logging.getLogger("media-operator")
 LOCK = threading.RLock()
 ACTIVE = set()
+CAPTURE_LOCKS = {}
 SITES = {
     "douyin": {
         "label": "抖音",
@@ -289,7 +290,7 @@ def _snapshot_cookie(cookie):
 def _build(site, hidden, setup):
     import webview.platforms.edgechromium  # noqa: F401
     from System import Action
-    from System.Drawing import Size
+    from System.Drawing import Point, Size
     from System.Threading.Tasks import Task, TaskScheduler
     import System.Windows.Forms as WinForms
     from Microsoft.Web.WebView2.Core import CoreWebView2Environment
@@ -301,7 +302,13 @@ def _build(site, hidden, setup):
     form = WinForms.Form()
     form.Text = spec["label"] if hidden else f"登录{spec['label']}"
     form.ClientSize = Size(980, 720)
-    form.StartPosition = WinForms.FormStartPosition.CenterScreen
+    if hidden:
+        form.StartPosition = WinForms.FormStartPosition.Manual
+        form.Location = Point(-2400, -2400)
+        form.ShowInTaskbar = False
+        form.Opacity = 0.0
+    else:
+        form.StartPosition = WinForms.FormStartPosition.CenterScreen
     view = WebView2()
     view.Dock = WinForms.DockStyle.Fill
     button = None
@@ -453,9 +460,20 @@ def can_capture(url):
     return True
 
 
-def capture(url):
-    """Open the canonical page in the site's logged-in WebView and collect HTML plus media URLs."""
+def _capture_lock(key):
+    with LOCK:
+        lock = CAPTURE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            CAPTURE_LOCKS[key] = lock
+        return lock
+
+
+def capture(url, expected_aweme=""):
+    """Open the canonical page in the site's logged-in WebView and collect HTML, XHR detail, and media URLs."""
     from System import Action, Func, Object, String
+    from System.IO import Stream, StreamReader
+    from System.Text import Encoding
     from System.Threading.Tasks import Task
     from app import main as media
     from app.source_network import public_target
@@ -465,193 +483,287 @@ def capture(url):
         raise RuntimeError("尚未登录")
     public_target(url, media.online_media_proxy(url))
     host = gui_host()
-    done = threading.Event()
-    found = {"url": url, "html": "", "media_urls": [], "webview": False}
-    holder = {}
+    with _capture_lock(key):
+        done = threading.Event()
+        found = {"url": url, "html": "", "media_urls": [], "audio_urls": [], "webview": False}
+        holder = {}
 
-    def start():
-        media_urls = []
+        def start():
+            media_urls = []
+            api_payloads = []
 
-        def setup(view, form, error):
-            if error or view is None:
-                done.set()
-                if form is not None and not form.IsDisposed:
-                    form.BeginInvoke(Action(form.Dispose))
-                return
-            core = view.CoreWebView2
-            token = {"value": 0}
-            started = time.monotonic()
-            player_script = r"""
-                (() => {
-                  const parts = [];
-                  for (const node of document.scripts) {
-                    const text = node.textContent || '';
-                    if (node.id === 'RENDER_DATA' || /playAddr|play_addr|playApi|aweme_id|awemeId|RENDER_DATA/.test(text))
-                      parts.push(text.slice(0, 200000));
-                    else if (/__INITIAL_STATE__|noteDetailMap/.test(text))
-                      parts.push(text.slice(0, 400000));
-                  }
-                  const video = document.querySelector('video');
-                  const videos = [...document.querySelectorAll('video')].map((node) => node.currentSrc || node.src || '').filter(Boolean).slice(0, 8);
-                  const entries = performance.getEntriesByType('resource').map((entry) => entry.name);
-                  const videoEntries = entries.filter((name) => /douyinvod|\.mp4|aweme\/v1\/play|mime_type=video|playApi|xhscdn|sns-video/i.test(name));
-                  const audioEntries = entries.filter((name) => /mime_type=audio|\.m4a|audio_mp4|media-audio/i.test(name));
-                  return {
-                    text: parts.join('\n'),
-                    src: video ? (video.currentSrc || video.src || '') : '',
-                    videos: videos,
-                    duration: video && isFinite(video.duration) ? video.duration : 0,
-                    entries: videoEntries.slice(-30),
-                    audio: audioEntries.slice(-10)
-                  };
-                })()
-            """
-
-            def finish(text, urls, duration, audio_urls=None):
-                if done.is_set():
+            def setup(view, form, error):
+                if error or view is None:
+                    done.set()
+                    if form is not None and not form.IsDisposed:
+                        form.BeginInvoke(Action(form.Dispose))
                     return
-                found["html"] = text if isinstance(text, str) else ""
-                found["media_urls"] = list(urls)
-                found["audio_urls"] = list(audio_urls or [])
-                found["duration"] = duration
-                found["webview"] = True
-                try:
-                    found["url"] = str(view.Source) or url
-                except Exception:
-                    found["url"] = url
-                done.set()
-                if not form.IsDisposed:
-                    form.BeginInvoke(Action(form.Dispose))
+                core = view.CoreWebView2
+                token = {"value": 0}
+                started = time.monotonic()
+                player_script = r"""
+                    (() => {
+                      const parts = [];
+                      let total = 0;
+                      const MAX_TOTAL = 3500000;
+                      for (const node of document.scripts) {
+                        const text = node.textContent || '';
+                        if (!text || total >= MAX_TOTAL) continue;
+                        if (node.id === 'RENDER_DATA' || /playAddr|play_addr|playApi|aweme_id|awemeId|aweme_detail|awemeDetail|videoDetail|RENDER_DATA|_ROUTER_DATA|__pace_f/.test(text)) {
+                          const chunk = text.slice(0, Math.min(1800000, MAX_TOTAL - total));
+                          parts.push(chunk);
+                          total += chunk.length;
+                        } else if (/__INITIAL_STATE__|noteDetailMap/.test(text)) {
+                          const chunk = text.slice(0, Math.min(500000, MAX_TOTAL - total));
+                          parts.push(chunk);
+                          total += chunk.length;
+                        }
+                      }
+                      const allVideos = [...document.querySelectorAll('video')];
+                      let bestVideo = allVideos[0] || null;
+                      let bestArea = -1;
+                      for (const node of allVideos) {
+                        const rect = node.getBoundingClientRect();
+                        const area = Math.max(0, rect.width) * Math.max(0, rect.height);
+                        if (area > bestArea) { bestArea = area; bestVideo = node; }
+                      }
+                      const videos = allVideos.map((node) => node.currentSrc || node.src || '').filter(Boolean).slice(0, 8);
+                      const entries = performance.getEntriesByType('resource').map((entry) => entry.name);
+                      const videoEntries = entries.filter((name) => /douyinvod|\.mp4|aweme\/v1\/play|mime_type=video|playApi|xhscdn|sns-video/i.test(name));
+                      const audioEntries = entries.filter((name) => /mime_type=audio|\.m4a|audio_mp4|media-audio/i.test(name));
+                      const hasCaptcha = Boolean(document.querySelector('#captcha_container, .captcha_verify_container, iframe[src*="verify"]'))
+                        || /请完成下列验证|验证码中间页/.test((document.body && document.body.innerText || '').slice(0, 800));
+                      return {
+                        href: location.href || '',
+                        text: parts.join('\n'),
+                        src: bestVideo ? (bestVideo.currentSrc || bestVideo.src || '') : '',
+                        videos: videos,
+                        duration: bestVideo && isFinite(bestVideo.duration) ? bestVideo.duration : 0,
+                        entries: videoEntries.slice(-30),
+                        audio: audioEntries.slice(-10),
+                        hasCaptcha: hasCaptcha
+                      };
+                    })()
+                """
 
-            def grab(task):
-                if done.is_set():
-                    return
-                raw = task.Result or ""
-                try:
-                    payload = json.loads(raw)
-                except (TypeError, ValueError):
-                    payload = raw
-                if isinstance(payload, str):
-                    try:
-                        payload = json.loads(payload)
-                    except (TypeError, ValueError):
-                        payload = {"text": payload}
-                if not isinstance(payload, dict):
-                    payload = {"text": str(payload or "")}
-                text = payload.get("text") or ""
-                if key == "xiaohongshu":
-                    from app.sites.resolve import xhs_capture_ready
-                    videos = []
-                    for item in [payload.get("src"), *(payload.get("videos") or [])]:
-                        if isinstance(item, str) and item.startswith("http") and item not in videos:
-                            videos.append(item)
-                    sniffed = list(media_urls)
-                    for item in payload.get("entries") or []:
-                        if isinstance(item, str) and item.startswith("http") and item not in sniffed:
-                            sniffed.append(item)
-                    if xhs_capture_ready(text, sniffed, videos) or time.monotonic() - started >= 20:
-                        finish(text, [*videos, *sniffed], payload.get("duration") or None)
+                def finish(text, urls, duration, audio_urls=None, extra=None):
+                    if done.is_set():
                         return
-                    threading.Thread(target=lambda: (time.sleep(0.8), schedule()), daemon=True).start()
-                    return
-                if key != "douyin":
-                    finish(text, media_urls, None)
-                    return
-                from app.sites.resolve import classify, order_player_urls, player_feature
-                current = url
+                    found["html"] = text if isinstance(text, str) else ""
+                    found["media_urls"] = list(urls)
+                    found["audio_urls"] = list(audio_urls or [])
+                    found["duration"] = duration
+                    found["webview"] = True
+                    if isinstance(extra, dict):
+                        found.update(extra)
+                    try:
+                        found["url"] = str(view.Source) or url
+                    except Exception:
+                        found["url"] = url
+                    done.set()
+                    if not form.IsDisposed:
+                        form.BeginInvoke(Action(form.Dispose))
+
+                def douyin_feature_from(text, current_url):
+                    from app.sites.resolve import classify, extract_douyin_api_detail, player_feature
+
+                    aweme = (
+                        str(expected_aweme or "")
+                        or classify(url).get("aweme_id")
+                        or classify(current_url).get("aweme_id")
+                        or ""
+                    )
+                    for body in api_payloads:
+                        detail = extract_douyin_api_detail(body, aweme)
+                        if detail and (not aweme or detail.get("aweme_id") == aweme):
+                            return aweme or detail.get("aweme_id") or "", detail
+                    feature = player_feature(text, aweme) or {}
+                    if feature and (not aweme or feature.get("aweme_id") == aweme):
+                        return aweme or feature.get("aweme_id") or "", feature
+                    return aweme, {}
+
+                def grab(task):
+                    if done.is_set():
+                        return
+                    raw = task.Result or ""
+                    try:
+                        payload = json.loads(raw)
+                    except (TypeError, ValueError):
+                        payload = raw
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except (TypeError, ValueError):
+                            payload = {"text": payload}
+                    if not isinstance(payload, dict):
+                        payload = {"text": str(payload or "")}
+                    text = payload.get("text") or ""
+                    if key == "xiaohongshu":
+                        from app.sites.resolve import xhs_capture_ready
+                        videos = []
+                        for item in [payload.get("src"), *(payload.get("videos") or [])]:
+                            if isinstance(item, str) and item.startswith("http") and item not in videos:
+                                videos.append(item)
+                        sniffed = list(media_urls)
+                        for item in payload.get("entries") or []:
+                            if isinstance(item, str) and item.startswith("http") and item not in sniffed:
+                                sniffed.append(item)
+                        if xhs_capture_ready(text, sniffed, videos) or time.monotonic() - started >= 20:
+                            finish(text, [*videos, *sniffed], payload.get("duration") or None)
+                            return
+                        threading.Thread(target=lambda: (time.sleep(0.8), schedule()), daemon=True).start()
+                        return
+                    if key != "douyin":
+                        finish(text, media_urls, None)
+                        return
+                    current = payload.get("href") or url
+                    try:
+                        current = str(view.Source) or current
+                    except Exception:
+                        pass
+                    aweme, feature = douyin_feature_from(text, current)
+                    urls = list(feature.get("play_urls") or [])
+                    if not urls and feature.get("url"):
+                        urls = [feature["url"]]
+                    audio_urls = [feature["audio_url"]] if feature.get("audio_url") else []
+                    duration = feature.get("duration") or 0
+                    try:
+                        duration = float(duration or 0)
+                    except (TypeError, ValueError):
+                        duration = 0
+                    extra = {
+                        "aweme_id": feature.get("aweme_id") or aweme,
+                        "title": feature.get("title") or "",
+                        "author": feature.get("author") or "",
+                        "images": list(feature.get("images") or []),
+                        "image_note": bool(feature.get("image_note")),
+                        "thumbnail": feature.get("cover") or "",
+                        "captcha_wall": bool(payload.get("hasCaptcha")) and not urls and not feature.get("image_note"),
+                    }
+                    if urls or extra["image_note"] or extra["captcha_wall"]:
+                        finish(text, urls, duration or None, audio_urls, extra)
+                        return
+                    if time.monotonic() - started < 12:
+                        threading.Thread(target=lambda: (time.sleep(0.8), schedule()), daemon=True).start()
+                        return
+                    finish(text, urls, duration or None, audio_urls, extra)
+
+                def schedule():
+                    if done.is_set() or form.IsDisposed:
+                        return
+                    try:
+                        host.BeginInvoke(Action(read_player))
+                    except Exception:
+                        done.set()
+
+                def read_player():
+                    if done.is_set() or form.IsDisposed:
+                        return
+                    core.ExecuteScriptAsync(player_script).ContinueWith(
+                        Action[Task[String]](grab), holder["scheduler"],
+                    )
+
+                def observe(sender, args):
+                    try:
+                        address = str(args.Request.Uri)
+                    except Exception:
+                        return
+                    lowered = address.lower()
+                    if key == "douyin":
+                        if not any(endpoint in lowered for endpoint in (
+                            "/aweme/v1/web/aweme/detail",
+                            "/web/api/v2/aweme/iteminfo",
+                            "/aweme/v1/web/aweme/post",
+                            "/aweme/v1/web/aweme/related",
+                        )):
+                            return
+                        try:
+                            if int(args.Response.StatusCode) != 200 or len(api_payloads) >= 8:
+                                return
+
+                            def on_body(stream_task):
+                                if done.is_set() or stream_task.IsFaulted or stream_task.IsCanceled:
+                                    return
+                                stream = stream_task.Result
+                                if stream is None:
+                                    return
+                                try:
+                                    reader = StreamReader(stream, Encoding.UTF8)
+                                    body = str(reader.ReadToEnd() or "")[:2_000_000]
+                                    reader.Dispose()
+                                except Exception:
+                                    return
+                                if not body:
+                                    return
+                                api_payloads.append(body)
+                                current_url = url
+                                try:
+                                    current_url = str(view.Source) or url
+                                except Exception:
+                                    pass
+                                aweme, detail = douyin_feature_from("", current_url)
+                                if detail and (detail.get("play_urls") or detail.get("image_note")):
+                                    urls = list(detail.get("play_urls") or [])
+                                    audio = [detail["audio_url"]] if detail.get("audio_url") else []
+                                    finish("", urls, detail.get("duration") or None, audio, {
+                                        "aweme_id": detail.get("aweme_id") or aweme,
+                                        "title": detail.get("title") or "",
+                                        "author": detail.get("author") or "",
+                                        "images": list(detail.get("images") or []),
+                                        "image_note": bool(detail.get("image_note")),
+                                        "thumbnail": detail.get("cover") or "",
+                                        "captcha_wall": False,
+                                    })
+
+                            args.Response.GetContentAsync().ContinueWith(
+                                Action[Task[Stream]](on_body), holder["scheduler"],
+                            )
+                        except Exception:
+                            return
+                        return
+                    if lowered.startswith("http") and any(token_text in lowered for token_text in (
+                        ".mp4", ".m3u8", "mime_type=video", "/aweme/v1/play",
+                    )) and address not in media_urls and len(media_urls) < 30:
+                        media_urls.append(address)
+
+                def navigated(sender, args):
+                    if not args.IsSuccess:
+                        return
+                    token["value"] += 1
+                    expected = token["value"]
+
+                    def later():
+                        time.sleep(1.2 if key != "douyin" else 0.5)
+                        if done.is_set() or token["value"] != expected or form.IsDisposed:
+                            return
+                        schedule()
+
+                    threading.Thread(target=later, daemon=True).start()
+
+                def closing(sender, args):
+                    if not done.is_set():
+                        found["media_urls"] = [] if key == "douyin" else list(media_urls)
+                        done.set()
+
+                core.WebResourceResponseReceived += observe
+                view.NavigationCompleted += navigated
+                form.FormClosing += closing
+                core.Navigate(url)
+
+            form, view, scheduler, _ = _build(key, True, setup)
+            holder["form"] = form
+            holder["scheduler"] = scheduler
+            return True
+
+        host.Invoke(Func[Object](start))
+        if not done.wait(16 if key == "douyin" else 40):
+            form = holder.get("form")
+            if form is not None:
                 try:
-                    current = str(view.Source) or url
+                    host.Invoke(Func[Object](lambda: form.Dispose() if not form.IsDisposed else True))
                 except Exception:
                     pass
-                aweme = classify(current).get("aweme_id") or ""
-                feature = player_feature(text, aweme) or {}
-                urls = order_player_urls(feature.get("url") or "", payload.get("src") or "", payload.get("entries") or [])
-                audio_urls = []
-                if feature.get("audio_url"):
-                    audio_urls.append(feature["audio_url"])
-                for name in payload.get("audio") or []:
-                    if isinstance(name, str) and name.startswith("http") and name not in audio_urls:
-                        audio_urls.append(name)
-                duration = payload.get("duration") or feature.get("duration") or 0
-                try:
-                    duration = float(duration or 0)
-                except (TypeError, ValueError):
-                    duration = 0
-                ready = bool(urls) and (duration >= 30 or (feature.get("duration") or 0) >= 30)
-                if ready or (urls and time.monotonic() - started >= 8):
-                    finish(text, urls, duration or feature.get("duration"), audio_urls)
-                    return
-                if time.monotonic() - started < 8:
-                    threading.Thread(target=lambda: (time.sleep(1), schedule()), daemon=True).start()
-                    return
-                finish(text, urls, duration or None, audio_urls)
-
-            def schedule():
-                if done.is_set() or form.IsDisposed:
-                    return
-                try:
-                    host.BeginInvoke(Action(read_player))
-                except Exception:
-                    done.set()
-
-            def read_player():
-                if done.is_set() or form.IsDisposed:
-                    return
-                core.ExecuteScriptAsync(player_script).ContinueWith(
-                    Action[Task[String]](grab), holder["scheduler"],
-                )
-
-            def observe(sender, args):
-                if key == "douyin":
-                    return
-                try:
-                    address = str(args.Request.Uri)
-                except Exception:
-                    return
-                lowered = address.lower()
-                if lowered.startswith("http") and any(token_text in lowered for token_text in (
-                    ".mp4", ".m3u8", "mime_type=video", "/aweme/v1/play",
-                )) and address not in media_urls and len(media_urls) < 30:
-                    media_urls.append(address)
-
-            def navigated(sender, args):
-                if not args.IsSuccess:
-                    return
-                token["value"] += 1
-                expected = token["value"]
-
-                def later():
-                    time.sleep(1.2 if key != "douyin" else 0.4)
-                    if done.is_set() or token["value"] != expected or form.IsDisposed:
-                        return
-                    schedule()
-
-                threading.Thread(target=later, daemon=True).start()
-
-            def closing(sender, args):
-                if not done.is_set():
-                    found["media_urls"] = [] if key == "douyin" else list(media_urls)
-                    done.set()
-
-            core.WebResourceResponseReceived += observe
-            view.NavigationCompleted += navigated
-            form.FormClosing += closing
-            core.Navigate(url)
-
-        form, view, scheduler, _ = _build(key, True, setup)
-        holder["form"] = form
-        holder["scheduler"] = scheduler
-        return True
-
-    host.Invoke(Func[Object](start))
-    if not done.wait(12 if key == "douyin" else 40):
-        form = holder.get("form")
-        if form is not None:
-            try:
-                host.Invoke(Func[Object](lambda: form.Dispose() if not form.IsDisposed else True))
-            except Exception:
-                pass
-        raise RuntimeError("登录页面读取超时")
-    if not found["webview"] and not found["html"]:
-        raise RuntimeError("没有读到登录后的页面")
-    return found
+            raise RuntimeError("登录页面读取超时")
+        if not found["webview"] and not found["html"]:
+            raise RuntimeError("没有读到登录后的页面")
+        return found

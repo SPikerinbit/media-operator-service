@@ -23,6 +23,9 @@ analysis = Analysis(
     hiddenimports=hiddenimports, excludes=["torch", "tensorflow", "pytest", "tkinter"],
 )
 pyz = PYZ(analysis.pure)
-desktop = EXE(pyz, analysis.scripts, [], exclude_binaries=True, name="MediaOperator", console=False, upx=False)
-worker = EXE(pyz, analysis.scripts, [], exclude_binaries=True, name="MediaWhisper", console=True, upx=False)
+icon_path = root / "packaging" / "icon.ico"
+desktop = EXE(pyz, analysis.scripts, [], exclude_binaries=True, name="MediaOperator", console=False, upx=False,
+              icon=str(icon_path) if icon_path.is_file() else None)
+worker = EXE(pyz, analysis.scripts, [], exclude_binaries=True, name="MediaWhisper", console=True, upx=False,
+             icon=str(icon_path) if icon_path.is_file() else None)
 distribution = COLLECT(desktop, worker, analysis.binaries, analysis.datas, name="MediaOperator", upx=False)

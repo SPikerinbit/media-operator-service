@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useReducedMotion } from 'motion/react'
-import { errorMessage, request } from './api'
+import { errorMessage, native, request } from './api'
 import { Prop, asset } from './WorkbenchEffects'
 import { currentManifest, flapOrigin, useWorkbenchManifest } from './workbenchAnchors'
 import { useNotesMode } from './notesMode'
@@ -37,7 +37,7 @@ function span(bounds: number[] | undefined, fallback: number[]) {
   return { x: box[0], y: box[1], w: box[2] - box[0], bottom: box[3] }
 }
 
-function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; active: boolean }) {
+function LetterStation({ lane, data, active, homeScale }: { lane: Lane; data: InboxState; active: boolean; homeScale: number }) {
   const [draft, setDraft] = useState<Draft>(() => readDraft(lane))
   const [page, setPage] = useState(0)
   const [phase, setPhase] = useState<DeliveryPhase | 'idle' | 'identifying'>('idle')
@@ -48,6 +48,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const [turning, setTurning] = useState(false)
   const [arrived, setArrived] = useState(false)
   const [leavingId, setLeavingId] = useState('')
+  const [dragOver, setDragOver] = useState(false)
   const tight = useMediaQuery('(max-height: 700px)')
   const compact = useMediaQuery('(max-height: 820px)')
   const pageSize = tight ? 3 : compact ? 4 : 5
@@ -56,6 +57,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const root = useRef<HTMLElement>(null)
   const envRef = useRef<HTMLDivElement>(null)
   const mailRef = useRef<HTMLDivElement>(null)
+  const mailFlapRef = useRef<HTMLDivElement>(null)
   const paperRef = useRef<HTMLDivElement>(null)
   const flapRef = useRef<HTMLDivElement>(null)
   const closedRef = useRef<HTMLImageElement>(null)
@@ -70,8 +72,8 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const activeRef = useRef(active)
   activeRef.current = active
   const submitting = useRef(false)
-  const deliveryClients=useRef<string[]>([])
-  function announcePending(on:boolean){window.dispatchEvent(new CustomEvent('delivery-pending',{detail:{ids:deliveryClients.current,on}}))}
+  const deliveryClients = useRef<string[]>([])
+  function announcePending(on: boolean) { window.dispatchEvent(new CustomEvent('delivery-pending', { detail: { ids: deliveryClients.current, on } })) }
   const handled = useRef('')
   const focusId = useRef('')
   const composing = useRef(false)
@@ -79,20 +81,25 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
   const busy = phase !== 'idle'
   const origin = flapOrigin(manifest)
   const seal = manifest.envelope.anchors.seal
+  const flapHingeY = manifest.mailbox.anchors.flapHinge?.[1] ?? 0.39267
+  const slotWindowTop = manifest.mailbox.anchors.slotFront?.[1] ?? 0.3908
   const filled = draft.lines.some(line => line.text.trim())
   const lineRects = useRef<Record<string, DOMRect>>({})
-  const mailBox = span(manifest.mailbox.visible_bounds, [0.08398, 0.22266, 0.91504, 0.79102])
+  const mailBox = span(manifest.mailbox.visible_bounds, [0.08105, 0.21582, 0.91895, 0.75])
   const envBox = span(manifest.envelope.visible_bounds, [0.07617, 0.3877, 0.9209, 0.85156])
-  const mailVisible = tight ? 156 : compact ? 188 : 220
-  const envVisible = tight ? 250 : compact ? 290 : 330
-  const stackGap = tight ? 4 : compact ? 6 : 8
+  const scale = tight || compact ? 1 : homeScale
+  const mailVisible = Math.round((tight ? 156 : compact ? 188 : 220) * scale)
+  const envVisible = Math.round((tight ? 250 : compact ? 290 : 330) * scale)
+  const stackGap = Math.round((tight ? 4 : compact ? 6 : 8) * scale)
   const mailSize = mailVisible / mailBox.w
   const envSize = envVisible / envBox.w
-  const envTuck = 40 - envBox.y * envSize - 24
+  const envTuck = Math.round(16 * scale - envBox.y * envSize)
   const mailTop = mailBox.y * mailSize
   const mailBot = (1 - mailBox.bottom) * mailSize
-  const envBot = (1 - 0.852) * envSize
-  const paperW = tight ? 320 : compact ? 360 : 400
+  const envBot = (1 - envBox.bottom) * envSize
+  const paperW = Math.round((tight ? 320 : compact ? 360 : 400) * scale)
+  const ruleH = Math.round(32 * scale)
+  const waxSize = Math.round(64 * scale)
 
   useEffect(() => {
     const stored = { lines: trimLines(draft.lines, draft.caretId), returned: draft.returned, caretId: draft.caretId }
@@ -143,13 +150,13 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
       const id = draft.lines[target * pageSize]?.id
       if (id) focusId.current = id
       if (rect && !reduced) {
-        const flight = playPageTurn(rect, 'prev', outgoing)
+        const flight = playPageTurn(rect, 'prev', outgoing, ruleH)
         setPage(target)
         await flight
       } else setPage(target)
     } else {
       const incoming = pageLines(target * pageSize)
-      if (rect && !reduced) await playPageTurn(rect, 'next', incoming.length ? incoming : [''])
+      if (rect && !reduced) await playPageTurn(rect, 'next', incoming.length ? incoming : [''], ruleH)
       focusIndex(target * pageSize)
     }
     setTurning(false)
@@ -173,7 +180,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     if (made.length > 1 && landing !== before) {
       setTurning(true)
       const rect = sheetRef.current?.getBoundingClientRect()
-      void (rect && !reduced ? playPageTurn(rect, 'next', made.map(line => line.text)) : Promise.resolve()).finally(() => {
+      void (rect && !reduced ? playPageTurn(rect, 'next', made.map(line => line.text), ruleH) : Promise.resolve()).finally(() => {
         setPage(landing)
         setTurning(false)
       })
@@ -213,7 +220,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     env.dataset.home = JSON.stringify({ x: home.left + home.width / 2, y: home.top + home.height / 2 })
     stopDelivery.current?.()
     stopDelivery.current = playDelivery({
-      root: station, env, mail, paper, flap, closed, wax, copy, sheet: sheetRef.current, lines: acceptedLines, isActive: () => activeRef.current,
+      root: station, env, mail, mailFlap: mailFlapRef.current, paper, flap, closed, wax, copy, sheet: sheetRef.current, lines: acceptedLines, isActive: () => activeRef.current,
     }, currentManifest(), import.meta.env.BASE_URL, next => setPhase(next), () => {
       resetDelivery(env, flap, paper, closed, wax)
       setPhase('idle')
@@ -231,9 +238,9 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     })
     if (!frozen.length) return
     setPress(true)
-    window.setTimeout(() => setPress(false), 160)
+    window.setTimeout(() => setPress(false), 120)
     submitting.current = true
-    deliveryClients.current=frozen.map(line=>line.id)
+    deliveryClients.current = frozen.map(line => line.id)
     announcePending(true)
     frozen.forEach(line => { const rect = inputs.current[line.id]?.getBoundingClientRect(); if (rect) lineRects.current[line.id] = rect })
     setSnapshot(frozen.map(line => line.text))
@@ -243,7 +250,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     requestId.current ||= crypto.randomUUID()
     try {
       const response = await request<{ group_id: string }>('/desktop/inbox/deliveries', 'POST', {
-        request_id: requestId.current, lane, notes_mode: lane === 'notes' ? notesMode : 'curated', entries: frozen.map(line => ({ id: line.id, text: line.text, local: Boolean(line.local), session_id:sessionForSource(classifyLetters(line.text)[0]?.source||line.text) })),
+        request_id: requestId.current, lane, notes_mode: lane === 'notes' ? notesMode : 'curated', entries: frozen.map(line => ({ id: line.id, text: line.text, local: Boolean(line.local), session_id: sessionForSource(classifyLetters(line.text)[0]?.source || line.text) })),
       })
       requestId.current = ''
       setPending(response.group_id)
@@ -262,7 +269,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     window.setTimeout(() => {
       setDraft(current => ({ ...current, lines: [...trimLines(current.lines, line.id), line], caretId: line.id, returned: current.returned.filter(entry => entry.id !== item.id) }))
       setLeavingId('')
-    }, reduced ? 0 : 240)
+    }, reduced ? 0 : 180)
     setPage(Math.floor(trimLines(draft.lines).length / pageSize))
   }
   const returnedCount = useRef(draft.returned.length)
@@ -270,11 +277,82 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
     if (draft.returned.length <= returnedCount.current) { returnedCount.current = draft.returned.length; return }
     returnedCount.current = draft.returned.length
     setArrived(true)
-    const timer = window.setTimeout(() => setArrived(false), 640)
+    const timer = window.setTimeout(() => setArrived(false), 520)
     return () => window.clearTimeout(timer)
   }, [draft.returned.length])
 
-    return <section ref={root} className={'letter-station ' + lane + (tight ? ' is-tight' : compact ? ' is-short' : '')} data-phase={phase === 'identifying' ? 'identify' : phase} aria-label={title + '信箱'} style={{ '--hinge-x': origin[0], '--hinge-y': origin[1], '--plaque-x': manifest.mailbox.anchors.plaque[0], '--plaque-y': manifest.mailbox.anchors.plaque[1], '--seal-x': seal[0], '--seal-y': seal[1], '--lines': pageSize, '--mail-box': mailSize + 'px', '--env-box': envSize + 'px', '--paper-w': paperW + 'px', '--env-tuck': envTuck + 'px', '--mail-top': mailTop + 'px', '--mail-bot': mailBot + 'px', '--env-bot': envBot + 'px', '--stack-gap': stackGap + 'px' } as React.CSSProperties}>
+  function appendLocalPaths(paths: string[]) {
+    const clean = paths.map(item => item.trim()).filter(Boolean)
+    if (!clean.length) return
+    const made: PaperLine[] = clean.map(text => ({ id: crypto.randomUUID(), text, local: true }))
+    setDraft(current => {
+      const trimmed = trimLines(current.lines)
+      const next = [...trimmed, ...made]
+      focusId.current = made[made.length - 1].id
+      setPage(Math.floor((next.length - 1) / pageSize))
+      return { ...current, lines: next, caretId: made[made.length - 1].id }
+    })
+  }
+  async function pickLocalFiles() {
+    if (busy) return
+    setError('')
+    try {
+      const paths = await (await native()).choose_media(true)
+      if (paths?.length) appendLocalPaths(paths)
+    } catch (reason) {
+      setError(errorMessage(reason))
+    }
+  }
+  function onDropFiles(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    setDragOver(false)
+    if (busy) return
+    const droppedPaths: string[] = []
+    for (const file of Array.from(event.dataTransfer.files || [])) {
+      const path = (file as File & { path?: string }).path
+      if (path) droppedPaths.push(path)
+    }
+    if (droppedPaths.length) {
+      appendLocalPaths(droppedPaths)
+      return
+    }
+    const text = event.dataTransfer.getData('text/plain')
+    if (text?.trim()) {
+      const items = classifyLetters(text)
+      if (items.length) {
+        const made = items.map(item => ({ id: crypto.randomUUID(), text: item.text.trim(), local: item.local || undefined }))
+        setDraft(current => {
+          const next = [...trimLines(current.lines), ...made]
+          setPage(Math.floor((next.length - 1) / pageSize))
+          return { ...current, lines: next, caretId: made[made.length - 1].id }
+        })
+      }
+    }
+  }
+  const hasStack = page > 0 || draft.lines.length > pageSize
+
+  return <section ref={root} className={'letter-station ' + lane + (tight ? ' is-tight' : compact ? ' is-short' : '')} data-phase={phase === 'identifying' ? 'identify' : phase} aria-label={title + '信箱'} style={{
+    '--home-scale': scale.toFixed(4),
+    '--hinge-x': origin[0],
+    '--hinge-y': origin[1],
+    '--plaque-x': manifest.mailbox.anchors.plaque[0],
+    '--plaque-y': manifest.mailbox.anchors.plaque[1],
+    '--mailbox-flap-hinge-y': flapHingeY,
+    '--slot-window-top': (slotWindowTop * 100).toFixed(3) + '%',
+    '--seal-x': seal[0],
+    '--seal-y': seal[1],
+    '--lines': pageSize,
+    '--rule-h': ruleH + 'px',
+    '--wax-size': waxSize + 'px',
+    '--mail-box': mailSize + 'px',
+    '--env-box': envSize + 'px',
+    '--paper-w': paperW + 'px',
+    '--env-tuck': envTuck + 'px',
+    '--mail-top': mailTop + 'px',
+    '--mail-bot': mailBot + 'px',
+    '--env-bot': envBot + 'px',
+    '--stack-gap': stackGap + 'px',
+  } as React.CSSProperties}>
     <header className="station-heading"><h2>{title}</h2><p>{lane === 'publish' ? '投递后再设置。' : '入队后选择档位，再开始整理。'}</p></header>
     <div className="delivery-apparatus">
       <div className="desk-mailbox" ref={mailRef}>
@@ -283,13 +361,21 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
         <div className="slot-window" data-slot-window />
         <Prop name="mailbox" layer="slot-front" className="mailbox-slot mailbox-slot-front" />
         <Prop name="mailbox" layer="front" className="mailbox-front" />
-        <span className="slot-flap" aria-hidden="true" />
+        <div className="slot-flap" ref={mailFlapRef} aria-hidden="true">
+          <Prop name="mailbox" layer="flap" className="mailbox-flap-art" />
+        </div>
         <span className="mailbox-name">{title}</span>
       </div>
       <div className="writing-paper">
-        <div className="sheet-stack">
+        <div className={'sheet-stack' + (hasStack ? ' has-stack' : '')}>
           <div className="sheet-under" aria-hidden="true" />
-          <div className="sheet-current" ref={sheetRef}>
+          <div
+            className={'sheet-current' + (dragOver ? ' is-dragover' : '')}
+            ref={sheetRef}
+            onDragOver={event => { if (!busy) { event.preventDefault(); setDragOver(true) } }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={onDropFiles}
+          >
             <div className="sheet-rules">
               {Array.from({ length: pageSize }, (_, slot) => {
                 const index = page * pageSize + slot
@@ -323,7 +409,10 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
             <button type="button" className={'page-corner next' + (turning ? ' is-lifted' : '')} aria-label="下一页" disabled={turning || busy || page >= maxPage(draft.lines.length, pageSize)} onClick={() => void turn('next')} />
           </div>
         </div>
-        <p className="paper-hint" role="status">{phase === 'identifying' ? '正在识别，信纸已保留…' : 'Ctrl + Enter'}</p>
+        <p className="paper-hint" role="status">
+          <button type="button" className="paper-local-trigger" disabled={busy} onClick={() => void pickLocalFiles()}>选本地文件</button>
+          <span>{phase === 'identifying' ? '正在识别，信纸已保留…' : 'Ctrl + Enter'}</span>
+        </p>
       </div>
       <div className="delivery-envelope" ref={envRef}>
         <Prop name="envelope" layer="body" className="envelope-back" />
@@ -332,7 +421,7 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
         <div className="envelope-flap" ref={flapRef}><img className="flap-face" src={asset('flap-light-closed')} alt="" /><img className="flap-lining" src={asset('flap-light-back')} alt="" /></div>
         <img ref={closedRef} className="flap-closed" src={asset('flap-light-closed')} alt="" />
         <div className="wax-seal" ref={waxRef}>
-          <button className={'wax-button' + (press ? ' is-pressing' : '')} type="button" aria-label={`投递${title}信件`} disabled={!filled || busy} onClick={() => void deliver()}><Prop name={lane === 'publish' ? 'wax' : 'wax-blue'} layer="beauty" /></button>
+          <button className={'wax-button' + (press ? ' is-pressing' : '') + (phase === 'identifying' ? ' is-identifying' : '')} type="button" aria-label={`投递${title}信件`} disabled={!filled || busy} onClick={() => void deliver()}><Prop name={lane === 'publish' ? 'wax' : 'wax-blue'} layer="beauty" /></button>
         </div>
       </div>
     </div>
@@ -346,8 +435,47 @@ function LetterStation({ lane, data, active }: { lane: Lane; data: InboxState; a
 }
 
 export function WorkbenchHome({ data, active }: { data: InboxState; active: boolean; onOpen?: (lane: Lane) => void }) {
-  return <div className="mailroom"><header className="mailroom-heading"><div><h1>把灵感寄出去</h1><p>一封准备发布，一封留作笔记。</p></div></header><div className="two-mailboxes">
-    <LetterStation lane="publish" data={data} active={active} />
-    <LetterStation lane="notes" data={data} active={active} />
-  </div></div>
+  const hostRef = useRef<HTMLDivElement>(null)
+  const [homeScale, setHomeScale] = useState(1)
+
+  useLayoutEffect(() => {
+    const node = hostRef.current
+    if (!node) return
+    const measure = () => {
+      const box = node.parentElement?.getBoundingClientRect() || node.getBoundingClientRect()
+      if (box.width < 2 || box.height < 2) return
+      // Keep exact 1.0x at default window (<= 1440x940 -> workspace <= 1350x940), scale smoothly up to 1.78x on 2K fullscreen.
+      const next = box.width > 1360 && box.height > 950
+        ? Math.min(1.78, Math.max(1, Math.min(box.width / 1350, (box.height - 72) / 690)))
+        : 1
+      setHomeScale(prev => Math.abs(prev - next) < 0.005 ? prev : next)
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(node.parentElement || node)
+    window.addEventListener('resize', measure)
+    return () => { observer.disconnect(); window.removeEventListener('resize', measure) }
+  }, [])
+
+  const tight = useMediaQuery('(max-height: 700px)')
+  const compact = useMediaQuery('(max-height: 820px)')
+  const scale = tight || compact ? 1 : homeScale
+  const stationW = Math.round((tight ? 320 : compact ? 360 : 400) * scale)
+  const stationGap = Math.round((tight ? 48 : compact ? 56 : 64) * scale)
+
+  return <div
+    ref={hostRef}
+    className="mailroom"
+    style={{
+      '--home-scale': scale.toFixed(4),
+      '--station-width': stationW + 'px',
+      '--station-gap': stationGap + 'px',
+    } as React.CSSProperties}
+  >
+    <header className="mailroom-heading"><div><h1>把灵感寄出去</h1><p>一封准备发布，一封留作笔记。</p></div></header>
+    <div className="two-mailboxes">
+      <LetterStation lane="publish" data={data} active={active} homeScale={scale} />
+      <LetterStation lane="notes" data={data} active={active} homeScale={scale} />
+    </div>
+  </div>
 }

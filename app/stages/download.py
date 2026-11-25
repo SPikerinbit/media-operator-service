@@ -126,8 +126,26 @@ def run_command_streaming(
                 pass
         return_code = process.returncode
     except BaseException:
-        process.kill()
-        process.wait()
+        if os.name == "nt" and getattr(process, "pid", None):
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                    creationflags=WINDOW_FLAGS,
+                    check=False,
+                )
+            except Exception:
+                pass
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except Exception:
+            pass
         raise
     finally:
         stdout_thread.join(timeout=5)

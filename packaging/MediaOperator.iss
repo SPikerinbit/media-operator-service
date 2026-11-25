@@ -1,6 +1,6 @@
 
 #ifndef AppVersion
-#define AppVersion "0.5.0"
+#define AppVersion "1.0.3"
 #endif
 #ifndef MinVersion
 #define MinVersion "10.0.22000"
@@ -27,6 +27,9 @@ OutputBaseFilename={#OutputBaseName}
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=icon.ico
+WizardImageFile=wizard-sidebar.bmp
+WizardSmallImageFile=wizard-small.bmp
 UninstallDisplayIcon={app}\MediaOperator.exe
 SetupLogging=yes
 
@@ -39,6 +42,7 @@ Type: files; Name: "{app}\_internal\app\static\media-ui\desktop.js"
 Type: files; Name: "{app}\_internal\app\static\media-ui\index.html"
 Type: files; Name: "{app}\_internal\app\static\media-ui\styles.css"
 Type: dirifempty; Name: "{app}\_internal\app\static\media-ui"
+Type: filesandordirs; Name: "{app}\_internal\app\static\desktop-ui"
 
 [Files]
 Source: "{#MediaDist}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

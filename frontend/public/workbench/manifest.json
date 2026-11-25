@@ -8,94 +8,107 @@
       "mailbox-light-beauty",
       "mailbox-light-body",
       "mailbox-light-front",
+      "mailbox-light-flap",
       "mailbox-light-slot-front",
       "mailbox-light-slot-back"
     ],
     "anchors": {
       "slot": [
-        0.4834,
-        0.41549
+        0.5,
+        0.42795
       ],
       "plaque": [
-        0.48229,
-        0.57258
+        0.5,
+        0.59533
       ],
       "exit": [
-        0.13112,
-        0.46891
+        0.09241,
+        0.50211
+      ],
+      "flapHinge": [
+        0.5,
+        0.39267
       ],
       "slotFront": [
-        0.16708,
-        0.39044,
-        0.63929,
-        0.03947
+        0.18608,
+        0.3908,
+        0.62784,
+        0.07429
       ],
       "slotBack": [
-        0.1837,
-        0.37612,
-        0.62021,
-        0.03515
+        0.18861,
+        0.3817,
+        0.62278,
+        0.06934
       ]
     },
     "camera": {
       "projection": "orthographic",
       "inclination": 12,
-      "scale": 4.05
+      "scale": 3.95
     },
     "objects": [
-      "Mailbox floor",
-      "Mailbox back",
-      "Mailbox side",
-      "Mailbox side.001",
-      "Mailbox top",
-      "Mailbox lower face",
-      "Mailbox brow",
-      "Slot recess",
-      "Slot side",
-      "Slot side.001",
-      "Blank mailbox plaque",
-      "Plaque pin",
-      "Plaque pin.001",
-      "Recessed cabinet screw",
-      "Recessed cabinet screw.001",
-      "Recessed cabinet screw.002",
-      "Recessed cabinet screw.003",
-      "Mailbox lid seam",
-      "Mailbox foot",
-      "Mailbox foot.001",
-      "Slot front plane",
-      "Slot back plane"
+      "MailboxBackWall",
+      "MailboxLeftWall",
+      "MailboxRightWall",
+      "MailboxBottomFloor",
+      "MailboxLidSeam",
+      "MailboxRoof",
+      "MailboxFootL",
+      "MailboxFootR",
+      "MailboxCavityInterior",
+      "MailboxFrontFace",
+      "MailboxSlotCollar",
+      "MailboxLowerTrim",
+      "MailboxPlaque",
+      "PlaquePin_-0.47",
+      "PlaquePin_0.47",
+      "CornerRivet_-1.39_0.68",
+      "CornerRivet_-1.39_-0.68",
+      "CornerRivet_1.39_0.68",
+      "CornerRivet_1.39_-0.68",
+      "MailboxFlapPlate",
+      "MailboxFlapLip",
+      "FlapHingeBarrel_-0.9",
+      "FlapHingeBarrel_0.9",
+      "SlotFrontPlane",
+      "SlotBackPlane"
     ],
     "layer_objects": {
       "body": [
-        "Mailbox floor",
-        "Mailbox back",
-        "Mailbox side",
-        "Mailbox side.001",
-        "Mailbox top",
-        "Slot recess",
-        "Mailbox lid seam",
-        "Mailbox foot",
-        "Mailbox foot.001"
+        "MailboxBackWall",
+        "MailboxLeftWall",
+        "MailboxRightWall",
+        "MailboxBottomFloor",
+        "MailboxLidSeam",
+        "MailboxRoof",
+        "MailboxFootL",
+        "MailboxFootR",
+        "MailboxCavityInterior"
       ],
       "front": [
-        "Mailbox lower face",
-        "Mailbox brow",
-        "Slot side",
-        "Slot side.001",
-        "Blank mailbox plaque",
-        "Plaque pin",
-        "Plaque pin.001",
-        "Recessed cabinet screw",
-        "Recessed cabinet screw.001",
-        "Recessed cabinet screw.002",
-        "Recessed cabinet screw.003"
+        "MailboxFrontFace",
+        "MailboxSlotCollar",
+        "MailboxLowerTrim",
+        "MailboxPlaque",
+        "PlaquePin_-0.47",
+        "PlaquePin_0.47",
+        "CornerRivet_-1.39_0.68",
+        "CornerRivet_-1.39_-0.68",
+        "CornerRivet_1.39_0.68",
+        "CornerRivet_1.39_-0.68"
+      ],
+      "flap": [
+        "MailboxFlapPlate",
+        "MailboxFlapLip",
+        "FlapHingeBarrel_-0.9",
+        "FlapHingeBarrel_0.9"
       ],
       "slot-front": [
-        "Slot front plane"
+        "SlotFrontPlane"
       ],
       "slot-back": [
-        "Slot back plane"
+        "SlotBackPlane"
       ]
     },
     "pivot": [
@@ -108,19 +121,30 @@
       "slot-back",
       "insert",
       "slot-front",
-      "front"
+      "front",
+      "flap"
     ],
     "visible_bounds": [
-      0.08398,
-      0.22266,
-      0.91504,
-      0.79102
+      0.08105,
+      0.21582,
+      0.91895,
+      0.75
     ],
     "themes": [
       "light"
     ],
     "occlusion_layer": "front",
-    "animation_axis": null
+    "animation_axis": {
+      "origin": [
+        0.5,
+        0.39267
+      ],
+      "axis": "x",
+      "range_degrees": [
+        0,
+        72
+      ]
+    }
   },
   "envelope": {
     "size": [

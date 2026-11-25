@@ -28,15 +28,36 @@ GENERATING_LOCK = threading.Lock()
 def sync_credentials():
     for name, value in config.credentials().items():
         setattr(media, name, value)
+    saved = config.settings()
+    if saved.get("ai_api_base"):
+        media.TRANSLATE_API_BASE = saved["ai_api_base"]
+    if saved.get("ai_model"):
+        media.TRANSLATE_MODEL = saved["ai_model"]
 
 
 class Preferences(BaseModel):
     data_dir: str | None = None
     obsidian_vault: str | None = None
+    obsidian_viewpoint_vault: str | None = None
+    obsidian_summary_vault: str | None = None
     ai_model: str | None = Field(default=None, min_length=1, max_length=120)
+    ai_api_base: str | None = Field(default=None, max_length=300)
     gpu_enabled: bool | None = None
     onboarding_complete: bool | None = None
     secrets: dict[str, str | None] = Field(default_factory=dict)
+
+
+def _normalize_ai_api_base(value: str) -> str:
+    clean = value.strip().rstrip("/")
+    if not clean:
+        return "https://api.deepseek.com"
+    from urllib.parse import urlsplit
+    parsed = urlsplit(clean)
+    if parsed.scheme == "https" and parsed.netloc:
+        return clean
+    if parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
+        return clean
+    raise ValueError("API 地址需使用 https://，本地模型服务可使用 http://127.0.0.1 或 http://localhost")
 
 
 @router.get("/settings")
@@ -44,11 +65,17 @@ def settings():
     preferences = config.settings()
     keys = config.credentials()
     gpu_path = config.gpu_dir(media.DATA_DIR)
+    viewpoint_vault = preferences.get("obsidian_viewpoint_vault") or preferences.get("obsidian_vault", "")
+    summary_vault = preferences.get("obsidian_summary_vault", "")
     return {
         "data_dir": str(config.data_dir()),
         "active_data_dir": str(media.DATA_DIR),
-        "obsidian_vault": preferences.get("obsidian_vault", ""),
+        "log_dir": str(config.HOME),
+        "obsidian_vault": viewpoint_vault,
+        "obsidian_viewpoint_vault": viewpoint_vault,
+        "obsidian_summary_vault": summary_vault,
         "ai_model": preferences.get("ai_model", media.TRANSLATE_MODEL),
+        "ai_api_base": preferences.get("ai_api_base") or media.TRANSLATE_API_BASE or "https://api.deepseek.com",
         "has_ai_key": bool(keys["TRANSLATE_API_KEY"]),
         "has_bilibili_credentials": media.bilibili_configured(),
         "gpu_enabled": bool(preferences.get("gpu_enabled")),
@@ -57,6 +84,7 @@ def settings():
         "gpu_install_dir": str(gpu_path.parent),
         "gpu": dict(gpu.PROGRESS),
         "site_logins": site_profiles.status_all()["sites"],
+        "version": VERSION,
     }
 
 
@@ -64,12 +92,24 @@ def settings():
 def save_settings(preferences: Preferences):
     try:
         changes = preferences.model_dump(exclude_none=True, exclude={"secrets"})
-        if changes.get("obsidian_vault"):
-            changes["obsidian_vault"] = str(obsidian.vault_root(changes["obsidian_vault"]))
+        if "ai_api_base" in changes:
+            changes["ai_api_base"] = _normalize_ai_api_base(changes["ai_api_base"])
+        if "obsidian_viewpoint_vault" in changes:
+            if changes["obsidian_viewpoint_vault"]:
+                changes["obsidian_viewpoint_vault"] = str(obsidian.vault_root(changes["obsidian_viewpoint_vault"]))
+            changes["obsidian_vault"] = changes["obsidian_viewpoint_vault"]
+        elif "obsidian_vault" in changes:
+            if changes["obsidian_vault"]:
+                changes["obsidian_vault"] = str(obsidian.vault_root(changes["obsidian_vault"]))
+            changes["obsidian_viewpoint_vault"] = changes["obsidian_vault"]
+        if changes.get("obsidian_summary_vault"):
+            changes["obsidian_summary_vault"] = str(obsidian.vault_root(changes["obsidian_summary_vault"]))
         config.update(changes, preferences.secrets)
         sync_credentials()
         if "ai_model" in changes:
             media.TRANSLATE_MODEL = changes["ai_model"]
+        if "ai_api_base" in changes:
+            media.TRANSLATE_API_BASE = changes["ai_api_base"]
     except config.CredentialError as error:
         raise HTTPException(503, str(error)) from error
     except (ValueError, OSError) as error:
@@ -85,8 +125,9 @@ def test_deepseek():
     model = config.settings().get("ai_model") or media.TRANSLATE_MODEL
     try:
         import httpx
+        from app.note_engine import _endpoint_url
         response = httpx.post(
-            "https://api.deepseek.com/chat/completions",
+            _endpoint_url(),
             timeout=20,
             headers={"Authorization": f"Bearer {key}"},
             json={"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]},
@@ -163,7 +204,11 @@ def prepare_gpu(request: GpuInstall):
 
 @router.get("/resources")
 def resources():
-    return {"models": [desktop_models.status(media.DATA_DIR, name) for name in desktop_models.MODELS]}
+    from app import gpu_queue
+    return {
+        "models": [desktop_models.status(media.DATA_DIR, name) for name in desktop_models.MODELS],
+        "gpu_queue": gpu_queue.snapshot(),
+    }
 
 
 @router.get("/fonts/{filename}")
@@ -185,6 +230,124 @@ def prepare_model(name: str):
     except (ValueError, OSError) as error:
         raise HTTPException(400, str(error)) from error
     return resources()
+
+
+@router.delete("/resources/models/{name}")
+def delete_model(name: str):
+    busy = any(batch.queued or batch.running for batch in jobs.stored_batches())
+    if busy:
+        raise HTTPException(409, "当前有任务正在运行，请等待结束后再删除模型")
+    try:
+        freed = desktop_models.remove_model(media.DATA_DIR, name)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from error
+    return {**resources(), "freed_bytes": freed}
+
+
+def _dir_bytes(path: Path) -> int:
+    total = 0
+    if not path.exists():
+        return 0
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+    for child in path.rglob("*"):
+        if child.is_file():
+            try:
+                total += child.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def _storage_snapshot():
+    root = media.DATA_DIR
+    models_bytes = _dir_bytes(root / "models")
+    jobs_bytes = _dir_bytes(root / "jobs")
+    previews_bytes = _dir_bytes(root / "previews") + _dir_bytes(root / "tmp") + _dir_bytes(root / "covers")
+    db_bytes = sum(_dir_bytes(p) for p in root.glob("*.sqlite3*"))
+    free_bytes = shutil.disk_usage(root).free if root.exists() else 0
+    return {
+        "data_dir": str(root),
+        "log_dir": str(config.HOME),
+        "models_bytes": models_bytes,
+        "jobs_bytes": jobs_bytes,
+        "cleanable_bytes": previews_bytes,
+        "database_bytes": db_bytes,
+        "total_bytes": models_bytes + jobs_bytes + previews_bytes + db_bytes,
+        "free_bytes": free_bytes,
+    }
+
+
+@router.get("/storage")
+def storage_info():
+    return _storage_snapshot()
+
+
+@router.post("/storage/clean-cache")
+def clean_storage_cache():
+    busy = any(batch.queued or batch.running for batch in jobs.stored_batches())
+    if busy or desktop_models.is_running():
+        raise HTTPException(409, "有任务或模型下载正在进行，请稍后再清理缓存")
+    root = media.DATA_DIR.resolve()
+    freed = 0
+    for folder_name in ("previews", "tmp", "covers"):
+        folder = (root / folder_name).resolve()
+        if root not in folder.parents or not folder.is_dir():
+            continue
+        for child in list(folder.iterdir()):
+            size = _dir_bytes(child)
+            try:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+                freed += size
+            except OSError:
+                pass
+    return {"freed_bytes": freed, "storage": _storage_snapshot()}
+
+
+class OpenPathRequest(BaseModel):
+    target: Literal["data_dir", "log_dir", "obsidian_vault", "obsidian_viewpoint_vault", "obsidian_summary_vault", "artifact"]
+    artifact_url: str | None = None
+
+
+@router.post("/open-path")
+def open_local_path(req: OpenPathRequest):
+    reveal_file = False
+    if req.target == "data_dir":
+        path = media.DATA_DIR.resolve()
+    elif req.target == "log_dir":
+        path = config.HOME.resolve()
+    elif req.target in {"obsidian_vault", "obsidian_viewpoint_vault"}:
+        path = configured_vault("viewpoint").resolve()
+    elif req.target == "obsidian_summary_vault":
+        path = configured_vault("summary").resolve()
+    else:
+        if not req.artifact_url:
+            raise HTTPException(400, "缺少要打开的产物地址")
+        try:
+            _, path = media.resolve_local_artifact_from_url(req.artifact_url)
+            path = path.resolve()
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        reveal_file = True
+    if not path.exists():
+        raise HTTPException(404, "目标路径不存在")
+    if os.name == "nt":
+        try:
+            if reveal_file and path.is_file():
+                subprocess.Popen(["explorer.exe", f"/select,{path}"])
+            else:
+                os.startfile(str(path))
+        except OSError as error:
+            raise HTTPException(500, f"无法打开资源管理器：{error}") from error
+    return {"opened": True, "path": str(path)}
 
 
 @router.get("/resources/check")
@@ -221,7 +384,14 @@ def check_resources():
     except OSError:
         pass
     tools.append({"label": "资料目录写入", "ready": writable})
-    return {**resources(), "checks": tools, "free_bytes": shutil.disk_usage(media.DATA_DIR).free}
+    proxy_url = media.online_media_proxy("https://www.youtube.com/")
+    return {
+        **resources(),
+        "checks": tools,
+        "free_bytes": shutil.disk_usage(media.DATA_DIR).free,
+        "proxy": proxy_url or "",
+        "storage": _storage_snapshot(),
+    }
 
 
 @router.get("/batches")
@@ -415,14 +585,24 @@ def list_knowledge(q: str = ""):
 
 def transcript_or_404(transcript_id):
     try:
-        return knowledge.read_transcript(transcript_id)
+        from app.note_pages import page
+        return page(transcript_id)
     except FileNotFoundError as error:
         raise HTTPException(404, "找不到字幕") from error
 
 
 @router.get("/knowledge/{transcript_id}")
-def transcript(transcript_id: int):
-    data = transcript_or_404(transcript_id)
+def transcript(
+    transcript_id: int,
+    cue_after: int = 0,
+    card_after: int = 0,
+    view_mode: Literal["auto", "summary", "curated", "comprehensive"] = "auto",
+):
+    from app.note_pages import page
+    try:
+        data = page(transcript_id, max(0, cue_after), max(0, card_after), view_mode=view_mode)
+    except FileNotFoundError as error:
+        raise HTTPException(404, str(error)) from error
     playable = data.pop("playable")
     data.pop("cache_key")
     data.pop("digest")
@@ -464,6 +644,7 @@ def get_media(transcript_id: int):
 class Consent(BaseModel):
     send_subtitles: bool = False
     mode: Literal["summary", "curated", "comprehensive"] = "curated"
+    derive_siblings: bool = True
 
 
 @router.post("/knowledge/{transcript_id}/generate")
@@ -475,11 +656,18 @@ def generate(transcript_id: int, consent: Consent):
     transcript_or_404(transcript_id)
     with GENERATING_LOCK:
         if transcript_id in GENERATING:
-            raise HTTPException(409, "这份字幕正在提取观点")
+            raise HTTPException(409, "这份字幕正在整理中")
         GENERATING.add(transcript_id)
     try:
         model = config.settings().get("ai_model", media.TRANSLATE_MODEL)
-        return {"added": knowledge.generate_cards(transcript_id, media.TRANSLATE_API_KEY, model, consent.mode)}
+        added = (
+            knowledge.generate_cards(transcript_id, media.TRANSLATE_API_KEY, model, consent.mode)
+            if consent.derive_siblings
+            else knowledge.generate_cards(
+                transcript_id, media.TRANSLATE_API_KEY, model, consent.mode, derive_siblings=False
+            )
+        )
+        return {"added": added}
     except httpx.TimeoutException as error:
         raise HTTPException(504, 'DeepSeek 请求超时，已有观点和编辑已保留，可重试。') from error
     except httpx.HTTPStatusError as error:
@@ -493,6 +681,18 @@ def generate(transcript_id: int, consent: Consent):
             GENERATING.discard(transcript_id)
 
 
+@router.post("/knowledge/{transcript_id}/cards")
+def add_card(transcript_id: int, request: knowledge.CardText):
+    try:
+        card_id = knowledge.create_card(transcript_id, request)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(404, str(error)) from error
+    view_mode = request.mode if request.mode in {"curated", "comprehensive"} else "auto"
+    return {**transcript(transcript_id, card_after=0, view_mode=view_mode), "created_card_id": card_id}
+
+
 @router.put("/knowledge/{transcript_id}/cards/{card_id}")
 def edit_card(transcript_id: int, card_id: int, request: knowledge.CardText):
     if not request.claim.strip():
@@ -501,7 +701,39 @@ def edit_card(transcript_id: int, card_id: int, request: knowledge.CardText):
         knowledge.update_card(transcript_id, card_id, request)
     except FileNotFoundError as error:
         raise HTTPException(404, "找不到观点卡") from error
-    return transcript(transcript_id)
+    with knowledge.database() as db:
+        row = db.execute("SELECT mode FROM card WHERE id=? AND transcript_id=?", (card_id, transcript_id)).fetchone()
+    view_mode = row["mode"] if row and row["mode"] in {"curated", "comprehensive"} else "auto"
+    return transcript(transcript_id, card_after=max(0, card_id - 1), view_mode=view_mode)
+
+
+@router.delete("/knowledge/{transcript_id}/cards/{card_id}")
+def remove_card(transcript_id: int, card_id: int):
+    with knowledge.database() as db:
+        row = db.execute("SELECT mode FROM card WHERE id=? AND transcript_id=?", (card_id, transcript_id)).fetchone()
+    view_mode = row["mode"] if row and row["mode"] in {"curated", "comprehensive"} else "auto"
+    try:
+        knowledge.delete_card(transcript_id, card_id)
+    except FileNotFoundError as error:
+        raise HTTPException(404, "找不到观点卡") from error
+    return transcript(transcript_id, card_after=0, view_mode=view_mode)
+
+
+class TreeNodeEdit(BaseModel):
+    title: str = Field(default="", max_length=120)
+    summary: str = Field(min_length=1, max_length=4000)
+
+
+@router.put("/knowledge/{transcript_id}/tree-nodes/{node_id}")
+def edit_tree_node(transcript_id: int, node_id: int, request: TreeNodeEdit):
+    from app import note_engine
+    try:
+        updated = note_engine.update_tree_node(transcript_id, node_id, request.title, request.summary)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(404, str(error)) from error
+    return {**transcript(transcript_id, view_mode="summary"), "updated_node": updated}
 
 
 class PublishRequest(BaseModel):
@@ -509,27 +741,71 @@ class PublishRequest(BaseModel):
     new_version: bool = False
 
 
-def configured_vault():
+class PublishSummaryRequest(BaseModel):
+    run_id: str | None = None
+    new_version: bool = False
+
+
+def configured_vault(kind: Literal["viewpoint", "summary"] = "viewpoint"):
+    prefs = config.settings()
+    if kind == "summary":
+        raw = prefs.get("obsidian_summary_vault", "")
+        msg = "请先在设置中选择可用的「摘要 Obsidian Vault」"
+    else:
+        raw = prefs.get("obsidian_viewpoint_vault") or prefs.get("obsidian_vault", "")
+        msg = "请先在设置中选择可用的「观点 Obsidian Vault」"
     try:
-        return obsidian.vault_root(config.settings().get("obsidian_vault", ""))
+        return obsidian.vault_root(raw)
     except (OSError, ValueError) as error:
-        raise HTTPException(400, "请先在设置中选择可用的 Obsidian Vault") from error
+        raise HTTPException(400, msg) from error
+
+
+def _available_vaults(preferred: Literal["summary", "viewpoint"] | None = None):
+    prefs = config.settings()
+    order = ("summary", "viewpoint") if preferred == "summary" else ("viewpoint", "summary")
+    vaults = []
+    for kind in order:
+        raw = (
+            prefs.get("obsidian_summary_vault", "")
+            if kind == "summary"
+            else (prefs.get("obsidian_viewpoint_vault") or prefs.get("obsidian_vault", ""))
+        )
+        if not raw:
+            continue
+        try:
+            vaults.append(obsidian.vault_root(raw))
+        except (OSError, ValueError):
+            continue
+    return vaults
 
 
 @router.post("/knowledge/{transcript_id}/publish")
 def publish_cards(transcript_id: int, request: PublishRequest):
-    vault = configured_vault()
+    vault = configured_vault("viewpoint")
     try:
         return {"results": obsidian.publish(vault, transcript_id, request.card_ids, request.new_version)}
     except FileNotFoundError as error:
         raise HTTPException(404, "找不到字幕") from error
 
 
-@router.post("/obsidian/{publication_id}/open")
-def open_obsidian_note(publication_id: str):
-    vault = configured_vault()
+@router.post("/knowledge/{transcript_id}/publish-summary")
+def publish_summary_tree(transcript_id: int, request: PublishSummaryRequest):
+    vault = configured_vault("summary")
     try:
-        uri = obsidian.note_uri(vault, publication_id)
+        return {"result": obsidian.publish_summary(vault, transcript_id, request.run_id, request.new_version)}
+    except FileNotFoundError as error:
+        raise HTTPException(404, "找不到字幕") from error
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@router.post("/obsidian/{publication_id}/open")
+def open_obsidian_note(publication_id: str, vault_kind: Literal["summary", "viewpoint"] | None = None):
+    vaults = _available_vaults(vault_kind)
+    if not vaults:
+        configured_vault(vault_kind or "viewpoint")
+    try:
+        uri = obsidian.note_uri_any(vaults, publication_id)
     except (OSError, ValueError) as error:
         raise HTTPException(404, f"找不到已发布笔记。可在 Obsidian 中搜索发布 ID {publication_id}") from error
     try:
@@ -544,6 +820,7 @@ class Export(BaseModel):
     artifact_url: str | None = None
     transcript_id: int | None = None
     format: Literal["artifact", "markdown", "srt", "diagnostics"]
+    view_mode: Literal["summary", "curated", "comprehensive"] | None = None
 
 
 def diagnostics():
@@ -581,7 +858,8 @@ def export(request: Export):
         elif request.format == "srt":
             knowledge.subtitle_file(request.transcript_id, temporary)
         else:
-            temporary.write_text(knowledge.markdown(request.transcript_id), encoding="utf-8")
+            from app.note_pages import markdown_to
+            markdown_to(request.transcript_id, temporary, view_mode=request.view_mode)
         temporary.replace(destination)
         return {"saved": True}
     except (ValueError, OSError) as error:
@@ -589,3 +867,74 @@ def export(request: Export):
     finally:
         if temporary:
             temporary.unlink(missing_ok=True)
+
+
+class TranslatePageRequest(BaseModel):
+    cue_after: int = Field(default=0, ge=0)
+    limit: int = Field(default=32, ge=1, le=64)
+
+
+@router.post("/knowledge/{transcript_id}/translate-page")
+def translate_knowledge_page(transcript_id: int, request: TranslatePageRequest):
+    if not media.TRANSLATE_API_KEY:
+        raise HTTPException(400, "请先在设置中配置 DeepSeek API Key")
+    transcript_or_404(transcript_id)
+    from app import note_engine, note_pages
+    try:
+        model = config.settings().get("ai_model", media.TRANSLATE_MODEL)
+        translated = note_engine.translate_page(
+            transcript_id, media.TRANSLATE_API_KEY, model,
+            cue_after=request.cue_after, limit=request.limit,
+        )
+        page_data = note_pages.page(transcript_id, cue_after=request.cue_after, limit=request.limit)
+        return {**page_data, "translated_count": translated}
+    except httpx.TimeoutException as error:
+        raise HTTPException(504, "DeepSeek 翻译请求超时，可稍后重试。") from error
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code in {401, 403}:
+            raise HTTPException(502, "DeepSeek 密钥无效或无访问权限，请到设置更新密钥。") from error
+        raise HTTPException(502, "DeepSeek 翻译服务暂不可用，请稍后重试。") from error
+    except Exception as error:
+        raise HTTPException(502, f"翻译本页原文失败：{error}") from error
+
+
+@router.get('/knowledge/{transcript_id}/cards/{card_id}/references')
+def note_references(transcript_id: int, card_id: int, after: int = 0):
+    from app.note_pages import references
+    try:
+        return references(transcript_id,card_id,max(0,after))
+    except FileNotFoundError as error:
+        raise HTTPException(404,str(error)) from error
+
+
+@router.get('/knowledge/{transcript_id}/tree-nodes/{node_id}/references')
+def tree_node_references(transcript_id: int, node_id: int, after: int = 0):
+    from app.note_pages import node_references
+    try:
+        return node_references(transcript_id, node_id, max(0, after))
+    except FileNotFoundError as error:
+        raise HTTPException(404, str(error)) from error
+
+
+@router.get('/knowledge/{transcript_id}/candidates/{candidate_id}/references')
+def candidate_span_references(transcript_id: int, candidate_id: int, after: int = 0):
+    from app.note_pages import candidate_references
+    try:
+        return candidate_references(transcript_id, candidate_id, max(0, after))
+    except FileNotFoundError as error:
+        raise HTTPException(404, str(error)) from error
+
+
+@router.get('/knowledge/{transcript_id}/source/{number}')
+def note_source(transcript_id: int, number: int, offset: int = 0):
+    from app.note_pages import source_page
+    try:
+        return source_page(transcript_id,number,max(0,offset))
+    except FileNotFoundError as error:
+        raise HTTPException(404,str(error)) from error
+
+
+@router.get('/knowledge/{transcript_id}/run')
+def note_run_status(transcript_id: int):
+    from app.note_engine import status
+    return status(transcript_id)
