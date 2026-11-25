@@ -64,13 +64,15 @@ def status(data, name):
             "preferred_path": str(preferred), "size": size, "download": progress}
 
 
-def download_weights(client, url, destination, size, checksum, progress):
+def download_weights(client, url, destination, size, checksum, progress, status_cb=None):
     partial = destination.with_suffix(".part")
     if destination.is_file() and matches(destination, size):
         with destination.open("rb") as file:
             if file_digest(file, "sha256").hexdigest() == checksum:
                 return
     offset = partial.stat().st_size if partial.is_file() else 0
+    if status_cb and offset > 0:
+        status_cb(min(99, offset * 100 // size), offset, None)
     while offset < size:
         end = min(size, offset + 64 * 1024 * 1024) - 1
         headers = {"Range": f"bytes={offset}-{end}", "Accept-Encoding": "identity"}
@@ -84,7 +86,11 @@ def download_weights(client, url, destination, size, checksum, progress):
                     with partial.open("ab") as output:
                         for chunk in response.iter_raw(chunk_size=1024 * 1024):
                             output.write(chunk)
-                            progress(min(99, output.tell() * 100 // size))
+                            written = output.tell()
+                            pct = min(99, written * 100 // size)
+                            progress(pct)
+                            if status_cb:
+                                status_cb(pct, written, None)
                 break
             except httpx.TransportError:
                 if attempt == 2:
@@ -96,6 +102,8 @@ def download_weights(client, url, destination, size, checksum, progress):
         if advanced <= offset or advanced > end + 1:
             raise RuntimeError("Unexpected Whisper download size")
         offset = advanced
+    if status_cb:
+        status_cb(99, size, "正在校验模型完整性…")
     with partial.open("rb") as file:
         valid = offset == size and file_digest(file, "sha256").hexdigest() == checksum
     if not valid:
@@ -111,7 +119,17 @@ def _prepare(data, name, proxy, target):
 
     def progress(percent):
         with LOCK:
-            PROGRESS[name].update(percent=percent, message=f"正在准备模型 · {percent}%")
+            PROGRESS[name].update(percent=percent, total_bytes=size, failed=False, message=f"正在后台下载 · {percent}%")
+
+    def status_cb(percent, downloaded_bytes, custom_message):
+        with LOCK:
+            PROGRESS[name].update(
+                percent=percent,
+                downloaded_bytes=downloaded_bytes,
+                total_bytes=size,
+                failed=False,
+                message=custom_message or f"正在后台下载 · {percent}%",
+            )
 
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -126,14 +144,26 @@ def _prepare(data, name, proxy, target):
                     temporary = path.with_suffix(path.suffix + ".part")
                     temporary.write_bytes(response.content)
                     temporary.replace(path)
-            download_weights(client, base + "model.bin", directory / "model.bin", size, checksum, progress)
+            download_weights(client, base + "model.bin", directory / "model.bin", size, checksum, progress, status_cb=status_cb)
         directory.rename(target)
         with LOCK:
-            PROGRESS[name] = {"running": False, "percent": 100, "message": "本地模型已准备好"}
+            PROGRESS[name] = {
+                "running": False,
+                "percent": 100,
+                "downloaded_bytes": size,
+                "total_bytes": size,
+                "failed": False,
+                "message": "本地模型已准备好",
+            }
     except Exception as error:
         logging.getLogger(__name__).warning("Whisper %s preparation failed (%s)", name, type(error).__name__)
         with LOCK:
-            PROGRESS[name].update(running=False, message="模型下载或校验失败。请检查网络和资料目录后重试。")
+            PROGRESS[name].update(
+                running=False,
+                failed=True,
+                total_bytes=size,
+                message="模型下载或校验失败。请检查网络和资料目录后重试。",
+            )
 
 
 def prepare(data, name, proxy):
@@ -147,13 +177,22 @@ def prepare(data, name, proxy):
         raise ValueError("模型目录中已有不完整的副本，请整理后重试。")
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.parent / f".download-{name}" / "model.part"
-    remaining = MODELS[name][1] - (partial.stat().st_size if partial.is_file() else 0)
+    downloaded = partial.stat().st_size if partial.is_file() else 0
+    total = MODELS[name][1]
+    remaining = total - downloaded
     if shutil.disk_usage(target.parent).free < max(0, remaining) + 16 * 1024 * 1024:
         raise ValueError("资料盘可用空间不足，请腾出空间后再下载模型。")
     with LOCK:
         if any(value["running"] for value in PROGRESS.values()):
             return
-        PROGRESS[name] = {"running": True, "percent": 0, "message": "正在连接模型服务器"}
+        PROGRESS[name] = {
+            "running": True,
+            "percent": min(99, downloaded * 100 // total) if downloaded > 0 else 0,
+            "downloaded_bytes": downloaded,
+            "total_bytes": total,
+            "failed": False,
+            "message": "正在连接模型服务器",
+        }
         threading.Thread(target=_prepare, args=(data, name, proxy, target), daemon=True).start()
 
 

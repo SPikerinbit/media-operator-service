@@ -563,7 +563,7 @@ export function WorkbenchQueue({lane,data,settings,active,onHome,onSettings,refr
                     <div className="notes-awaiting"><h3>{running?'正在整理内容':'整理结果将在这里展开'}</h3><p>{running?'可切换至「记录」查看实时处理日志。':'在左侧选择整理档位并点击「开始整理」，可在此切换查看多层级摘要、核心观点与大多数观点。'}</p></div>
                   </div>
                   <div className="publish-panel notes-awaiting-panel" role="tabpanel" id="notes-source" aria-labelledby="tab-notes-source" hidden={notesTab!=='source'}>
-                    <div className="notes-awaiting"><h3>{running?'正在取得原文':'原文将在这里展开'}</h3><p>{running?'转录或抓取正文完成后即可阅读对照与播控。':'开始整理后，时间戳原文与按需译文会保留在此页。'}</p></div>
+                    <div className="notes-awaiting"><h3>{running?'正在取得原文':'原文将在这里展开'}</h3><p>{running?'转录、抓取或解析图书正文完成后即可阅读对照。':'开始整理后，段落或时间戳原文与按需译文会保留在此页。'}</p></div>
                   </div>
                 </>}
               <div className="publish-panel records-panel" role="tabpanel" id="notes-records" aria-labelledby="tab-notes-records" hidden={notesTab!=='records'}>

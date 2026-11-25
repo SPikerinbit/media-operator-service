@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
-from app import knowledge, desktop_jobs as jobs, desktop_sources, desktop_config, share_text
+from app import knowledge, desktop_jobs as jobs, desktop_sources, desktop_config, share_text, local_books
 from app import workbench_cache as cache
 from app import workbench_logs
 from app import work_progress as work
@@ -494,7 +494,7 @@ def deliver(request: Delivery):
 
 def _classified(entry):
     if entry.get('local'):
-        source = entry['raw'].strip().strip('"').strip("'")
+        source = share_text._normalize_path(entry['raw'])
         return {'kind': 'local', 'local': True, 'source': source, 'source_kind': 'local', 'title': Path(source).name,
                 'url': source, 'platform': '本地文件', 'author': ''}
     found = share_text.classify_letters(entry.get('raw') or '')
@@ -536,14 +536,21 @@ def identify(ident, session_id=''):
                     message = '无法读取这个本地文件'
                 update(ident, status='rejected', message=message, kind='local', source=parsed.get('source') or '')
                 return
-        subtitle = Path(source).suffix.lower() in {'.srt', '.vtt'}
+        subtitle = local and Path(source).suffix.lower() in {'.srt', '.vtt'}
+        book = local and local_books.is_book_path(source)
         if entry['lane'] == 'publish' and subtitle:
             if alive():
                 update(ident, status='rejected', message='投稿只接收视频', kind='local', source=source)
             return
+        if entry['lane'] == 'publish' and book:
+            if alive():
+                update(ident, status='rejected', message='投稿只接收视频，图书与文档请投递到笔记信箱', kind='local', source=source)
+            return
         weread_text = ''
         if subtitle:
             probe = {'title': Path(source).name, 'media_type': 'subtitle', 'platform': '字幕文件', 'has_audio': False}
+        elif book:
+            probe = local_books.probe_book(Path(source))
         elif entry['lane'] == 'notes':
             # Receiving only classifies. Source pages can contain an entire book/note;
             # even probing them belongs to the explicit start operation.
@@ -630,6 +637,39 @@ def start_notes(ident, run=None):
                                                title=book['title'] or entry['title'], media_type='note', note_body=book['text'])
             finish_subtitle(ident, transcript_id, options)
             return
+        if entry.get('probe', {}).get('media_type') == 'book':
+            update(ident, stage='download', message='正在解析本地图书正文')
+            book = local_books.extract_book(Path(entry['source']))
+            if get_entry(ident).get('status') in {'removed', 'cancelled'}:
+                return
+            book_title = book['title'] or entry.get('title') or Path(entry['source']).stem
+            book_platform = f"本地图书 · {book['format']}"
+            transcript_id = knowledge.register(
+                Path(entry['source']),
+                source_kind='book',
+                source=entry['source'],
+                title=book_title,
+                media_type='note',
+                asset_type='book',
+                paragraphs=book['paragraphs'],
+                note_body=book['excerpt'],
+            )
+            update(
+                ident,
+                title=book_title,
+                author=book.get('author') or entry.get('author') or '',
+                platform=book_platform,
+                result={
+                    **(entry.get('result') or {}),
+                    'transcript_id': transcript_id,
+                    'book_format': book['format'],
+                    'book_chapters': book['chapters'],
+                    'book_chars': book['char_count'],
+                    'book_paragraphs': len(book['paragraphs']),
+                },
+            )
+            finish_subtitle(ident, transcript_id, options, book=book)
+            return
         if entry.get('probe', {}).get('deferred'):
             update(ident, stage='download', message='正在获取来源信息')
             probe = cache.reused_probe(entry['source']) or desktop_sources.probe(
@@ -658,22 +698,30 @@ def start_notes(ident, run=None):
         update(ident, status='blocked', message=getattr(error,'detail',None) or str(error))
 
 
-def finish_subtitle(ident, transcript_id, options):
-    """Imported subtitles and reorganization use the same persisted stage pipeline."""
+def finish_subtitle(ident, transcript_id, options, *, book=None):
+    """Imported subtitles, books, and reorganization use the same persisted stage pipeline."""
     from app import workbench_notes
     entry = get_entry(ident)
     transcript = knowledge.transcript_metadata(transcript_id)
     result = {**(entry.get('result') or {}), 'transcript_id': transcript_id}
+    media_type = (entry.get('probe') or {}).get('media_type')
     if not media.TRANSLATE_API_KEY:
-        update(ident, status='blocked', message='请配置 DeepSeek，字幕已导入', result=result)
+        if media_type == 'book':
+            notice = '请配置 DeepSeek，图书正文已导入'
+        elif media_type == 'weread':
+            notice = '请配置 DeepSeek，原文已导入'
+        else:
+            notice = '请配置 DeepSeek，字幕已导入'
+        update(ident, status='blocked', message=notice, result=result)
         return
-    path = media.artifact_path('subtitle_' + ident, 'original.srt')
-    path.parent.mkdir(parents=True, exist_ok=True)
-    knowledge.subtitle_file(transcript_id, path)
-    result['english_srt_url'] = media.public_file_url(path.parent.name, path.name)
+    if transcript.get('reference_kind') != 'paragraph':
+        path = media.artifact_path('subtitle_' + ident, 'original.srt')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        knowledge.subtitle_file(transcript_id, path)
+        result['english_srt_url'] = media.public_file_url(path.parent.name, path.name)
     request = media.BatchCreateRequest(**options, sources=[source_of(entry, True)])
-    batch = media.create_batch(request, {ident: {'planned_stages': [], 'media_type': entry.get('probe', {}).get('media_type')
-                                               if entry.get('probe', {}).get('media_type') in {'video', 'audio', 'note'} else 'note'}})
+    batch = media.create_batch(request, {ident: {'planned_stages': [], 'media_type': media_type
+                                               if media_type in {'video', 'audio', 'note'} else 'note'}})
     item = batch.items[0]
     excluded = []
     if not workbench_notes.language_of(result, transcript)[1]:
@@ -683,7 +731,14 @@ def finish_subtitle(ident, transcript_id, options):
     if cache.read(workbench_notes.extract_signature(transcript, options)):
         excluded.append('extract')
     execution = work.begin(['translate', 'extract'], notes=True, execution_id=entry.get('execution_id'), excluded=excluded)
-    media.update_batch_item(batch.batch_id, item.item_id, status='running', result=result, execution=execution)
+    initial_details = {}
+    if book:
+        summary_msg = f"已解析本地图书（{book['format']} · {len(book['paragraphs'])} 段 · {book['char_count']:,} 字）"
+        initial_details['download'] = {'status': 'succeeded', 'progress': 100, 'message': summary_msg}
+    media.update_batch_item(
+        batch.batch_id, item.item_id, status='running', result=result,
+        stage_details=initial_details or None, execution=execution,
+    )
     update(ident, batch_id=batch.batch_id, item_id=item.item_id, status='running', result=result, **execution)
     def run(stage, payload):
         output = jobs.stage_result(batch.batch_id, item.item_id, stage, payload)

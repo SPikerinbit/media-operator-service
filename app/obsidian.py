@@ -144,6 +144,8 @@ def _platform_label(doc):
         return "B 站"
     if kind == "subtitle":
         return "字幕文件"
+    if kind == "book":
+        return "本地图书"
     if kind == "local":
         return "本地媒体"
     host = (urlsplit(doc.get("source") or "").hostname or "").lower()

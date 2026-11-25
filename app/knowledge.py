@@ -120,8 +120,14 @@ def load_cues(path: Path):
 
 
 def register(path, *, source_kind, source, title, playable=None, cache_key=None, media_type=None, asset_type=None,
-             note_body=None, note_images=None):
-    if media_type == 'note':
+             note_body=None, note_images=None, paragraphs=None):
+    if paragraphs is not None:
+        cues = [(0, 0, str(paragraph).strip()) for paragraph in paragraphs if str(paragraph or '').strip()]
+        if not cues:
+            raise ValueError("图书中没有可提取的正文内容")
+        if note_body is None:
+            note_body = "\n\n".join(text for _, _, text in cues[:12])[:4000]
+    elif media_type == 'note':
         cues = [(0, 0, paragraph.strip()) for paragraph in re.split(r'\n\s*\n|\n', note_body or '') if paragraph.strip()]
     else:
         cues = load_cues(path)
@@ -292,12 +298,20 @@ def read_transcript(transcript_id, *, include_origins=False, mode=None):
 
 
 def subtitle_file(transcript_id, path):
-    from app.note_pages import source_page
-    with path.open('w',encoding='utf-8') as output, database() as db:
-        for cue in db.execute('SELECT number,start_ms,end_ms,length(text) AS size FROM cue WHERE transcript_id=? ORDER BY number',(transcript_id,)):
+    with path.open('w', encoding='utf-8') as output, database() as db:
+        rows = db.execute(
+            'SELECT number,start_ms,end_ms,length(text) AS size FROM cue WHERE transcript_id=? ORDER BY number',
+            (transcript_id,),
+        ).fetchall()
+        for cue in rows:
             output.write(f"{cue['number']}\n{clock(cue['start_ms']).replace('.',',')} --> {clock(cue['end_ms']).replace('.',',')}\n")
-            for offset in range(0,cue['size'],4000):
-                output.write(source_page(transcript_id,cue['number'],offset)['text'])
+            for offset in range(0, cue['size'], 4000):
+                chunk = db.execute(
+                    'SELECT substr(text,?,4000) FROM cue WHERE transcript_id=? AND number=?',
+                    (offset + 1, transcript_id, cue['number']),
+                ).fetchone()
+                if chunk and chunk[0]:
+                    output.write(chunk[0])
             output.write('\n\n')
     return path
 

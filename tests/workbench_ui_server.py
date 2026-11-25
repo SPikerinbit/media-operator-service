@@ -9,8 +9,9 @@ os.environ['MEDIA_DESKTOP_DATA']=str(root/'data')
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from app import desktop
 desktop.prepare()
-from app import main as media,desktop_config as config,desktop_sources,desktop_jobs as jobs,desktop_bilibili,knowledge,workbench_inbox as inbox
+from app import main as media,desktop_config as config,desktop_sources,desktop_jobs as jobs,desktop_bilibili,desktop_models,knowledge,workbench_inbox as inbox
 from fastapi import Request
+import threading
 import uvicorn
 import time
 
@@ -24,6 +25,58 @@ app=desktop.application(f'http://127.0.0.1:{port}','workbench-review')
 media.whisper_model_status=lambda *a:{'available':True}
 media.bilibili_configured=lambda:True
 desktop_bilibili.posting_zones=lambda:{201:'知识 / 科学'}
+
+_MOCK_READY_MODELS: set[str] = set()
+_orig_model_status = desktop_models.status
+def _mock_model_status(data, name):
+    info = _orig_model_status(data, name)
+    if name in _MOCK_READY_MODELS:
+        info['available'] = True
+    return info
+def _mock_model_prepare(data, name, proxy):
+    if name not in desktop_models.MODELS:
+        raise ValueError('不支持的 Whisper 模型')
+    size = desktop_models.MODELS[name][1]
+    with desktop_models.LOCK:
+        if any(v.get('running') for v in desktop_models.PROGRESS.values()):
+            return
+        desktop_models.PROGRESS[name] = {
+            'running': True, 'percent': 12, 'downloaded_bytes': int(size * 0.12),
+            'total_bytes': size, 'failed': False, 'message': '正在后台下载 · 12%',
+        }
+    def _runner():
+        for pct, msg in ((46, '正在后台下载 · 46%'), (88, '正在后台下载 · 88%'), (99, '正在校验模型完整性…')):
+            time.sleep(0.55)
+            with desktop_models.LOCK:
+                desktop_models.PROGRESS[name].update(
+                    running=True, percent=pct, downloaded_bytes=int(size * pct / 100),
+                    total_bytes=size, failed=False, message=msg,
+                )
+        time.sleep(0.45)
+        _MOCK_READY_MODELS.add(name)
+        with desktop_models.LOCK:
+            desktop_models.PROGRESS[name] = {
+                'running': False, 'percent': 100, 'downloaded_bytes': size,
+                'total_bytes': size, 'failed': False, 'message': '本地模型已准备好',
+            }
+    threading.Thread(target=_runner, daemon=True).start()
+desktop_models.status = _mock_model_status
+desktop_models.prepare = _mock_model_prepare
+for route in app.routes:
+    if getattr(route, 'path', '') == '/desktop/resources/check':
+        def _fast_check():
+            from app import desktop_routes
+            return {
+                **desktop_routes.resources(),
+                'checks': [
+                    {'label': 'FFmpeg / 字幕压制', 'ready': True},
+                    {'label': 'NVIDIA / CUDA、cuDNN 和 GPU 推理', 'ready': False},
+                    {'label': '资料目录写入', 'ready': True},
+                ],
+                'free_bytes': 120 * 10**9,
+                'proxy': '',
+            }
+        route.dependant.call = _fast_check
 def probe(value,*args):
     if 'blocked' in value:raise desktop_sources.SourceError('session_required','请先在设置中登录小红书')
     return {'title':'如何把一个想法变成作品' if 'video' in value else '每天一条，记录思考的来路','media_type':'audio' if 'audio' in value else 'video',

@@ -1,12 +1,15 @@
 /* Structural ownership: all workbench sizing, breakpoints, and enriched card styling live here.
    studio.css supplies controls; study.css supplies materials and motion. */
-.workbench-shell { height:100dvh; overflow:clip; }
+.workbench-shell { height:100dvh; grid-template-rows:minmax(0,1fr); overflow:clip; }
+.workbench-shell .sidebar { min-height:0; overflow-y:auto; scrollbar-width:none; }
+.workbench-shell .sidebar::-webkit-scrollbar { display:none; }
 .workbench-shell .workspace { min-height:0; overflow:clip; }
 .workbench-shell .workspace-content { container:workspace / inline-size; min-width:0; min-height:0; overflow:clip; }
 .lane-view { min-width:0; min-height:0; overflow:clip; }
-.mailroom { --station-width:400px; --station-gap:64px; width:100%; max-width:none; min-height:100%; display:flex; flex-direction:column; justify-content:center; margin:0 auto; padding:clamp(16px,3vh,36px) clamp(20px,3vw,64px); }
+.mailroom { --station-width:400px; --station-gap:64px; width:100%; max-width:none; min-height:100%; display:flex; flex-direction:column; justify-content:center; margin:0 auto; padding:clamp(10px,1.6vh,20px) clamp(20px,3vw,64px) clamp(28px,4.4vh,52px); }
 .two-mailboxes { width:100%; max-width:1760px; margin-inline:auto; display:grid; grid-template-columns:repeat(2,minmax(0,var(--station-width))); justify-content:center; gap:var(--station-gap); }
-.mailroom-heading { width:100%; max-width:calc(var(--station-width) * 2 + var(--station-gap)); margin:0 auto clamp(12px,1.8vh,22px); }
+.mailroom-heading { width:100%; max-width:calc(var(--station-width) * 2 + var(--station-gap)); margin:0 auto clamp(6px,1.1vh,14px); }
+.home-view:has(.letter-station:not([data-phase="idle"]):not([data-phase="identify"])) { overflow-y:clip; }
 .delivery-apparatus .desk-mailbox { width:min(100%,var(--mail-box)); }
 .letter-station .sheet-stack { height:calc(var(--lines,5) * var(--rule-h,32px) + 8px); }
 .letter-station .sheet-rules { height:calc(var(--lines,5) * var(--rule-h,32px)); background-image:repeating-linear-gradient(#FEFEFC 0 calc(var(--rule-h,32px) - 1px), #DDE3E5 calc(var(--rule-h,32px) - 1px) var(--rule-h,32px)); }
@@ -462,15 +465,21 @@ button.shred-strip:hover,button.shred-strip:focus-visible,button.shred-strip.is-
 .account-mark.xiaohongshu { background:transparent; font-size:7.5px; letter-spacing:-.02em; }
 .account-mark.bilibili { background:transparent; font-size:10px; }
 .account-mark.weread { background:transparent; font-family:"Source Han Serif CN",serif; font-size:17px; }
-.onboarding { border:0; max-width:none; max-height:none; width:100%; height:100%; margin:0; padding:20px; color:inherit; overflow:auto; }
+.onboarding { border:0; max-width:none; max-height:none; width:100%; height:100%; margin:0; padding:18px; color:inherit; overflow:auto; }
 .onboarding:not([open]) { display:none; }
 .onboarding::backdrop { background:#24344447; }
-.setup-book { max-height:calc(100dvh - 40px); overflow:auto; }
-.setup-stamps { flex-wrap:wrap; }
-.setup-accounts li { display:grid; grid-template-columns:28px minmax(64px,1fr) auto auto auto; }
-.onboarding.is-leaving { animation:none; background:#e7eef2; }
-.onboarding.is-leaving .setup-book { animation:close-guide 460ms var(--mass) forwards; transform-origin:bottom center; }
-@keyframes close-guide { to { transform:translateY(110vh) rotate(3deg); } }
+.setup-book { max-height:calc(100dvh - 36px); overflow:auto; }
+@media (max-width:780px) {
+  .setup-stamps { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .setup-models { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .tour-diorama,.tour-pillars,.setup-connect-grid,.setup-shortcuts-list { grid-template-columns:minmax(0,1fr); }
+  .demo-card { grid-template-columns:minmax(0,1fr); }
+  .demo-stage { height:164px; }
+}
+.onboarding.is-leaving { animation:onboard-fade-out 240ms var(--ease-out-quick) forwards; overflow:hidden; }
+.onboarding.is-leaving .setup-book { animation:close-guide 240ms var(--ease-out-quick) forwards; transform-origin:center center; }
+@keyframes onboard-fade-out { to { background:transparent; } }
+@keyframes close-guide { to { transform:translate3d(0, 18px, 0) scale(.97); opacity:0; } }
 .is-parked * { animation-play-state:paused; }
 .tv-screen video { object-fit:contain; }
 .tv-screen { position:relative; }
@@ -516,17 +525,22 @@ button.shred-strip:hover,button.shred-strip:focus-visible,button.shred-strip.is-
   .lever-track button small { display:none; }
 }
 @media (max-height:820px) {
-  .mailroom { --station-width:360px; --station-gap:56px; }
+  .mailroom { --station-width:356px; --station-gap:54px; padding-top:8px; padding-bottom:22px; }
   .incoming-letter { height:72px; min-height:72px; }
   .queue-heading { margin-bottom:12px; }
 }
 @media (max-height:700px) {
-  .mailroom { --station-width:320px; --station-gap:48px; padding-block:12px; }
+  .mailroom { --station-width:320px; --station-gap:44px; padding-top:6px; padding-bottom:16px; }
   .mailroom-heading h1 { font-size:24px; }
   .workbench-queue,.workbench-shell .settings-view { padding-block:12px; }
   .queue-heading { margin-bottom:12px; }
 }
 @media (max-height:650px) {
+  .workbench-shell .sidebar { padding:12px 8px 10px; gap:10px; }
+  .workbench-brand { padding-bottom:6px; font-size:20px; }
+  .workbench-shell .nav-item { min-height:56px; padding:8px 2px; gap:4px; margin-bottom:4px; }
+  .sidebar-bottom { gap:4px; }
+  .sidebar-help-btn { padding:4px 3px; font-size:10.5px; }
   .queue-heading { margin-bottom:6px; }
   .queue-heading h1 { font-size:22px; }
   .queue-heading p { display:none; }
@@ -545,6 +559,6 @@ button.shred-strip:hover,button.shred-strip:focus-visible,button.shred-strip.is-
   .notes .note-actions .button-press-motion { font-size:11px; padding:5px 8px; }
 }
 @media (prefers-reduced-motion:reduce) {
-  .onboarding.is-leaving .setup-book,.strip-tray .shred-strip,.letter-title,.publish-panel:not([hidden]),.publish-panel .success-card,.nav-count,.bowl-well .task-log,.workbench-toast { animation:none; }
+  .onboarding.is-leaving .setup-book,.strip-tray .shred-strip,.letter-title,.publish-panel:not([hidden]),.publish-panel .success-card,.nav-count,.bowl-well .task-log,.workbench-toast,.tour-wax-mini,.tour-flow-arrow i,.tour-card-stack b,.demo-ink-line,.demo-paper-sheet,.demo-wax-pulse,.demo-env-flight,.demo-wood-log,.demo-ember-glow,.demo-tv-glow,.demo-shred-paper,.demo-lever-thumb,.demo-tree-branch,.bg-model-spin { animation:none !important; }
   .shred-fall { display:none; }
 }

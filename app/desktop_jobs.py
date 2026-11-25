@@ -136,7 +136,7 @@ def plan_batch(request):
         try:
             info = probe_source(source)
             media_type = info["media_type"]
-            if media_type == "note":
+            if media_type in {"note", "book"}:
                 if not request.knowledge_only:
                     raise desktop_sources.SourceError("note_only", "没有可烧录的视频。请改到笔记。")
                 planned[row_id] = {
@@ -176,7 +176,11 @@ def plan_batch(request):
                         raise ValueError("严格 GPU 模式需要重新转录，请直接添加素材")
                 if not (explicit or previous or (inference != "gpu_only" and knowledge.cached_id(cache_key))
                         or cached_transcription(source.source_value, settings['source_language'], model, inference)):
-                    if not media.whisper_model_status(model)["available"]:
+                    model_status = media.whisper_model_status(model)
+                    if not model_status["available"]:
+                        dl = model_status.get("download") or {}
+                        if dl.get("running"):
+                            raise ValueError(f"Whisper {model} 正在后台下载中（{int(dl.get('percent') or 0)}%），完成后即可开始转录。")
                         raise ValueError(f"请在设置中下载 Whisper {model}")
                     if inference == "gpu_only" and desktop_config.worker_environment()["WHISPER_DEVICE"] != "cuda":
                         raise ValueError("请先在设置中检测并启用 NVIDIA 转录加速")
@@ -548,7 +552,11 @@ def run_item(batch_id, item_id):
         )
         if not transcript_id and (not managed or "transcribe" in planned) and not cached_transcription(item.source_value,language,model,inference):
             stage = "transcribe"
-            if not media.whisper_model_status(model)["available"]:
+            model_status = media.whisper_model_status(model)
+            if not model_status["available"]:
+                dl = model_status.get("download") or {}
+                if dl.get("running"):
+                    raise ValueError(f"Whisper {model} 正在后台下载中（{int(dl.get('percent') or 0)}%），完成后即可开始转录。")
                 raise ValueError(f"本地 Whisper {model} 未准备好，请在「设置 → 转录与本地资源」下载后重试。")
             if inference == "gpu_only" and desktop_config.worker_environment()["WHISPER_DEVICE"] != "cuda":
                 raise ValueError("严格 GPU 模式需要启用 NVIDIA 转录加速，请先在设置中检测和启用。")

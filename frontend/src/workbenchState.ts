@@ -65,9 +65,13 @@ export function useInbox() {
   return {data,error,refresh}
 }
 
+const INVISIBLE_MARKS = /[\ufeff\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
 const URL_RE = /https?:\/\/[^\s<>"'，。；！？、）】》]+/gi
-const FILE_URL = /file:\/\/[^\s<>"']+/gi
-const QUOTED_PATH = /(["'])((?:[A-Za-z]:[\\/]|\\\\)[^"']+)\1/g
+const FILE_URL_LINE = /^[ \t]*(?:["'\u201c\u2018])?(file:\/\/[^\r\n"'\u201d\u2019<>]+?)(?:["'\u201d\u2019])?[ \t]*$/gim
+const FILE_URL = /file:\/\/[^\s<>"'\u201c\u201d\u2018\u2019]+/gi
+const DOUBLE_QUOTED_PATH = /"((?:[A-Za-z]:[\\/]|\\\\)[^"\r\n]+)"/g
+const SINGLE_QUOTED_PATH = /'((?:[A-Za-z]:[\\/]|\\\\)[^'\r\n]+)'/g
+const SMART_QUOTED_PATH = /(?:\u201c((?:[A-Za-z]:[\\/]|\\\\)[^\u201d\r\n]+)\u201d|\u2018((?:[A-Za-z]:[\\/]|\\\\)[^\u2019\r\n]+)\u2019)/g
 const LINE_PATH = /^[ \t]*((?:[A-Za-z]:[\\/]|\\\\)[^\r\n]*\S)[ \t]*$/gm
 const AUTHOR = /【\s*(.+?)\s*的作品】/
 const SHARE_PREFIX = /^(?:\d+(?:\.\d+)?\s+)?(?:复制打开(?:抖音|小红书)[，,]?\s*(?:看看)?)/
@@ -117,8 +121,11 @@ function fileUrlPath(url: string) {
   if (path.startsWith('/') && path.length >= 3 && path[2] === ':') path = path.slice(1)
   return path.replace(/\//g, '\\')
 }
+function stripInvisible(value: string) {
+  return (value || '').replace(INVISIBLE_MARKS, '')
+}
 function normalizePath(value: string) {
-  const text = value.trim().replace(/^["']|["']$/g, '')
+  const text = stripInvisible(value).trim().replace(/^["'\u201c\u201d\u2018\u2019]+|["'\u201c\u201d\u2018\u2019]+$/g, '').trim()
   return text.toLowerCase().startsWith('file:') ? fileUrlPath(text) : text.replace(/\//g, '\\')
 }
 function overlaps(span: Span, others: Span[]) {
@@ -126,15 +133,34 @@ function overlaps(span: Span, others: Span[]) {
 }
 function spansOf(text: string) {
   const found: Span[] = []
+  for (const match of text.matchAll(FILE_URL_LINE)) {
+    const body = match[1].trim()
+    if (!body) continue
+    const offset = match[0].indexOf(body)
+    const start = (match.index ?? 0) + Math.max(0, offset)
+    found.push({ start, end: start + body.length, kind: 'local', source: fileUrlPath(body), raw: body })
+  }
   for (const match of text.matchAll(FILE_URL)) {
     const raw = match[0]
     const start = match.index ?? 0
-    found.push({ start, end: start + raw.length, kind: 'local', source: fileUrlPath(raw), raw })
+    const span: Span = { start, end: start + raw.length, kind: 'local', source: fileUrlPath(raw), raw }
+    if (!overlaps(span, found)) found.push(span)
   }
-  for (const match of text.matchAll(QUOTED_PATH)) {
+  for (const pattern of [DOUBLE_QUOTED_PATH, SINGLE_QUOTED_PATH]) {
+    for (const match of text.matchAll(pattern)) {
+      const raw = match[0]
+      const start = match.index ?? 0
+      const span: Span = { start, end: start + raw.length, kind: 'local', source: normalizePath(match[1]), raw }
+      if (!overlaps(span, found)) found.push(span)
+    }
+  }
+  for (const match of text.matchAll(SMART_QUOTED_PATH)) {
+    const body = match[1] || match[2] || ''
+    if (!body) continue
     const raw = match[0]
     const start = match.index ?? 0
-    found.push({ start, end: start + raw.length, kind: 'local', source: normalizePath(match[2]), raw })
+    const span: Span = { start, end: start + raw.length, kind: 'local', source: normalizePath(body), raw }
+    if (!overlaps(span, found)) found.push(span)
   }
   for (const match of text.matchAll(URL_RE)) {
     const raw = rstripUrl(match[0])
@@ -182,7 +208,7 @@ function localItem(span: Span): ClassifiedLetter {
 
 /** Same letter boundaries as app.share_text.classify_letters. */
 export function classifyLetters(text: string): ClassifiedLetter[] {
-  const raw = text || ''
+  const raw = stripInvisible(text || '')
   if (!raw.trim()) return []
   const spans = spansOf(raw)
   const urls = spans.filter(span => span.kind === 'url')

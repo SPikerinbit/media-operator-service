@@ -1,8 +1,8 @@
 export type SourceKind = 'local' | 'youtube' | 'bilibili' | 'url'
-export const sourceNames = { local: '本地媒体', youtube: 'YouTube', bilibili: 'B 站', url: '在线素材', subtitle: '字幕文件' }
+export const sourceNames = { local: '本地媒体', youtube: 'YouTube', bilibili: 'B 站', url: '在线素材', subtitle: '字幕文件', book: '本地图书' }
 export const workflow = [['download','导入'],['transcribe','字幕'],['translate','翻译'],['burn','成片'],['bilibili_upload','投稿']] as const
 export type WorkflowStage = typeof workflow[number][0]
-export type MediaType = 'audio' | 'video' | 'unknown' | 'image' | 'note'
+export type MediaType = 'audio' | 'video' | 'unknown' | 'image' | 'note' | 'book' | 'subtitle' | 'weread'
 export type SourceProbe = { ready: true; title?: string; platform: string; media_type: MediaType;
   duration: number | null; has_audio: boolean; audio_direct: boolean; description?: string;
   images?: string[]; body?: string; author?: string; canonical_url?: string } |
@@ -115,8 +115,22 @@ export type GpuQueueSnapshot = {
   waiting_by_lane: Record<string, number>
   vram?: { total_mb: number; free_mb: number; used_mb: number } | null
 }
+export type ModelDownloadState = {
+  running?: boolean
+  percent?: number
+  downloaded_bytes?: number
+  total_bytes?: number
+  failed?: boolean
+  message?: string
+}
+export type LocalModel = {
+  name: string
+  available: boolean
+  size: number
+  download: ModelDownloadState
+}
 export type LocalResources = {
-  models: {name:string; available:boolean; size:number; download:{running?:boolean; percent?:number; message?:string}}[]
+  models: LocalModel[]
   checks?: {label:string; ready:boolean}[]
   free_bytes?: number
   proxy?: string
@@ -138,7 +152,7 @@ export const VIEWPOINT_KIND_LABELS: Record<string, string> = {
   story: '典故/故事',
   method: '方法/框架',
 }
-export type TranscriptSummary = { id: number; title: string; source_kind: SourceKind | 'subtitle'; source: string; created_at: string }
+export type TranscriptSummary = { id: number; title: string; source_kind: SourceKind | 'subtitle' | 'book'; source: string; created_at: string }
 export type Cue = { translation?: string; truncated?: boolean; number: number; start_ms: number; end_ms: number; text: string }
 export type Draft = { id: number; topic?: string; kind?: ViewpointKind; mode?: string; claim: string; evidence: string; example: string; quote_translation: string; refs: number[] }
 export type SummaryViewpoint = {
@@ -211,7 +225,7 @@ export type Transcript = TranscriptSummary & { source: string; playable: boolean
   view_mode?: 'summary' | 'curated' | 'comprehensive';
   modes?: Record<'summary' | 'curated' | 'comprehensive', ModeAvailability>;
   summary_tree?: SummaryTree | null;
-  prev_card?: number; cue_after?: number; card_after?: number; next_cue?: number | null; next_card?: number | null; cue_count?: number; card_count?: number; asset_type?: 'audio' | 'video' | 'note'; cues: Cue[]; cards: Draft[]; images?: string[]; body?: string; description?: string }
+  prev_card?: number; cue_after?: number; card_after?: number; next_cue?: number | null; next_card?: number | null; cue_count?: number; card_count?: number; asset_type?: 'audio' | 'video' | 'note' | 'book'; cues: Cue[]; cards: Draft[]; images?: string[]; body?: string; description?: string }
 export type Publication = {
   card_id: number; title?: string; status: 'published' | 'already_published' | 'failed';
   publication_id?: string; cleared?: boolean; message?: string; vault_kind?: 'viewpoint' | 'summary';
@@ -257,7 +271,7 @@ export type EntryLog = {
 export type RemovalRow = { id: string; ok: boolean; kept?: boolean; status?: string; message?: string; cancelled?: number; undo_until?: number }
 
 type NativeBridge = {
-  choose_media(multiple?: boolean): Promise<string[]>
+  choose_media(multiple?: boolean, lane?: 'publish' | 'notes'): Promise<string[]>
   choose_folder(): Promise<string>
   save_as(filename: string): Promise<string>
   set_window_theme?(dark: boolean, forcedColors: boolean): Promise<void>

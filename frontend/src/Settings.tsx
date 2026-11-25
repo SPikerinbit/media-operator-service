@@ -1,6 +1,7 @@
 import { BookOpen, Cpu, Download, ExternalLink, FolderOpen, HardDrive, KeyRound, LogIn, Save, SlidersHorizontal, Send, ChevronRight, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { native, request, saveAs, siteSession, type LocalResources, type Settings as Preferences, type SiteLogin, type StorageSnapshot } from './api'
+import { MODEL_DOWNLOAD_EVENT, notifyModelDownloadChanged } from './modelDownloads'
 import { loginUrl, logoutSite, openSiteLogin, readSites, storeSiteSession, type LoginSite, type SiteId } from './siteSessions'
 import { Button, Busy, Disclosure, Feedback, Field, useActions } from './ui'
 import { Inspector, outputDefaults, savedVideoOptions, type VideoDefaults, type VideoOptions, type DefaultGroup, type InspectorSection } from './videoOptions'
@@ -29,7 +30,7 @@ function formatBytes(bytes: number) {
 type Category = SettingsSection
 type SaveSection = 'directory'|'deepseek'|'gpu'|'bilibili'|'obsidian'
 
-export function Settings({ current, update, focus, onOpenGuide, active=true }: { current: Preferences | null; update: (settings: Preferences) => void; focus?: Category; onOpenGuide?: () => void; active?:boolean }) {
+export function Settings({ current, update, focus, onOpenGuide, onReplayTour, active=true }: { current: Preferences | null; update: (settings: Preferences) => void; focus?: Category; onOpenGuide?: () => void; onReplayTour?: () => void; active?:boolean }) {
   const [category,setCategory] = useState<Category>(focus || 'general')
   const loginInput = useRef<HTMLInputElement>(null)
   const loginSite = useRef<LoginSite>('抖音')
@@ -101,9 +102,11 @@ export function Settings({ current, update, focus, onOpenGuide, active=true }: {
         subtitle_style:JSON.stringify(current.subtitle_style) === JSON.stringify(old.subtitle_style) ? fresh.subtitle_style : current.subtitle_style}))
     }).catch(() => {})}
     reload();window.addEventListener('video-defaults-changed',reload)
-    void request<LocalResources>('/desktop/resources').then(setResources).catch(() => {})
+    const pullResources = () => { void request<LocalResources>('/desktop/resources').then(next => { if (active) setResources(old => ({ ...old, models: next.models, gpu_queue: next.gpu_queue })) }).catch(() => {}) }
+    pullResources()
+    window.addEventListener(MODEL_DOWNLOAD_EVENT, pullResources)
     void request<StorageSnapshot>('/desktop/storage').then(setStorage).catch(() => {})
-    return () => {active=false;window.removeEventListener('video-defaults-changed',reload)}
+    return () => {active=false;window.removeEventListener('video-defaults-changed',reload);window.removeEventListener(MODEL_DOWNLOAD_EVENT, pullResources)}
   }, [])
   useEffect(() => {
     if (!active || category !== 'general') return
@@ -287,7 +290,8 @@ export function Settings({ current, update, focus, onOpenGuide, active=true }: {
       <section className="settings-panel" hidden={category !== 'general'}>
         <div className="section-heading"><div className="section-icon"><FolderOpen size={18}/></div><h2>本地资料</h2></div>
         <div className="toolbar">
-          <Button variant="secondary" size="small" onClick={() => onOpenGuide?.()}>重新打开安装清单</Button>
+          <Button variant="secondary" size="small" onClick={() => onOpenGuide?.()}>重新打开新手教程</Button>
+          {onReplayTour && <Button variant="ghost" size="small" onClick={() => onReplayTour()}>首页实景导览</Button>}
           <Button variant="secondary" size="small" leadingIcon={ExternalLink} onClick={() => perform(async () => {
             await request('/desktop/open-path', 'POST', { target: 'data_dir' })
           })}>打开资料目录</Button>
@@ -403,12 +407,14 @@ export function Settings({ current, update, focus, onOpenGuide, active=true }: {
               perform(async () => {
                 const next = await request<LocalResources & { freed_bytes: number }>('/desktop/resources/models/' + item.name, 'DELETE')
                 setResources((old) => ({ ...old, models: next.models }))
+                notifyModelDownloadChanged()
                 setNotice({ text: `已删除模型 ${item.name}` })
               })
             }}>删除模型</Button> : <Button variant="secondary" size="small" disabled={downloading}
               onClick={() => perform(async () => {
                 const next = await request<LocalResources>('/desktop/resources/models/' + item.name,'POST')
                 setResources((old) => ({...old, models:next.models}))
+                notifyModelDownloadChanged()
               })}>{item.download.running ? '下载中' : '下载模型'}</Button>}
           </li>)}
         </ul>

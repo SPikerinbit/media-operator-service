@@ -1,6 +1,7 @@
 
 """The Windows window owns a private, loopback-only Media Operator session."""
 import ctypes
+import json
 import logging
 import os
 from pathlib import Path
@@ -108,11 +109,22 @@ class NativeFiles:
         self._window = None
         self._taskbar = native_win.TaskbarProgress()
 
-    def choose_media(self, multiple=False):
+    def choose_media(self, multiple=False, lane=None):
+        if lane == "publish":
+            filters = (
+                "视频文件 (*.mp4;*.mkv;*.mov;*.webm;*.avi;*.flv;*.m4v;*.ts;*.wmv)",
+                "所有文件 (*.*)",
+            )
+        else:
+            filters = (
+                "全部支持素材 (*.mp4;*.mkv;*.mov;*.webm;*.avi;*.mp3;*.m4a;*.wav;*.flac;*.ogg;*.opus;*.aac;*.srt;*.vtt;*.txt;*.md;*.markdown;*.epub;*.mobi;*.azw3;*.azw;*.kf8;*.prc;*.fb2;*.docx;*.pdf;*.html;*.htm;*.xhtml)",
+                "电子书与文档 (*.txt;*.md;*.markdown;*.epub;*.mobi;*.azw3;*.azw;*.kf8;*.prc;*.fb2;*.docx;*.pdf;*.html;*.htm;*.xhtml)",
+                "音视频与字幕 (*.mp4;*.mkv;*.mov;*.webm;*.avi;*.mp3;*.m4a;*.wav;*.flac;*.ogg;*.opus;*.aac;*.srt;*.vtt)",
+                "所有文件 (*.*)",
+            )
         return self._window.create_file_dialog(
             self._webview.FileDialog.OPEN, allow_multiple=multiple,
-            file_types=("媒体与字幕 (*.mp4;*.mkv;*.mov;*.webm;*.avi;*.mp3;*.m4a;*.wav;*.flac;*.ogg;*.opus;*.aac;*.srt;*.vtt)",
-                        "所有文件 (*.*)"),
+            file_types=filters,
         ) or []
 
     def choose_folder(self):
@@ -259,6 +271,34 @@ def run_window():
             except Exception:
                 pass
 
+        def attach_native_drop():
+            try:
+                from webview.dom import DOMEventHandler
+
+                def on_native_drop(event):
+                    dt = (event or {}).get("dataTransfer") or {}
+                    files = dt.get("files") or []
+                    paths = [
+                        str(item.get("pywebviewFullPath") or "").strip()
+                        for item in files
+                        if isinstance(item, dict) and item.get("pywebviewFullPath")
+                    ]
+                    if not paths:
+                        return
+                    payload = json.dumps({
+                        "paths": paths,
+                        "x": event.get("clientX"),
+                        "y": event.get("clientY"),
+                    }, ensure_ascii=False)
+                    window.evaluate_js(
+                        f"window.dispatchEvent(new CustomEvent('workbench-native-drop', {{detail: {payload}}}));"
+                    )
+
+                window.dom.document.events.drop += DOMEventHandler(on_native_drop, False, False)
+            except Exception:
+                logging.debug("Native drop bridge unavailable", exc_info=True)
+
+        window.events.loaded += attach_native_drop
         window.events.shown += lambda: theme_title_bar(window, False)
         window.events.resized += record_normal_bounds
         window.events.moved += record_normal_bounds

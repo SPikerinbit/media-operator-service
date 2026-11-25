@@ -696,7 +696,11 @@ def probe(source, kind, session="", *, refresh=False):
         with PROBE_SLOTS:
             if kind == "local":
                 path = media.normalize_local_source_path(source)
-                info = {"title": path.name, "platform": "本地文件", **inspect_file(path)}
+                from app import local_books
+                if local_books.is_book_path(path):
+                    info = local_books.probe_book(path)
+                else:
+                    info = {"title": path.name, "platform": "本地文件", **inspect_file(path)}
             else:
                 label, _ = site(source)
                 cookie = cookies_for(source, session)

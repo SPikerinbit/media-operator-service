@@ -87,18 +87,18 @@ function LetterStation({ lane, data, active, homeScale }: { lane: Lane; data: In
   const lineRects = useRef<Record<string, DOMRect>>({})
   const mailBox = span(manifest.mailbox.visible_bounds, [0.08105, 0.21582, 0.91895, 0.75])
   const envBox = span(manifest.envelope.visible_bounds, [0.07617, 0.3877, 0.9209, 0.85156])
-  const scale = tight || compact ? 1 : homeScale
-  const mailVisible = Math.round((tight ? 156 : compact ? 188 : 220) * scale)
-  const envVisible = Math.round((tight ? 250 : compact ? 290 : 330) * scale)
-  const stackGap = Math.round((tight ? 4 : compact ? 6 : 8) * scale)
+  const scale = homeScale
+  const mailVisible = Math.round((tight ? 148 : compact ? 178 : 208) * scale)
+  const envVisible = Math.round((tight ? 236 : compact ? 274 : 310) * scale)
+  const stackGap = Math.round((tight ? 4 : compact ? 5 : 6) * scale)
   const mailSize = mailVisible / mailBox.w
   const envSize = envVisible / envBox.w
-  const envTuck = Math.round(16 * scale - envBox.y * envSize)
+  const envTuck = Math.round(10 * scale - envBox.y * envSize)
   const mailTop = mailBox.y * mailSize
   const mailBot = (1 - mailBox.bottom) * mailSize
   const envBot = (1 - envBox.bottom) * envSize
-  const paperW = Math.round((tight ? 320 : compact ? 360 : 400) * scale)
-  const ruleH = Math.round(32 * scale)
+  const paperW = Math.round((tight ? 320 : compact ? 356 : 400) * scale)
+  const ruleH = Math.round((tight ? 28 : compact ? 30 : 32) * scale)
   const waxSize = Math.round(64 * scale)
 
   useEffect(() => {
@@ -121,7 +121,7 @@ function LetterStation({ lane, data, active, homeScale }: { lane: Lane; data: In
     setDraft(current => {
       const created = !current.lines[index]
       const next = padLines(current.lines, index + 1)
-      next[index] = { ...next[index], text }
+      next[index] = { ...next[index], text, local: undefined }
       if (created) focusId.current = next[index].id
       return { ...current, lines: next, caretId: next[index].id }
     })
@@ -281,6 +281,7 @@ function LetterStation({ lane, data, active, homeScale }: { lane: Lane; data: In
     return () => window.clearTimeout(timer)
   }, [draft.returned.length])
 
+  const lastDomDrop = useRef(0)
   function appendLocalPaths(paths: string[]) {
     const clean = paths.map(item => item.trim()).filter(Boolean)
     if (!clean.length) return
@@ -293,11 +294,30 @@ function LetterStation({ lane, data, active, homeScale }: { lane: Lane; data: In
       return { ...current, lines: next, caretId: made[made.length - 1].id }
     })
   }
+  useEffect(() => {
+    function onNativeDrop(event: Event) {
+      if (!activeRef.current || busy) return
+      if (Date.now() - lastDomDrop.current < 400) return
+      const detail = (event as CustomEvent<{ paths?: string[]; x?: number; y?: number }>).detail
+      const paths = Array.isArray(detail?.paths) ? detail.paths : []
+      if (!paths.length) return
+      const box = (sheetRef.current || root.current)?.getBoundingClientRect()
+      const stationBox = root.current?.getBoundingClientRect()
+      const x = typeof detail?.x === 'number' ? detail.x : null
+      const y = typeof detail?.y === 'number' ? detail.y : null
+      const hit = (rect?: DOMRect) => Boolean(rect && x != null && y != null && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom)
+      if (!hit(box) && !hit(stationBox)) return
+      setDragOver(false)
+      appendLocalPaths(paths)
+    }
+    window.addEventListener('workbench-native-drop', onNativeDrop)
+    return () => window.removeEventListener('workbench-native-drop', onNativeDrop)
+  }, [busy, pageSize])
   async function pickLocalFiles() {
     if (busy) return
     setError('')
     try {
-      const paths = await (await native()).choose_media(true)
+      const paths = await (await native()).choose_media(true, lane)
       if (paths?.length) appendLocalPaths(paths)
     } catch (reason) {
       setError(errorMessage(reason))
@@ -313,6 +333,7 @@ function LetterStation({ lane, data, active, homeScale }: { lane: Lane; data: In
       if (path) droppedPaths.push(path)
     }
     if (droppedPaths.length) {
+      lastDomDrop.current = Date.now()
       appendLocalPaths(droppedPaths)
       return
     }
@@ -372,6 +393,7 @@ function LetterStation({ lane, data, active, homeScale }: { lane: Lane; data: In
           <div
             className={'sheet-current' + (dragOver ? ' is-dragover' : '')}
             ref={sheetRef}
+            data-tour={lane === 'publish' ? 'paper' : undefined}
             onDragOver={event => { if (!busy) { event.preventDefault(); setDragOver(true) } }}
             onDragLeave={() => setDragOver(false)}
             onDrop={onDropFiles}
@@ -380,7 +402,7 @@ function LetterStation({ lane, data, active, homeScale }: { lane: Lane; data: In
               {Array.from({ length: pageSize }, (_, slot) => {
                 const index = page * pageSize + slot
                 const line = draft.lines[index]
-                return <input key={slot} data-line-id={line?.id || ''} ref={node => { if (line) inputs.current[line.id] = node }} className="rule-input" readOnly={busy} aria-label={`${title}第 ${index + 1} 行`} placeholder={page === 0 && slot === 0 ? '写在这里' : ''} value={line?.text ?? ''}
+                return <input key={slot} data-line-id={line?.id || ''} ref={node => { if (line) inputs.current[line.id] = node }} className="rule-input" readOnly={busy} aria-label={`${title}第 ${index + 1} 行`} placeholder={page === 0 && slot === 0 ? (lane === 'notes' ? '粘贴链接，或填入本地图书/音视频路径' : '粘贴视频链接，或填入本地视频路径') : ''} value={line?.text ?? ''}
                   onCompositionStart={() => { composing.current = true }}
                   onCompositionEnd={() => { composing.current = false }}
                   onFocus={() => { if (line) setDraft(current => ({ ...current, caretId: line.id })); else if (!composing.current) focusIndex(index) }}
@@ -410,7 +432,7 @@ function LetterStation({ lane, data, active, homeScale }: { lane: Lane; data: In
           </div>
         </div>
         <p className="paper-hint" role="status">
-          <button type="button" className="paper-local-trigger" disabled={busy} onClick={() => void pickLocalFiles()}>选本地文件</button>
+          <button type="button" className="paper-local-trigger" disabled={busy} title={lane === 'notes' ? '选择本地音视频、字幕或图书文件（txt / epub / mobi / azw3 / pdf / docx / md / fb2 等）' : '选择本地视频文件'} onClick={() => void pickLocalFiles()}>选本地文件</button>
           <span>{phase === 'identifying' ? '正在识别，信纸已保留…' : 'Ctrl + Enter'}</span>
         </p>
       </div>
@@ -421,7 +443,7 @@ function LetterStation({ lane, data, active, homeScale }: { lane: Lane; data: In
         <div className="envelope-flap" ref={flapRef}><img className="flap-face" src={asset('flap-light-closed')} alt="" /><img className="flap-lining" src={asset('flap-light-back')} alt="" /></div>
         <img ref={closedRef} className="flap-closed" src={asset('flap-light-closed')} alt="" />
         <div className="wax-seal" ref={waxRef}>
-          <button className={'wax-button' + (press ? ' is-pressing' : '') + (phase === 'identifying' ? ' is-identifying' : '')} type="button" aria-label={`投递${title}信件`} disabled={!filled || busy} onClick={() => void deliver()}><Prop name={lane === 'publish' ? 'wax' : 'wax-blue'} layer="beauty" /></button>
+          <button className={'wax-button' + (press ? ' is-pressing' : '') + (phase === 'identifying' ? ' is-identifying' : '')} data-tour={lane === 'publish' ? 'wax' : undefined} type="button" aria-label={`投递${title}信件`} disabled={!filled || busy} onClick={() => void deliver()}><Prop name={lane === 'publish' ? 'wax' : 'wax-blue'} layer="beauty" /></button>
         </div>
       </div>
     </div>
@@ -444,10 +466,13 @@ export function WorkbenchHome({ data, active }: { data: InboxState; active: bool
     const measure = () => {
       const box = node.parentElement?.getBoundingClientRect() || node.getBoundingClientRect()
       if (box.width < 2 || box.height < 2) return
-      // Keep exact 1.0x at default window (<= 1440x940 -> workspace <= 1350x940), scale smoothly up to 1.78x on 2K fullscreen.
-      const next = box.width > 1360 && box.height > 950
-        ? Math.min(1.78, Math.max(1, Math.min(box.width / 1350, (box.height - 72) / 690)))
-        : 1
+      // Keep exact 1.0x at default window (<= 1440x940 -> workspace <= 1350x940), scale smoothly up to 1.68x on 2K fullscreen while reserving vertical animation headroom, and gently fit ultra-short viewports.
+      let next = 1
+      if (box.width > 1360 && box.height > 950) {
+        next = Math.min(1.68, Math.max(1, Math.min(box.width / 1350, (box.height - 64) / 760)))
+      } else if (box.height < 560) {
+        next = Math.max(0.76, Math.min(1, (box.height - 24) / 510))
+      }
       setHomeScale(prev => Math.abs(prev - next) < 0.005 ? prev : next)
     }
     measure()
@@ -459,9 +484,9 @@ export function WorkbenchHome({ data, active }: { data: InboxState; active: bool
 
   const tight = useMediaQuery('(max-height: 700px)')
   const compact = useMediaQuery('(max-height: 820px)')
-  const scale = tight || compact ? 1 : homeScale
-  const stationW = Math.round((tight ? 320 : compact ? 360 : 400) * scale)
-  const stationGap = Math.round((tight ? 48 : compact ? 56 : 64) * scale)
+  const scale = tight || compact ? Math.min(1, homeScale) : homeScale
+  const stationW = Math.round((tight ? 320 : compact ? 356 : 400) * scale)
+  const stationGap = Math.round((tight ? 44 : compact ? 54 : 64) * scale)
 
   return <div
     ref={hostRef}

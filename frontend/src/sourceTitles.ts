@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { leaf, request, sourceNames, type Item, type SourceKind, type TranscriptSummary } from './api'
 
-type Source = { kind: SourceKind | 'subtitle'; source: string; title?: string }
+type Source = { kind: SourceKind | 'subtitle' | 'book'; source: string; title?: string }
 type OnlineSource = [source: string, kind: 'youtube' | 'bilibili']
 const lookups = new Map<string, Promise<string>>()
 const queue: (() => void)[] = []
@@ -62,8 +62,10 @@ export function useSourceTitles(entries: Source[]) {
     return () => { active = false }
   }, [unknown])
 
-  const title = (entry: Source) => entry.kind === 'local' || entry.kind === 'subtitle'
-    ? leaf(entry.source) : entry.title || known.get(entry.source) || titles[entry.source] || undefined
+  const title = (entry: Source) => entry.kind === 'book'
+    ? entry.title || leaf(entry.source)
+    : entry.kind === 'local' || entry.kind === 'subtitle'
+      ? leaf(entry.source) : entry.title || known.get(entry.source) || titles[entry.source] || undefined
   return {
     title,
     label: (entry: Source) => title(entry) || sourceNames[entry.kind] +

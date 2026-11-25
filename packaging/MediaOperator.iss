@@ -1,6 +1,6 @@
 
 #ifndef AppVersion
-#define AppVersion "1.0.3"
+#define AppVersion "1.0.5"
 #endif
 #ifndef MinVersion
 #define MinVersion "10.0.22000"

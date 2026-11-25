@@ -172,23 +172,32 @@ def is_local_source_url(value: str) -> bool:
 
 
 def source_display_title(kind: str, source: str, title: str = "") -> str:
+    clean = " ".join(title.split())[:500] if title and not is_http_url(title.strip()) else ""
     if kind in {"local", "subtitle"}:
-        return Path(source).name
-    return " ".join(title.split())[:500] if title and not is_http_url(title.strip()) else ""
+        return clean or Path(source).name
+    return clean
 
 
 def normalize_local_source_path(value: str) -> Path:
-    raw = value.strip()
+    from urllib.parse import unquote
+
+    raw = re.sub(r"[\ufeff\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", value or "").strip()
+    raw = raw.strip('"\'\u201c\u201d\u2018\u2019').strip()
     if not raw:
         raise ValueError("source_value is required")
     if raw.startswith("/files/"):
         _, path = resolve_local_artifact_from_url(raw)
         return path
     parsed = urlparse(raw)
-    if parsed.scheme == "file":
-        raw = parsed.path or ""
-        if re.match(r"^/[A-Za-z]:/", raw):
-            raw = raw[1:]
+    if parsed.scheme.lower() == "file":
+        host = (parsed.netloc or "").strip()
+        file_path = unquote(parsed.path or "")
+        if host and host.lower() != "localhost":
+            raw = "\\\\" + host + "\\" + file_path.replace("/", "\\").lstrip("\\")
+        else:
+            if re.match(r"^/[A-Za-z]:/", file_path):
+                file_path = file_path[1:]
+            raw = file_path
     path = Path(raw)
     if not path.is_absolute():
         raise ValueError("local source must be an absolute path or /files/ resource url")

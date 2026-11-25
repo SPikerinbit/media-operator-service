@@ -361,7 +361,7 @@ export function TranscriptView({ id, settings, onSettings, variant = 'stack', ac
   if (!doc) return <div><Feedback notice={{ text: state.error, error: true }} />
     <Button variant="secondary" onClick={() => perform(() => session.refresh())}>重新载入</Button></div>
 
-  const note = doc.media_type === 'note' || doc.asset_type === 'note'
+  const note = doc.media_type === 'note' || doc.asset_type === 'note' || doc.asset_type === 'book'
   const Player = doc.asset_type === 'audio' ? 'audio' : 'video'
   const pictures = (doc.images || []).filter((src) => src.trim())
   const prose = doc.body || doc.description || ''
@@ -596,7 +596,7 @@ export function TranscriptView({ id, settings, onSettings, variant = 'stack', ac
             </div>
           </div>
           {hasCueServerPages && sourcePaging}
-          <input type="search" aria-label="搜索字幕" placeholder="筛选本页原文" value={cueQuery} onChange={event => setCueQuery(event.target.value)} />
+          <input type="search" aria-label={note ? '搜索原文' : '搜索字幕'} placeholder="筛选本页原文" value={cueQuery} onChange={event => setCueQuery(event.target.value)} />
         </div>
         <div className="source-scroll thin-scroll" ref={readScroll}>
           {doc.playable && !note && (Player === 'audio' ? <StudyAudioBar

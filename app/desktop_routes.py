@@ -566,6 +566,13 @@ def import_source(request: ImportRequest):
                 return {"transcript_id": knowledge.register(
                     path, source_kind="subtitle", source=source, title=path.name,
                 )}
+            from app import local_books
+            if local_books.is_book_path(path):
+                book = local_books.extract_book(path)
+                return {"transcript_id": knowledge.register(
+                    path, source_kind="book", source=source, title=book["title"] or path.stem,
+                    media_type="note", asset_type="book", paragraphs=book["paragraphs"], note_body=book["excerpt"],
+                )}
         batch = jobs.submit_desktop_batch(media.BatchCreateRequest(
             sources=[media.SourceInput(source_kind=request.kind, source_value=source, client_row_id="knowledge",
                                        stop_after="transcribe", allow_muxed_audio=request.allow_muxed_audio,

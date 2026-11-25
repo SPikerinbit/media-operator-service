@@ -182,8 +182,8 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
   const sheetH = homeRect?.height || 220
   let originX = homeRect?.left || 0
   let originY = homeRect?.top || 0
-  const restW = nodes.env.offsetWidth
-  const restH = nodes.env.offsetHeight
+  let restW = nodes.env.offsetWidth
+  let restH = nodes.env.offsetHeight
   let envBase = nodes.env.getBoundingClientRect()
   let mailRect = nodes.mail.getBoundingClientRect()
   let hatchEl = nodes.mail.querySelector<HTMLElement>('.slot-window')
@@ -216,22 +216,30 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
   shade.dataset.lane = lane
   document.body.append(shade)
   let route: HTMLElement | null = null
+  let detached = false
+  const apparatus = nodes.env.parentElement
   const placeholder = document.createElement('div')
   placeholder.className = 'delivery-envelope delivery-placeholder'
   placeholder.style.visibility = 'hidden'
   placeholder.style.display = 'none'
-  nodes.env.before(placeholder)
+  nodes.env.after(placeholder)
   if (mailFlap) mailFlap.style.transition = 'none'
 
   const remeasure = () => {
     const sheetBox = nodes.sheet?.getBoundingClientRect()
     if (sheetBox && sheetBox.width > 2) { originX = sheetBox.left; originY = sheetBox.top }
-    const anchorEl = placeholder.style.display !== 'none' ? placeholder : nodes.env
+    const anchorEl = detached ? placeholder : nodes.env
     const nextEnv = anchorEl.getBoundingClientRect()
     if (nextEnv.width > 2) {
       envBase = nextEnv
+      restW = anchorEl.offsetWidth || nextEnv.width
+      restH = anchorEl.offsetHeight || nextEnv.height
       home.x = envBase.left + envBase.width / 2
       home.y = envBase.top + envBase.height / 2
+      if (detached && nodes.env.parentElement !== hatchEl) {
+        nodes.env.style.width = restW + 'px'
+        nodes.env.style.height = restH + 'px'
+      }
     }
     const nextMail = nodes.mail.getBoundingClientRect()
     if (nextMail.width > 2) mailRect = nextMail
@@ -255,8 +263,19 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
     shade.remove()
     route?.remove()
     placeholder.remove()
+    if (apparatus && nodes.env.parentElement !== apparatus) apparatus.append(nodes.env)
     nodes.env.style.visibility = ''
+    nodes.env.style.position = ''
+    nodes.env.style.left = ''
+    nodes.env.style.top = ''
+    nodes.env.style.width = ''
+    nodes.env.style.height = ''
+    nodes.env.style.margin = ''
     nodes.env.style.marginTop = ''
+    nodes.env.style.zIndex = ''
+    nodes.env.style.transform = ''
+    nodes.env.style.transformOrigin = ''
+    nodes.env.style.opacity = ''
     if (mailFlap) {
       mailFlap.style.transform = ''
       mailFlap.style.filter = ''
@@ -287,13 +306,26 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
     const sealT = ramp(elapsed, 960, 1440)
     const uInsert = Math.min(1, Math.max(0, (elapsed - 1380) / 740))
 
-    // Pure GPU translate3d envelope nudge down to make room for the open flap (zero reflow).
-    const room = 48 * easeOutCubic(Math.min(1, elapsed / 240)) * (1 - sealT)
+    // Pure GPU translate3d envelope nudge down to make room for the open flap, strictly clamped inside viewport.
+    const envVisBottom = envBase.top + envBase.height * (manifest.envelope.visible_bounds?.[3] ?? 0.85156)
+    const envScale = Math.max(0.75, restW / 367)
+    const maxSafeRoom = Math.max(0, Math.min(20 * envScale, window.innerHeight - envBase.bottom - 10, window.innerHeight - envVisBottom - 20))
+    const room = maxSafeRoom * easeOutCubic(Math.min(1, elapsed / 240)) * (1 - sealT)
     if (uInsert <= 0) {
       nodes.env.style.transform = room > 0.05 ? `translate3d(0, ${room}px, 0)` : ''
-    } else if (placeholder.style.display === 'none') {
+    } else if (!detached) {
+      // Detach envelope out of normal flow in the exact same synchronous tick placeholder appears -> 0px reflow jitter.
+      detached = true
       placeholder.style.display = ''
-      nodes.env.style.transform = ''
+      nodes.env.style.position = 'fixed'
+      nodes.env.style.left = '0px'
+      nodes.env.style.top = '0px'
+      nodes.env.style.width = restW + 'px'
+      nodes.env.style.height = restH + 'px'
+      nodes.env.style.margin = '0'
+      nodes.env.style.zIndex = '42'
+      nodes.env.style.transformOrigin = 'center center'
+      nodes.env.style.transform = `translate3d(${home.x - restW / 2}px, ${home.y - restH / 2}px, 0)`
     }
 
     // Smooth C2 tri-fold (bottom folds first, mid overlaps cleanly at 220ms).
@@ -342,11 +374,13 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
       flight.style.zIndex = '1'
       flight.style.left = '0'
       flight.style.top = '0'
+      flight.style.height = Math.ceil(sheetH / 3) + 'px'
       flight.style.transform = `translate3d(${x - envLeft}px, ${y - envTop}px, 0) scale(${tuckScale})`
     } else {
       if (flight.parentElement !== document.body) document.body.append(flight)
       flight.style.position = 'fixed'
       flight.style.zIndex = '40'
+      flight.style.height = sheetH + 'px'
       flight.style.transform = `translate3d(${originX}px, ${originY - yLift}px, 0) scale(${tuckScale})`
     }
     flight.style.opacity = String(tuckT > 0.9 ? 1 - ramp(sealT, 0.02, 0.25) : 1)
@@ -463,19 +497,26 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
           nodes.env.style.height = restH + 'px'
           nodes.env.style.zIndex = '1'
         }
-        nodes.env.style.zIndex = hatch ? '1' : '6'
+        if (!hatch) {
+          const visTopOff = (0.5 - (visible ? visible[1] : 0.3877)) * restH * scale
+          const visBotOff = ((visible ? visible[3] : 0.85156) - 0.5) * restH * scale
+          const visHalfW = (visibleW * 0.5) * restW * scale
+          cx = Math.max(8 + visHalfW, Math.min(window.innerWidth - 8 - visHalfW, cx))
+          cy = Math.max(8 + visTopOff, Math.min(window.innerHeight - 8 - visBotOff, cy))
+        }
+        nodes.env.style.zIndex = hatch ? '1' : '42'
         nodes.env.style.transformOrigin = 'center center'
         if (hatch && hatchRect) {
           nodes.env.style.transform = `translate3d(${cx - hatchRect.left - restW / 2}px, ${cy - hatchRect.top - restH / 2}px, 0) scale(${scale}) rotate(${tilt}deg)`
           nodes.env.style.clipPath = ''
           nodes.env.style.opacity = String(1 - ramp(into, 0.88, 1))
         } else {
-          nodes.env.style.transform = `translate3d(${cx - home.x}px, ${cy - home.y}px, 0) scale(${scale}) rotate(${tilt}deg)`
+          nodes.env.style.transform = `translate3d(${cx - restW / 2}px, ${cy - restH / 2}px, 0) scale(${scale}) rotate(${tilt}deg)`
           nodes.env.style.clipPath = ''
           nodes.env.style.opacity = String(1 - ramp(uInsert, 0.94, 1))
         }
 
-        const groundY = Math.max(home.y, cy) + restH * 0.08
+        const groundY = Math.min(window.innerHeight - 20, Math.max(home.y, cy) + restH * 0.08)
         shade.style.opacity = String(0.24 * (1 - into))
         shade.style.transform = `translate3d(${cx - 28}px, ${groundY}px, 0) scale(${0.55 + (1 - scale) * 0.2}, 0.55)`
 
@@ -501,7 +542,7 @@ export function playDelivery(nodes: DeliveryNodes, manifest: WorkbenchManifest, 
           const along = easeOutQuart(localU)
           const slotIn = Math.max(0, (along - 0.70) / 0.30)
           const midX = (exitPoint.x + dest.x) / 2 - 20
-          const midY = Math.min(exitPoint.y, dest.y) - 44
+          const midY = Math.max(24, Math.min(exitPoint.y, dest.y) - 44)
           const rx = quad(exitPoint.x, midX, dest.x, along) - 18
           const ry = quad(exitPoint.y, midY, dest.y, along) - 12
           const rdx = quadTan(exitPoint.x, midX, dest.x, Math.min(0.96, Math.max(0.04, along)))
@@ -671,7 +712,7 @@ export function glideWood(el: HTMLElement, from: WoodRect, to: WoodRect, _ms = 3
       // Smooth arc with gentle landing slope (sin^1.3 avoids sharp derivative kink on touchdown).
       const arc = Math.pow(Math.sin(Math.PI * clamped), 1.3) * 82
       const x = lerp(from.x, to.x, p)
-      const y = lerp(from.y, to.y, p) - arc
+      const y = Math.max(16 + from.height * 0.3, lerp(from.y, to.y, p) - arc)
       const scale = lerp(1, to.width / Math.max(1, from.width), clamped)
       const dx = x - from.x
       const dy = y - from.y
@@ -823,8 +864,8 @@ export function flyTrashSheets(from: { rect: DOMRect; title: string }[], target:
         if (elapsed < 0) { node.el.style.opacity = '0'; live = true; return }
         const ball = easeOutCubic(Math.min(1, elapsed / 240))
         const t = easeOutCubic(Math.min(1, Math.max(0, (elapsed - 130) / 540)))
-        const x = lerp(node.x, hole.x, t)
-        const y = lerp(node.y, hole.y + 14, t) - Math.sin(Math.PI * t) * 86
+        const x = Math.max(16, Math.min(window.innerWidth - 16, lerp(node.x, hole.x, t)))
+        const y = Math.max(16, Math.min(window.innerHeight - 16, lerp(node.y, hole.y + 14, t) - Math.sin(Math.PI * t) * 86))
         const sx = lerp(1, 25 / node.w, ball), sy = lerp(1, 25 / node.h, ball)
         node.el.style.setProperty('--crumple', String(ball))
         node.el.style.borderRadius = `${ball * 46}%`

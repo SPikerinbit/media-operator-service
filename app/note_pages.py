@@ -558,7 +558,12 @@ def markdown_to(transcript_id, path, view_mode=None):
             while True:
                 refs = references(transcript_id, card['id'], after)
                 for ref in refs['items']:
-                    output.write(f"> [{ref['cue']} · {k.clock(ref['start_ms'])} · {ref['lo']}–{ref['hi']}] ")
+                    loc = (
+                        f"第 {ref['cue']} 段 · {ref['lo']}–{ref['hi']}"
+                        if doc.get('reference_kind') == 'paragraph'
+                        else f"{ref['cue']} · {k.clock(ref['start_ms'])} · {ref['lo']}–{ref['hi']}"
+                    )
+                    output.write(f"> [{loc}] ")
                     for offset in range(ref['lo'], ref['hi'], 4000):
                         text = source_page(transcript_id, ref['cue'], offset)['text'][:min(4000, ref['hi'] - offset)]
                         output.write(text.replace('\n', '\n> '))

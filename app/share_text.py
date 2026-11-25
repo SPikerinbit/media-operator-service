@@ -34,9 +34,13 @@ def title_line(prefix):
     return lines[-1] if lines else ""
 
 
-FILE_URL = re.compile(r"file://[^\s<>\"']+", re.I)
-QUOTED_PATH = re.compile(
-    r"""(?P<quote>["'])(?P<body>(?:[A-Za-z]:[\\/]|\\\\)[^"']+)(?P=quote)"""
+INVISIBLE_MARKS = re.compile(r"[\ufeff\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+FILE_URL_LINE = re.compile(r"(?m)^[ \t]*(?:[\"'\u201c\u2018])?(?P<body>file://[^\r\n\"'\u201d\u2019<>]+?)(?:[\"'\u201d\u2019])?[ \t]*$", re.I)
+FILE_URL = re.compile(r"file://[^\s<>\"'\u201c\u201d\u2018\u2019]+", re.I)
+DOUBLE_QUOTED_PATH = re.compile(r'"(?P<body>(?:[A-Za-z]:[\\/]|\\\\)[^"\r\n]+)"')
+SINGLE_QUOTED_PATH = re.compile(r"'(?P<body>(?:[A-Za-z]:[\\/]|\\\\)[^'\r\n]+)'")
+SMART_QUOTED_PATH = re.compile(
+    r"(?:\u201c(?P<dbody>(?:[A-Za-z]:[\\/]|\\\\)[^\u201d\r\n]+)\u201d|\u2018(?P<sbody>(?:[A-Za-z]:[\\/]|\\\\)[^\u2019\r\n]+)\u2019)"
 )
 LINE_PATH = re.compile(
     r"(?m)^[ \t]*(?P<body>(?:[A-Za-z]:[\\/]|\\\\)[^\r\n]*\S)[ \t]*$"
@@ -88,8 +92,12 @@ def _file_url_path(url):
     return str(Path(path.replace("/", "\\")))
 
 
+def _strip_invisible(value):
+    return INVISIBLE_MARKS.sub("", value or "")
+
+
 def _normalize_path(value):
-    text = (value or "").strip().strip('"').strip("'")
+    text = _strip_invisible(value).strip().strip('"\'\u201c\u201d\u2018\u2019').strip()
     if text.lower().startswith("file:"):
         return _file_url_path(text)
     return str(Path(text))
@@ -110,12 +118,28 @@ def _overlaps(span, others):
 
 def _spans(text):
     found = []
+    for match in FILE_URL_LINE.finditer(text):
+        body = match.group("body").strip()
+        if not body:
+            continue
+        found.append(_Span(match.start("body"), match.end("body"), "local", _file_url_path(body), body))
     for match in FILE_URL.finditer(text):
         raw = match.group(0)
-        found.append(_Span(match.start(), match.end(), "local", _file_url_path(raw), raw))
-    for match in QUOTED_PATH.finditer(text):
-        body = match.group("body")
-        found.append(_Span(match.start(), match.end(), "local", _normalize_path(body), match.group(0)))
+        span = _Span(match.start(), match.end(), "local", _file_url_path(raw), raw)
+        if not _overlaps(span, found):
+            found.append(span)
+    for pattern in (DOUBLE_QUOTED_PATH, SINGLE_QUOTED_PATH):
+        for match in pattern.finditer(text):
+            body = match.group("body")
+            span = _Span(match.start(), match.end(), "local", _normalize_path(body), match.group(0))
+            if not _overlaps(span, found):
+                found.append(span)
+    for match in SMART_QUOTED_PATH.finditer(text):
+        body = match.group("dbody") or match.group("sbody") or ""
+        if body:
+            span = _Span(match.start(), match.end(), "local", _normalize_path(body), match.group(0))
+            if not _overlaps(span, found):
+                found.append(span)
     for match in URL.finditer(text):
         url = match.group(0).rstrip(".,;:)]}")
         end = match.start() + len(url)
@@ -166,7 +190,7 @@ def classify_letters(text):
     - two different links are two items
     - ``"D:\\My Videos\\clip.mp4"``, ``\\\\server\\share\\clip.mp4`` and ``file:///D:/a.mp4`` are local items
     """
-    raw = text or ""
+    raw = _strip_invisible(text)
     if not raw.strip():
         return []
     spans = _spans(raw)

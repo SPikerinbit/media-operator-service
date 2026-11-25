@@ -977,38 +977,37 @@ class Engine:
         prev_end_ms = 0
         while True:
             with k.database() as db:
-                cue = db.execute(
-                    'SELECT number, start_ms, end_ms, length(text) AS size FROM cue WHERE transcript_id=? AND number>? ORDER BY number LIMIT 1',
+                cue_batch = db.execute(
+                    'SELECT number, start_ms, end_ms, length(text) AS size FROM cue WHERE transcript_id=? AND number>? ORDER BY number LIMIT 64',
                     (self.doc['id'], number),
-                ).fetchone()
-            if not cue:
+                ).fetchall()
+            if not cue_batch:
                 break
-            number = cue['number']
-            if spans and prev_end_ms > 0 and cue['start_ms'] - prev_end_ms >= 1500 and size >= leaf_budget * 0.65:
-                with k.database() as db:
-                    self.add_leaf(db, spans)
-                spans = []
-                size = 0
-            lo = 0
-            while lo < cue['size']:
-                with k.database() as db:
-                    text = db.execute(
-                        'SELECT substr(text,?,?) FROM cue WHERE transcript_id=? AND number=?',
-                        (lo + 1, slice_chars, self.doc['id'], number),
-                    ).fetchone()[0]
-                endings = list(re.finditer(r'[。！？!?；;\n.]', text))
-                if endings and endings[-1].end() >= len(text) // 2:
-                    text = text[:endings[-1].end()]
-                cost = estimate_tokens(text) + 24
-                if spans and (size + cost > leaf_budget or len(spans) >= max_spans):
-                    with k.database() as db:
+            with k.database() as db:
+                for cue in cue_batch:
+                    number = cue['number']
+                    if spans and prev_end_ms > 0 and cue['start_ms'] - prev_end_ms >= 1500 and size >= leaf_budget * 0.65:
                         self.add_leaf(db, spans)
-                    spans = []
-                    size = 0
-                spans.append((number, lo, lo + len(text)))
-                size += cost
-                lo += len(text)
-            prev_end_ms = cue['end_ms'] or prev_end_ms
+                        spans = []
+                        size = 0
+                    lo = 0
+                    while lo < cue['size']:
+                        text = db.execute(
+                            'SELECT substr(text,?,?) FROM cue WHERE transcript_id=? AND number=?',
+                            (lo + 1, slice_chars, self.doc['id'], number),
+                        ).fetchone()[0]
+                        endings = list(re.finditer(r'[。！？!?；;\n.]', text))
+                        if endings and endings[-1].end() >= len(text) // 2:
+                            text = text[:endings[-1].end()]
+                        cost = estimate_tokens(text) + 24
+                        if spans and (size + cost > leaf_budget or len(spans) >= max_spans):
+                            self.add_leaf(db, spans)
+                            spans = []
+                            size = 0
+                        spans.append((number, lo, lo + len(text)))
+                        size += cost
+                        lo += len(text)
+                    prev_end_ms = cue['end_ms'] or prev_end_ms
         if spans:
             with k.database() as db:
                 self.add_leaf(db, spans)

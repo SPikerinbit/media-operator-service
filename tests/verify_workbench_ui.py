@@ -27,8 +27,54 @@ with sync_playwright() as playwright:
     page.reload()
     guide = page.locator('dialog.onboarding')
     guide.wait_for(state='visible')
-    assert guide.locator('.setup-accounts li').count() == 4
     assert page.locator('.home-view').get_attribute('inert') is not None
+    page.screenshot(path=str(out/'onboarding-step1-welcome.png'))
+    # Step 2: interactive 3-scene workflow demo
+    guide.get_by_role('button', name='看 3 步动态演示', exact=True).click()
+    guide.get_by_role('tab', name='② 添柴点火 投稿成片').click()
+    page.wait_for_timeout(280)
+    page.screenshot(path=str(out/'onboarding-step2-demo.png'))
+    guide.get_by_role('tab', name='③ 拨档整理 知识笔记').click()
+    page.wait_for_timeout(140)
+    # Step 3: start background model download and immediately advance without blocking
+    guide.get_by_role('button', name='下一步：准备转录模型', exact=True).click()
+    guide.locator('.setup-model-card').first.wait_for(state='visible')
+    page.wait_for_timeout(260)
+    page.screenshot(path=str(out/'onboarding-step3-model.png'))
+    guide.get_by_role('button', name='后台下载并继续', exact=True).click()
+    # Immediately reaches Step 4 (Accounts + AI) with header background download pill visible and zero skip lock-in
+    guide.locator('.setup-accounts li').first.wait_for(state='visible')
+    assert guide.locator('.setup-accounts li').count() == 4
+    guide.locator('.setup-bg-pill').wait_for(state='visible')
+    page.wait_for_timeout(240)
+    page.screenshot(path=str(out/'onboarding-step4-connect.png'))
+    # Step 5: Ready & close into live desk with 3-step coachmarks + non-blocking background banner
+    guide.get_by_role('button', name='下一步：启封开用', exact=True).click()
+    guide.locator('.setup-ready li').first.wait_for(state='visible')
+    page.wait_for_timeout(260)
+    page.screenshot(path=str(out/'onboarding-step5-ready.png'))
+    guide.get_by_role('button', name='合上手册，开始使用', exact=True).click()
+    guide.wait_for(state='detached')
+    # Live-desk 3-step coachmarks appear and stay strictly within viewport
+    page.locator('.coachmark-card').wait_for(state='visible', timeout=5000)
+    page.wait_for_timeout(340)
+    page.screenshot(path=str(out/'desk-coachmark-step1.png'))
+    for step_idx in range(3):
+        box = page.locator('.coachmark-card').bounding_box()
+        assert box and box['x'] >= 0 and box['y'] >= 0 and box['x'] + box['width'] <= 1920 and box['y'] + box['height'] <= 1080, (step_idx, box)
+        if step_idx < 2:
+            page.locator('.coachmark-card').get_by_role('button', name='下一步', exact=True).click()
+            page.wait_for_timeout(180)
+        else:
+            page.locator('.coachmark-card').get_by_role('button', name='知道了，开始用', exact=True).click()
+    page.locator('.coachmark-card').wait_for(state='detached')
+    # Background model download continues and completes cleanly inside the app
+    page.locator('.bg-model-banner.is-done').wait_for(state='visible', timeout=8000)
+    page.screenshot(path=str(out/'bg-model-download-done.png'))
+    results['non_blocking_model_download_and_coachmarks'] = True
+    # Reopen from sidebar quick help button and dismiss via 以后再说
+    page.get_by_role('button', name='打开使用教程', exact=True).click()
+    guide.wait_for(state='visible')
     page.get_by_role('button', name='以后再说', exact=True).click()
     guide.wait_for(state='detached')
     for _ in range(20):
@@ -319,6 +365,58 @@ with sync_playwright() as playwright:
     results['mailbox_flap_animated'] = True
     assert page.locator('.fold-sheet,.routing-letter,.cast-shadow').count() == 0
     assert page.locator('.letter-station.publish').get_attribute('data-phase') == 'idle'
+
+    # v1.0.4 Regression: verify ZERO scroll overflow, ZERO sibling jitter, and envelope strictly in-viewport across viewports
+    delivery_bounds = []
+    for vw, vh in [(1440, 940), (1280, 800), (1280, 720), (1920, 1080), (950, 680)]:
+        page.set_viewport_size({'width': vw, 'height': vh})
+        page.wait_for_timeout(250)
+        page.locator('.letter-station.publish input.rule-input').first.fill(f'https://example.com/video-bounds-{vw}x{vh}-{token}')
+        page.evaluate("""() => {
+          const sib = document.querySelector('.letter-station.notes').getBoundingClientRect();
+          window.__boundsStats = {
+            baseTop: sib.top, baseLeft: sib.left,
+            maxDriftTop: 0, maxDriftLeft: 0,
+            maxScrollY: 0, maxScrollX: 0,
+            minEnvVisTop: 99999, maxEnvVisBottom: -99999, frames: 0,
+          };
+          let live = true;
+          window.__stopBounds = () => { live = false; };
+          function sample() {
+            if (!live) return;
+            const home = document.querySelector('.home-view');
+            const s = document.querySelector('.letter-station.notes').getBoundingClientRect();
+            const env = document.querySelector('.letter-station.publish .delivery-envelope:not(.delivery-placeholder)');
+            const st = window.__boundsStats;
+            st.frames++;
+            st.maxDriftTop = Math.max(st.maxDriftTop, Math.abs(s.top - st.baseTop));
+            st.maxDriftLeft = Math.max(st.maxDriftLeft, Math.abs(s.left - st.baseLeft));
+            st.maxScrollY = Math.max(st.maxScrollY, home.scrollHeight - home.clientHeight);
+            st.maxScrollX = Math.max(st.maxScrollX, home.scrollWidth - home.clientWidth);
+            if (env && !env.closest('.slot-window')) {
+              const r = env.getBoundingClientRect();
+              if (r.height > 2) {
+                const visTop = r.top + r.height * 0.3877;
+                const visBot = r.top + r.height * 0.85156;
+                st.minEnvVisTop = Math.min(st.minEnvVisTop, visTop);
+                st.maxEnvVisBottom = Math.max(st.maxEnvVisBottom, visBot);
+              }
+            }
+            requestAnimationFrame(sample);
+          }
+          requestAnimationFrame(sample);
+        }""")
+        page.get_by_role('button', name='投递投稿信件', exact=True).click()
+        page.wait_for_function("() => document.querySelector('.letter-station.publish').dataset.phase==='fold'")
+        page.wait_for_function("() => document.querySelector('.letter-station.publish').dataset.phase==='idle'", timeout=10000)
+        stats = page.evaluate("() => { window.__stopBounds?.(); return window.__boundsStats; }")
+        assert stats['maxScrollY'] <= 1, (vw, vh, stats)
+        assert stats['maxScrollX'] <= 1, (vw, vh, stats)
+        assert stats['maxDriftTop'] <= 0.5 and stats['maxDriftLeft'] <= 0.5, ('Sibling jitter detected', vw, vh, stats)
+        assert stats['minEnvVisTop'] >= -2 and stats['maxEnvVisBottom'] <= vh + 2, ('Envelope overflowed viewport', vw, vh, stats)
+        delivery_bounds.append({'viewport': [vw, vh], **stats})
+    results['delivery_zero_jitter_and_bounds'] = delivery_bounds
+    page.set_viewport_size({'width': 1280, 'height': 800})
     page.emulate_media(reduced_motion='reduce')
     page.get_by_role('button', name='设置', exact=True).click()
     page.wait_for_timeout(100)
